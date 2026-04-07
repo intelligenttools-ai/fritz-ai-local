@@ -102,7 +102,7 @@ deploy_overlay() {
     fi
 
     local brain_dir="${vault_path}/.brain"
-    mkdir -p "${brain_dir}"/{adapters,capture/sessions,capture/inbox}
+    mkdir -p "${brain_dir}"/{instructions,capture/sessions,capture/inbox}
 
     # Copy overlay files (don't overwrite existing)
     for f in manifest.yaml schema.md; do
@@ -112,11 +112,11 @@ deploy_overlay() {
         fi
     done
 
-    # Deploy adapter files
-    mkdir -p "${brain_dir}/adapters"
-    for adapter in CLAUDE.md AGENTS.md GEMINI.md; do
-        if [ -f "${overlay_src}/${adapter}" ]; then
-            cp "${overlay_src}/${adapter}" "${brain_dir}/adapters/${adapter}"
+    # Deploy instruction files (agent reads these for vault behavior)
+    mkdir -p "${brain_dir}/instructions"
+    for instr in CLAUDE.md AGENTS.md GEMINI.md HERMES.md; do
+        if [ -f "${overlay_src}/${instr}" ]; then
+            cp "${overlay_src}/${instr}" "${brain_dir}/instructions/${instr}"
         fi
     done
 
@@ -128,10 +128,10 @@ deploy_overlay() {
         echo "$(date '+%Y-%m-%d %H:%M') | INIT | install.sh | Brain overlay created" >> "${brain_dir}/log.md"
     fi
 
-    # Symlink adapters to vault root
-    for adapter in CLAUDE.md AGENTS.md GEMINI.md; do
-        if [ -f "${brain_dir}/adapters/${adapter}" ]; then
-            ln -sf ".brain/adapters/${adapter}" "${vault_path}/${adapter}" 2>/dev/null || true
+    # Symlink instruction files to vault root (where agents expect them)
+    for instr in CLAUDE.md AGENTS.md GEMINI.md HERMES.md; do
+        if [ -f "${brain_dir}/instructions/${instr}" ]; then
+            ln -sf ".brain/instructions/${instr}" "${vault_path}/${instr}" 2>/dev/null || true
         fi
     done
 
