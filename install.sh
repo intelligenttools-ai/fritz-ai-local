@@ -35,7 +35,37 @@ if [ -d "${REPO_DIR}/hooks" ]; then
     done
 fi
 
-# 4. Install Python dependencies
+# 4. Symlink skills into Claude Code and ICA skills directories
+CLAUDE_SKILLS="${HOME}/.claude/skills"
+ICA_SKILLS="${HOME}/.ica/official-skills/skills"
+if [ -d "${REPO_DIR}/skills" ]; then
+    for skill_dir in "${REPO_DIR}"/skills/*/; do
+        [ -d "$skill_dir" ] || continue
+        name="$(basename "$skill_dir")"
+        # Claude Code skills
+        if [ -d "${CLAUDE_SKILLS}" ]; then
+            if [ -L "${CLAUDE_SKILLS}/${name}" ]; then
+                rm "${CLAUDE_SKILLS}/${name}"
+            fi
+            if [ ! -e "${CLAUDE_SKILLS}/${name}" ]; then
+                ln -sf "${skill_dir%/}" "${CLAUDE_SKILLS}/${name}"
+                echo "Linked skill (claude): ${name}"
+            fi
+        fi
+        # ICA skills
+        if [ -d "${ICA_SKILLS}" ]; then
+            if [ -L "${ICA_SKILLS}/${name}" ]; then
+                rm "${ICA_SKILLS}/${name}"
+            fi
+            if [ ! -e "${ICA_SKILLS}/${name}" ]; then
+                ln -sf "${skill_dir%/}" "${ICA_SKILLS}/${name}"
+                echo "Linked skill (ica): ${name}"
+            fi
+        fi
+    done
+fi
+
+# 6. Install Python dependencies
 echo ""
 echo "Installing Python dependencies..."
 if command -v uv &>/dev/null; then
@@ -46,13 +76,13 @@ elif command -v pip3 &>/dev/null; then
     pip3 install -r "${REPO_DIR}/requirements.txt" 2>/dev/null || true
 fi
 
-# 5. Copy registry template if none exists
+# 7. Copy registry template if none exists
 if [ ! -f "${BRAIN_HOME}/registry.yaml" ] && [ -f "${REPO_DIR}/registry/registry.template.yaml" ]; then
     cp "${REPO_DIR}/registry/registry.template.yaml" "${BRAIN_HOME}/registry.yaml"
     echo "Created registry.yaml from template (edit paths for your machine)"
 fi
 
-# 5. Deploy overlay to a vault (optional: pass vault path as argument)
+# 8. Deploy overlay to a vault (optional: pass vault path as argument)
 deploy_overlay() {
     local vault_path="$1"
     local overlay_name="$2"
