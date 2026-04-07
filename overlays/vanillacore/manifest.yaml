@@ -1,0 +1,20 @@
+version: 1
+name: vanillacore
+domain: work
+owner: karsten
+
+# Map brain concepts to actual paths (relative to vault root)
+paths:
+  soul: 200_Brain_COO/SOUL.md
+  user: 200_Brain_COO/USER.md
+  memory: 200_Brain_COO/MEMORY.md
+  capture_daily: 200_Brain_COO/400_Daily/
+  capture_sessions: .brain/capture/sessions/
+  capture_inbox: .brain/capture/inbox/
+  knowledge: 200_Brain_COO/500_Para/
+  index: 200_Brain_COO/index.md
+  archive: .brain/archive/
+
+exclude:
+  - ".obsidian/"
+  - ".trash/"
