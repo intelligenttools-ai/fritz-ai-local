@@ -56,8 +56,18 @@ def extract_transcript_summary(transcript_path: str, cwd: str = "") -> str | Non
     tool_uses = set()
 
     for msg in recent:
-        role = msg.get("role", "")
-        content = msg.get("content", "")
+        # Claude Code JSONL format: {"type": "user"|"assistant", "message": {"role": ..., "content": ...}}
+        msg_type = msg.get("type", "")
+        if msg_type not in ("user", "assistant"):
+            continue
+
+        # Content can be at msg["message"]["content"] or msg["message"]["content"] as blocks
+        inner = msg.get("message", {})
+        if not inner:
+            # Fallback: some formats put content at top level
+            inner = msg
+        role = inner.get("role", msg_type)
+        content = inner.get("content", "")
 
         if isinstance(content, list):
             text_parts = []
@@ -72,11 +82,11 @@ def extract_transcript_summary(transcript_path: str, cwd: str = "") -> str | Non
         if not isinstance(content, str) or not content.strip():
             continue
 
-        if role == "user":
+        if role == "user" or msg_type == "user":
             first_line = content.strip().split("\n")[0][:200]
             if first_line and not first_line.startswith("<"):
                 user_messages.append(first_line)
-        elif role == "assistant":
+        elif role == "assistant" or msg_type == "assistant":
             for line in content.strip().split("\n"):
                 line = line.strip()
                 if line and not line.startswith("<") and len(line) > 20:
