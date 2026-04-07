@@ -1,0 +1,47 @@
+{
+  "_comment": "Add these to ~/.claude/settings.json under 'hooks'. Fritz-ai-local hook registrations for Claude Code.",
+  "SessionStart": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 ~/.brain/hooks/brain_session_start.py",
+          "timeout": 5000
+        }
+      ]
+    }
+  ],
+  "UserPromptSubmit": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 ~/.brain/hooks/brain_prompt_check.py",
+          "timeout": 3000
+        }
+      ]
+    }
+  ],
+  "PreCompact": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 ~/.brain/hooks/brain_capture.py",
+          "timeout": 10000
+        }
+      ]
+    }
+  ],
+  "Stop": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 ~/.brain/hooks/brain_capture.py",
+          "timeout": 10000
+        }
+      ]
+    }
+  ]
+}
