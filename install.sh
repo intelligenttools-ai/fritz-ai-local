@@ -90,65 +90,18 @@ if [ ! -f "${BRAIN_HOME}/registry.yaml" ] && [ -f "${REPO_DIR}/registry/registry
     echo "Created registry.yaml from template (edit paths for your machine)"
 fi
 
-# 8. Deploy overlay to a vault (optional: pass vault path as argument)
-deploy_overlay() {
-    local vault_path="$1"
-    local overlay_name="$2"
-    local overlay_src="${REPO_DIR}/overlays/${overlay_name}"
-
-    if [ ! -d "$overlay_src" ]; then
-        echo "No overlay template found for: ${overlay_name}"
-        return 1
-    fi
-
-    local brain_dir="${vault_path}/.brain"
-    mkdir -p "${brain_dir}"/{instructions,capture/sessions,capture/inbox}
-
-    # Copy overlay files (don't overwrite existing)
-    for f in manifest.yaml schema.md; do
-        if [ -f "${overlay_src}/${f}" ] && [ ! -f "${brain_dir}/${f}" ]; then
-            cp "${overlay_src}/${f}" "${brain_dir}/${f}"
-            echo "  Created ${f}"
-        fi
-    done
-
-    # Deploy instruction files (agent reads these for vault behavior)
-    mkdir -p "${brain_dir}/instructions"
-    for instr in CLAUDE.md AGENTS.md GEMINI.md HERMES.md; do
-        if [ -f "${overlay_src}/${instr}" ]; then
-            cp "${overlay_src}/${instr}" "${brain_dir}/instructions/${instr}"
-        fi
-    done
-
-    # Create log.md if missing
-    if [ ! -f "${brain_dir}/log.md" ]; then
-        echo "# Brain Operations Log" > "${brain_dir}/log.md"
-        echo "" >> "${brain_dir}/log.md"
-        echo "<!-- Append-only. Each entry: YYYY-MM-DD HH:MM | OPERATION | agent | summary -->" >> "${brain_dir}/log.md"
-        echo "$(date '+%Y-%m-%d %H:%M') | INIT | install.sh | Brain overlay created" >> "${brain_dir}/log.md"
-    fi
-
-    # Symlink instruction files to vault root (where agents expect them)
-    for instr in CLAUDE.md AGENTS.md GEMINI.md HERMES.md; do
-        if [ -f "${brain_dir}/instructions/${instr}" ]; then
-            ln -sf ".brain/instructions/${instr}" "${vault_path}/${instr}" 2>/dev/null || true
-        fi
-    done
-
-    echo "  Overlay deployed to ${vault_path}"
-}
-
-# Deploy VanillaCore overlay if the vault exists
-if [ -d "${HOME}/Notes/VanillaCore" ]; then
-    echo ""
-    echo "Deploying VanillaCore overlay..."
-    deploy_overlay "${HOME}/Notes/VanillaCore" "vanillacore"
+# 8. Copy schema template
+if [ -f "${REPO_DIR}/templates/schema.template.md" ]; then
+    mkdir -p "${BRAIN_HOME}/templates"
+    cp "${REPO_DIR}/templates/schema.template.md" "${BRAIN_HOME}/templates/schema.template.md"
+    echo "Installed schema template"
 fi
 
 echo ""
 echo "Done. Fritz Local installed at ${BRAIN_HOME}"
 echo ""
 echo "Next steps:"
-echo "  1. Edit ${BRAIN_HOME}/registry.yaml to configure your vaults"
-echo "  2. Overlays are deployed to vault/.brain/ directories"
-echo "  3. Each vault gets CLAUDE.md, AGENTS.md, GEMINI.md symlinks at root"
+echo "  1. Edit ${BRAIN_HOME}/registry.yaml — add your vault paths"
+echo "  2. Run /brain-setup in your agent to initialize each vault"
+echo "     (the agent explores the vault structure and generates the manifest)"
+echo "  3. See SETUP.md for agent-specific hook registration"
