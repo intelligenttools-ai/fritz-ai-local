@@ -18,5 +18,5 @@ Save key decisions, lessons, and facts to `200_Brain_COO/400_Daily/YYYY-MM-DD.md
 ## Writing
 
 - YAML frontmatter on all new files (`type` required)
-- Standard markdown links, no Obsidian-specific syntax
+- Standard markdown links, no platform-specific syntax
 - Append to `.brain/log.md` after knowledge operations
