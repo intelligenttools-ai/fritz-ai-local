@@ -35,7 +35,7 @@ MAX_MESSAGES = 200  # Max transcript lines to process
 MAX_SUMMARY_CHARS = 8000  # Cap summary length
 
 
-def extract_transcript_summary(transcript_path: str) -> str | None:
+def extract_transcript_summary(transcript_path: str, cwd: str = "") -> str | None:
     """Read the JSONL transcript and extract a structured summary."""
     path = Path(transcript_path)
     if not path.exists():
@@ -102,7 +102,9 @@ def extract_transcript_summary(transcript_path: str) -> str | None:
     # Build summary
     parts = []
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-    parts.append(f"## Session {timestamp}\n")
+    parts.append(f"## Session {timestamp}")
+    if cwd:
+        parts.append(f"\n**Working directory**: `{cwd}`\n")
 
     if user_messages:
         parts.append("### Topics discussed\n")
@@ -137,7 +139,9 @@ def main():
     if not cwd:
         sys.exit(0)
 
-    vault_name, vault_config, vault_path = find_vault_for_cwd(cwd)
+    # Always capture — if cwd isn't in a vault, fall back to the default vault.
+    # Every conversation produces knowledge, regardless of where it happens.
+    vault_name, vault_config, vault_path = find_vault_for_cwd(cwd, fallback_to_default=True)
     if not vault_path:
         sys.exit(0)
 
@@ -148,7 +152,7 @@ def main():
     # Extract summary from transcript
     summary = None
     if transcript_path:
-        summary = extract_transcript_summary(transcript_path)
+        summary = extract_transcript_summary(transcript_path, cwd=cwd)
 
     if not summary:
         sys.exit(0)

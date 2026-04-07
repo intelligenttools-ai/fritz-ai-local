@@ -3,6 +3,10 @@ version: 1
 # Vault registry — edit paths for your machine.
 # Each vault gets a .brain/ overlay without restructuring existing folders.
 
+# Default vault for captures when cwd doesn't match any vault.
+# Every conversation gets captured, regardless of where it happens.
+default_vault: vanillacore
+
 vaults:
   vanillacore:
     path: ~/Notes/VanillaCore
