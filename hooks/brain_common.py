@@ -21,9 +21,39 @@ def load_registry() -> dict:
         return yaml.safe_load(f) or {"version": 1, "vaults": {}}
 
 
-def find_vault_for_cwd(cwd: str) -> tuple[str | None, dict | None, Path | None]:
+def get_default_vault() -> tuple[str | None, dict | None, Path | None]:
+    """Get the default vault from the registry.
+
+    Checks for 'default_vault' key, then falls back to first vault with status: active.
+    Returns (vault_name, vault_config, vault_path) or (None, None, None).
+    """
+    registry = load_registry()
+    vaults = registry.get("vaults", {})
+
+    # Explicit default
+    default_name = registry.get("default_vault")
+    if default_name and default_name in vaults:
+        config = vaults[default_name]
+        return default_name, config, Path(config["path"]).expanduser().resolve()
+
+    # Fallback: first vault with status: active
+    for name, config in vaults.items():
+        if config.get("status") == "active":
+            return name, config, Path(config["path"]).expanduser().resolve()
+
+    # Fallback: first vault
+    if vaults:
+        name = next(iter(vaults))
+        config = vaults[name]
+        return name, config, Path(config["path"]).expanduser().resolve()
+
+    return None, None, None
+
+
+def find_vault_for_cwd(cwd: str, fallback_to_default: bool = False) -> tuple[str | None, dict | None, Path | None]:
     """Find which vault the current working directory belongs to.
 
+    If fallback_to_default is True and no vault matches cwd, returns the default vault.
     Returns (vault_name, vault_config, vault_path) or (None, None, None).
     """
     registry = load_registry()
@@ -36,6 +66,10 @@ def find_vault_for_cwd(cwd: str) -> tuple[str | None, dict | None, Path | None]:
             return name, config, vault_path
         except ValueError:
             continue
+
+    if fallback_to_default:
+        return get_default_vault()
+
     return None, None, None
 
 
