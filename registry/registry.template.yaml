@@ -1,0 +1,31 @@
+version: 1
+
+# Vault registry — edit paths for your machine.
+# Each vault gets a .brain/ overlay without restructuring existing folders.
+
+vaults:
+  vanillacore:
+    path: ~/Notes/VanillaCore
+    domain: work
+    sync: affine
+    # affine_workspace_id: "<your-workspace-id>"
+
+  work:
+    path: ~/Notes/Work
+    domain: work
+    sync: local
+
+  privat:
+    path: ~/Notes/Privat
+    domain: personal
+    sync: local
+
+  engineering:
+    path: ~/Notes/Engineering
+    domain: engineering
+    sync: affine
+
+  ai-agents:
+    path: ~/Notes/AI-Agents-Hermes
+    domain: research
+    sync: local
