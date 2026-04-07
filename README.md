@@ -7,8 +7,9 @@ Agent-agnostic brain overlay system for personal knowledge vaults.
 Paste this into your agent (Claude Code, Codex, Gemini CLI, Hermes, or any other):
 
 ```
-Clone https://github.com/intelligenttools-ai/fritz-ai-local.git
-Then read SETUP.md and follow all steps to install Fritz Local on this machine for this agent.
+Clone https://github.com/intelligenttools-ai/fritz-ai-local.git to ~/.fritz-ai-local
+(on Windows: %USERPROFILE%\.fritz-ai-local)
+Then read SETUP.md in that repo and follow all steps to install Fritz Local on this machine for this agent.
 ```
 
 That's it. The agent reads SETUP.md, creates `~/.brain/`, symlinks hooks and skills, registers them in its config, sets up the vault registry, and runs `/brain-setup` for each vault. No shell scripts, works on any OS.
