@@ -73,3 +73,12 @@ Also append to `.brain/log.md`:
 ```
 YYYY-MM-DD HH:MM | LINT | <agent> | N errors, M warnings, vault health X%
 ```
+
+## Automation
+
+This skill can be run on a schedule. To automate:
+- **Claude Code**: Use `/schedule` to set up a cron trigger
+- **Hermes Agent**: Add a cron job in `~/.hermes/cron/jobs.json`
+- **Generic**: Run via any cron/scheduler that invokes the agent with "run /brain-lint"
+
+Recommended frequency: daily or weekly.
