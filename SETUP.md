@@ -24,13 +24,16 @@ Edit `~/.brain/registry.yaml`:
 - Set `default_vault` to the primary vault for captures
 - Mark the primary vault with `status: active`
 
-## Step 3: Deploy overlays to vaults
+## Step 3: Set up vaults
 
-For each vault that has an overlay template in `overlays/`:
-- Run `./install.sh` (it deploys automatically)
-- Or manually copy `overlays/<name>/` files to `<vault>/.brain/`
+For each vault in the registry, run `/brain-setup` in your agent. The agent will:
+1. Explore the vault's directory structure
+2. Generate `.brain/manifest.yaml` mapping brain concepts to existing paths
+3. Generate `.brain/schema.md` from the template
+4. Create instruction files (CLAUDE.md, AGENTS.md, etc.) and symlink to vault root
+5. Create the index if none exists
 
-For vaults without a template, create `.brain/manifest.yaml` mapping brain concepts to the vault's existing folder structure. Use `overlays/vanillacore/manifest.yaml` as a reference.
+No hardcoded overlays — the agent figures out the mapping by examining what's there.
 
 ## Step 4: Register hooks for your agent
 

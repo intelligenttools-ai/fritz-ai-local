@@ -51,8 +51,15 @@ fritz-ai-local/
 ├── requirements.txt            # Python dependencies (pyyaml)
 ├── registry/
 │   └── registry.template.yaml  # Vault registry template
-├── overlays/
-│   └── vanillacore/            # VanillaCore vault overlay
+├── templates/
+│   └── schema.template.md      # Schema template (filled per vault by /brain-setup)
+├── adapters/
+│   ├── base.py                 # TranscriptAdapter interface + CaptureEntry format
+│   ├── claude_code.py          # Parses Claude Code JSONL transcripts
+│   ├── codex.py                # Stub — agent generates during setup
+│   ├── gemini.py               # Stub — agent generates during setup
+│   ├── hermes.py               # Stub — agent generates during setup
+│   └── registry.py             # Detects agent, returns correct adapter
 ├── hooks/
 │   ├── brain_common.py         # Shared utilities
 │   ├── brain_session_start.py  # Injects brain context on session start
@@ -60,6 +67,7 @@ fritz-ai-local/
 │   ├── brain_capture.py        # Saves conversation summary on session end
 │   └── claude-code-hooks.json  # Hook registrations for Claude Code
 └── skills/
+    ├── brain-setup/            # Agent-driven vault initialization
     ├── brain-compile/          # Promote captures → knowledge articles
     ├── brain-query/            # Search across all vaults
     ├── brain-ingest/           # Import external sources
