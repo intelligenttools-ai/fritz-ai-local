@@ -2,29 +2,27 @@
 
 Agent-agnostic brain overlay system for personal knowledge vaults.
 
-Fritz Local adds a `.brain/` overlay to existing vault structures (Obsidian, Joplin, Logseq, or plain folders) without moving or restructuring any files. It provides a universal schema that Claude Code, Codex, Gemini CLI, and Hermes Agent can all read and follow.
+## Install
 
-## Quick Start
-
-Paste this into any agent (Claude Code, Codex, Gemini CLI, Hermes):
+Paste this into your agent (Claude Code, Codex, Gemini CLI, Hermes, or any other):
 
 ```
-Clone and set up Fritz Local for this machine:
-git clone https://github.com/intelligenttools-ai/fritz-ai-local.git ~/fritz-ai-local
-cd ~/fritz-ai-local && ./install.sh
-Then read SETUP.md and complete the setup steps for this agent.
+Clone https://github.com/intelligenttools-ai/fritz-ai-local.git
+Then read SETUP.md and follow all steps to install Fritz Local on this machine for this agent.
 ```
 
-For manual setup, see [SETUP.md](SETUP.md).
+That's it. The agent reads SETUP.md, creates `~/.brain/`, symlinks hooks and skills, registers them in its config, sets up the vault registry, and runs `/brain-setup` for each vault. No shell scripts, works on any OS.
 
 ## What it does
 
-- **Captures every conversation** — hooks fire on session end/compaction, save to `~/.brain/capture/daily/`
-- **Compiles knowledge** — `/brain-compile` promotes captures into structured articles, routed to the correct vault by content analysis
+- **Captures every conversation** — hooks fire on session end, save to `~/.brain/capture/daily/`
+- **Compiles knowledge** — `/brain-compile` promotes captures into articles, routed by content
 - **Queries across vaults** — `/brain-query` searches all vaults and captures
 - **Ingests external sources** — `/brain-ingest` imports URLs, videos, papers
-- **Enforces brain-first** — `UserPromptSubmit` hook reminds agents to check the brain before answering
+- **Enforces brain-first** — hook reminds agents to check the brain before answering
 - **Validates integrity** — `/brain-lint` checks for stale, broken, or orphaned content
+- **Syncs externally** — `/brain-sync` pushes to any target the agent has tools for
+- **Sets up vaults** — `/brain-setup` explores any directory and generates the manifest
 
 ## Architecture
 
@@ -35,50 +33,59 @@ Every session → ~/.brain/capture/daily/  (dumb, always fires)
                         ↓
          Routes to correct vault by content analysis
     ┌──────────┼──────────┼──────────┐
-vanillacore  engineering  work    ai-agents
+ vault-a    vault-b    vault-c    vault-d
 ```
 
 ## Relationship to Fritz-AI
 
-[Fritz-AI](https://github.com/intelligenttools-ai/fritz-ai) is the full hierarchical memory architecture (Agent Brain, Personal Brain, Team, Org) with MCP interface and dual-LLM extraction. Fritz Local is the **filesystem layer** — human-readable markdown that Fritz can index but that also works standalone without Fritz running.
+[Fritz-AI](https://github.com/intelligenttools-ai/fritz-ai) is the intelligence layer — extraction pipelines, SQLite + embeddings, N-tier hierarchy, multi-machine sync. Fritz Local is the **capture and integration layer** that Fritz-AI builds on:
+
+- Fritz Local captures raw transcripts and routes them to vaults
+- Fritz-AI picks up captures, runs dual-LLM extraction, stores in the memory hierarchy
+- Fritz Local works standalone. Fritz-AI adds intelligence on top.
 
 ## Structure
 
 ```
 fritz-ai-local/
-├── install.sh                  # Installer (symlinks hooks/skills, deploys overlays)
-├── SETUP.md                    # Agent setup instructions (hooks, config, verification)
-├── requirements.txt            # Python dependencies (pyyaml)
-├── registry/
-│   └── registry.template.yaml  # Vault registry template
+├── SETUP.md                    # The agent reads this to install everything
+├── requirements.txt            # pyyaml
 ├── templates/
-│   └── schema.template.md      # Schema template (filled per vault by /brain-setup)
+│   └── schema.template.md      # Schema template (filled per vault)
 ├── adapters/
-│   ├── base.py                 # TranscriptAdapter interface + CaptureEntry format
-│   ├── claude_code.py          # Parses Claude Code JSONL transcripts
+│   ├── base.py                 # TranscriptAdapter interface + CaptureEntry
+│   ├── claude_code.py          # Claude Code JSONL parser
 │   ├── codex.py                # Stub — agent generates during setup
 │   ├── gemini.py               # Stub — agent generates during setup
 │   ├── hermes.py               # Stub — agent generates during setup
-│   └── registry.py             # Detects agent, returns correct adapter
+│   └── registry.py             # Agent detection + adapter selection
 ├── hooks/
 │   ├── brain_common.py         # Shared utilities
 │   ├── brain_session_start.py  # Injects brain context on session start
 │   ├── brain_prompt_check.py   # Enforces brain-first on questions
 │   ├── brain_capture.py        # Saves conversation summary on session end
-│   └── claude-code-hooks.json  # Hook registrations for Claude Code
-└── skills/
-    ├── brain-setup/            # Agent-driven vault initialization
-    ├── brain-compile/          # Promote captures → knowledge articles
-    ├── brain-query/            # Search across all vaults
-    ├── brain-ingest/           # Import external sources
-    └── brain-lint/             # Validate vault health
+│   ├── brain_security.py       # Tier enforcement library
+│   └── claude-code-hooks.json  # Hook registration reference
+├── skills/
+│   ├── brain-setup/            # Agent-driven vault initialization
+│   ├── brain-compile/          # Promote captures → knowledge articles
+│   ├── brain-query/            # Search across all vaults
+│   ├── brain-ingest/           # Import external sources
+│   ├── brain-lint/             # Validate vault health (schedulable)
+│   └── brain-sync/             # Push to external systems (target-agnostic)
+├── registry/
+│   └── registry.template.yaml  # Vault registry template
+└── docs/
+    └── security-model.md       # 4-tier zero-trust security model
 ```
 
 ## Supported agents
 
-| Agent | Hooks | Instruction file | Status |
-|-------|-------|-----------------|--------|
-| Claude Code | SessionStart, UserPromptSubmit, PreCompact, Stop | CLAUDE.md | Active |
-| Codex CLI | SessionStart, Stop | AGENTS.md | Setup instructions in SETUP.md |
-| Gemini CLI | SessionStart, BeforeAgent, PreCompress, SessionEnd | GEMINI.md | Setup instructions in SETUP.md |
-| Hermes Agent | session:start, session:end | HERMES.md | Setup instructions in SETUP.md |
+Any agent that can read markdown and run Python:
+
+| Agent | Hooks | Transcript adapter |
+|-------|-------|--------------------|
+| Claude Code | SessionStart, UserPromptSubmit, PreCompact, Stop | Implemented |
+| Codex CLI | SessionStart, Stop | Stub — agent generates |
+| Gemini CLI | SessionStart, BeforeAgent, PreCompress, SessionEnd | Stub — agent generates |
+| Hermes Agent | session:start, session:end | Stub — agent generates |
