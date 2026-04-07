@@ -13,6 +13,9 @@ import json
 import sys
 from pathlib import Path
 
+# Ensure brain_common is importable regardless of cwd
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 from brain_common import read_hook_input, find_vault_for_cwd, load_manifest, resolve_path
 
 
