@@ -12,8 +12,16 @@ echo "Target: ${BRAIN_HOME}"
 echo ""
 
 # 1. Create ~/.brain/ structure
-mkdir -p "${BRAIN_HOME}"/{hooks,tools,registry}
+mkdir -p "${BRAIN_HOME}"/{hooks,tools,registry,capture/daily,capture/sessions}
 echo "Created ${BRAIN_HOME}/"
+
+# Create global log.md if missing
+if [ ! -f "${BRAIN_HOME}/log.md" ]; then
+    echo "# Brain Operations Log" > "${BRAIN_HOME}/log.md"
+    echo "" >> "${BRAIN_HOME}/log.md"
+    echo "<!-- Global capture log. Vault-specific logs live in <vault>/.brain/log.md -->" >> "${BRAIN_HOME}/log.md"
+    echo "$(date '+%Y-%m-%d %H:%M') | INIT | install.sh | Fritz Local installed" >> "${BRAIN_HOME}/log.md"
+fi
 
 # 2. Symlink tools
 if [ -d "${REPO_DIR}/tools" ]; then

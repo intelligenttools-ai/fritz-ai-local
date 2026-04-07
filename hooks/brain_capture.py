@@ -1,16 +1,13 @@
 #!/usr/bin/env python3
-"""Brain capture hook — saves conversation summary before session end or compaction.
+"""Brain capture hook — saves conversation summary on every session end or compaction.
 
-Reads the transcript JSONL file, extracts key exchanges, and writes a summary
-to the vault's daily capture log.
+Dumb and reliable. Always fires. Writes to ~/.brain/capture/ (global).
+Does NOT route to vaults — that's the compile step's job.
 
 Works with:
 - Claude Code: PreCompact and Stop events (transcript_path in input)
 - Codex: Stop event (transcript_path in input)
 - Gemini CLI: PreCompress and SessionEnd events (transcript_path in input)
-
-Does NOT use an external LLM for summarization — that's the flush/compile step (Phase 3).
-This hook does lightweight extraction: last N messages, key decisions, file changes.
 """
 
 import json
@@ -21,18 +18,12 @@ from pathlib import Path
 # Ensure brain_common is importable regardless of cwd
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from brain_common import (
-    read_hook_input,
-    find_vault_for_cwd,
-    load_manifest,
-    resolve_path,
-    append_log,
-    today_str,
-)
+from brain_common import read_hook_input, today_str, BRAIN_HOME
 
 
-MAX_MESSAGES = 200  # Max transcript lines to process
-MAX_SUMMARY_CHARS = 8000  # Cap summary length
+MAX_MESSAGES = 200
+MAX_SUMMARY_CHARS = 8000
+CAPTURE_DIR = BRAIN_HOME / "capture" / "daily"
 
 
 def extract_transcript_summary(transcript_path: str, cwd: str = "") -> str | None:
@@ -58,10 +49,8 @@ def extract_transcript_summary(transcript_path: str, cwd: str = "") -> str | Non
     if not messages:
         return None
 
-    # Take last N messages to avoid processing huge transcripts
     recent = messages[-MAX_MESSAGES:]
 
-    # Extract key information
     user_messages = []
     assistant_summaries = []
     tool_uses = set()
@@ -71,7 +60,6 @@ def extract_transcript_summary(transcript_path: str, cwd: str = "") -> str | Non
         content = msg.get("content", "")
 
         if isinstance(content, list):
-            # Handle structured content blocks
             text_parts = []
             for block in content:
                 if isinstance(block, dict):
@@ -79,20 +67,16 @@ def extract_transcript_summary(transcript_path: str, cwd: str = "") -> str | Non
                         text_parts.append(block.get("text", ""))
                     elif block.get("type") == "tool_use":
                         tool_uses.add(block.get("name", "unknown"))
-                    elif block.get("type") == "tool_result":
-                        pass  # Skip tool results for summary
             content = "\n".join(text_parts)
 
         if not isinstance(content, str) or not content.strip():
             continue
 
         if role == "user":
-            # Capture first line of user messages as topics
             first_line = content.strip().split("\n")[0][:200]
-            if first_line and not first_line.startswith("<"):  # Skip system tags
+            if first_line and not first_line.startswith("<"):
                 user_messages.append(first_line)
         elif role == "assistant":
-            # Capture first meaningful line of assistant responses
             for line in content.strip().split("\n"):
                 line = line.strip()
                 if line and not line.startswith("<") and len(line) > 20:
@@ -104,11 +88,11 @@ def extract_transcript_summary(transcript_path: str, cwd: str = "") -> str | Non
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
     parts.append(f"## Session {timestamp}")
     if cwd:
-        parts.append(f"\n**Working directory**: `{cwd}`\n")
+        parts.append(f"\n**cwd**: `{cwd}`\n")
 
     if user_messages:
-        parts.append("### Topics discussed\n")
-        for msg in user_messages[:20]:  # Cap at 20 topics
+        parts.append("### Topics\n")
+        for msg in user_messages[:20]:
             parts.append(f"- {msg}")
         parts.append("")
 
@@ -118,7 +102,7 @@ def extract_transcript_summary(transcript_path: str, cwd: str = "") -> str | Non
 
     if assistant_summaries:
         parts.append("### Key responses\n")
-        for s in assistant_summaries[:10]:  # Cap at 10
+        for s in assistant_summaries[:10]:
             parts.append(f"- {s}")
         parts.append("")
 
@@ -134,54 +118,42 @@ def main():
     cwd = hook_input.get("cwd", "")
     transcript_path = hook_input.get("transcript_path", "")
     event = hook_input.get("hook_event_name", "")
-    agent = "claude-code"  # Default; could be detected from event patterns
 
-    if not cwd:
+    if not transcript_path:
         sys.exit(0)
 
-    # Always capture — if cwd isn't in a vault, fall back to the default vault.
-    # Every conversation produces knowledge, regardless of where it happens.
-    vault_name, vault_config, vault_path = find_vault_for_cwd(cwd, fallback_to_default=True)
-    if not vault_path:
-        sys.exit(0)
-
-    manifest = load_manifest(vault_path)
-    if not manifest:
-        sys.exit(0)
-
-    # Extract summary from transcript
-    summary = None
-    if transcript_path:
-        summary = extract_transcript_summary(transcript_path, cwd=cwd)
-
+    summary = extract_transcript_summary(transcript_path, cwd=cwd)
     if not summary:
         sys.exit(0)
 
-    # Write to daily capture log
-    daily_dir = resolve_path(vault_path, manifest, "capture_daily")
-    if not daily_dir:
-        # Fallback to .brain/capture/sessions/
-        daily_dir = resolve_path(vault_path, manifest, "capture_sessions")
-    if not daily_dir:
-        daily_dir = vault_path / ".brain" / "capture" / "sessions"
+    # Write to global capture directory — always, no vault detection
+    CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+    daily_file = CAPTURE_DIR / f"{today_str()}.md"
 
-    daily_dir.mkdir(parents=True, exist_ok=True)
-    daily_file = daily_dir / f"{today_str()}.md"
-
-    # Create or append to daily file
     if daily_file.exists():
         with open(daily_file, "a") as f:
             f.write(f"\n{summary}\n")
     else:
-        header = f"---\ntype: capture\ntitle: Daily log {today_str()}\ndomain: {manifest.get('domain', 'unknown')}\ncreated: {today_str()}\nupdated: {today_str()}\nagent_last_edit: {agent}\n---\n\n# Daily Log — {today_str()}\n\n{summary}\n"
+        header = (
+            f"---\n"
+            f"type: capture\n"
+            f"title: Daily log {today_str()}\n"
+            f"created: {today_str()}\n"
+            f"---\n\n"
+            f"# Daily Log — {today_str()}\n\n"
+            f"{summary}\n"
+        )
         with open(daily_file, "w") as f:
             f.write(header)
 
-    # Append to operations log
-    topic_count = summary.count("- ")
-    append_log(vault_path, "CAPTURE", agent, f"{event}: {topic_count} items captured to {daily_file.name}")
+    # Append to global log
+    log_file = BRAIN_HOME / "log.md"
+    if log_file.exists():
+        topic_count = summary.count("- ")
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+        with open(log_file, "a") as f:
+            f.write(f"{timestamp} | CAPTURE | {event} | {topic_count} items from {cwd or 'unknown'}\n")
 
-    # Allow the operation to proceed (exit 0)
     sys.exit(0)
 
 
