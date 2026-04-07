@@ -35,7 +35,18 @@ if [ -d "${REPO_DIR}/hooks" ]; then
     done
 fi
 
-# 4. Copy registry template if none exists
+# 4. Install Python dependencies
+echo ""
+echo "Installing Python dependencies..."
+if command -v uv &>/dev/null; then
+    uv pip install --system -r "${REPO_DIR}/requirements.txt" 2>/dev/null || \
+    pip3 install --break-system-packages -r "${REPO_DIR}/requirements.txt" 2>/dev/null || true
+elif command -v pip3 &>/dev/null; then
+    pip3 install --break-system-packages -r "${REPO_DIR}/requirements.txt" 2>/dev/null || \
+    pip3 install -r "${REPO_DIR}/requirements.txt" 2>/dev/null || true
+fi
+
+# 5. Copy registry template if none exists
 if [ ! -f "${BRAIN_HOME}/registry.yaml" ] && [ -f "${REPO_DIR}/registry/registry.template.yaml" ]; then
     cp "${REPO_DIR}/registry/registry.template.yaml" "${BRAIN_HOME}/registry.yaml"
     echo "Created registry.yaml from template (edit paths for your machine)"
