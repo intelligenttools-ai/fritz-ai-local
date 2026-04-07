@@ -2,6 +2,17 @@
 
 You are an AI agent setting up Fritz Local, an agent-agnostic brain overlay system. Follow these steps exactly. All steps are performed by YOU (the agent), not the human.
 
+## Paths
+
+This repo should be cloned to a canonical location:
+
+| OS | Repo path | Brain home |
+|----|-----------|------------|
+| macOS/Linux | `~/.fritz-ai-local/` | `~/.brain/` |
+| Windows | `%USERPROFILE%\.fritz-ai-local\` | `%USERPROFILE%\.brain\` |
+
+Throughout this document, `<repo>` means the repo path and `~` means the user's home directory. On Windows, use `%USERPROFILE%` for `~`, use `mklink` instead of `ln -sf`, and use `python` instead of `python3`.
+
 ## Prerequisites
 
 Ensure Python 3.10+ is available. Install `pyyaml` if not present:
@@ -25,20 +36,22 @@ Create `~/.brain/` with these subdirectories:
 
 ## Step 2: Symlink hooks and skills
 
-The fritz-ai-local repo contains hooks in `hooks/` and skills in `skills/`. Symlink them to where YOU (this agent) can find them:
-
-**Hooks** — symlink each `.py` file from `<repo>/hooks/` to `~/.brain/hooks/`:
+Symlink each `.py` file from `<repo>/hooks/` to `~/.brain/hooks/`:
 ```
-~/.brain/hooks/brain_capture.py → <repo>/hooks/brain_capture.py
-~/.brain/hooks/brain_session_start.py → <repo>/hooks/brain_session_start.py
-~/.brain/hooks/brain_prompt_check.py → <repo>/hooks/brain_prompt_check.py
-~/.brain/hooks/brain_common.py → <repo>/hooks/brain_common.py
-~/.brain/hooks/brain_security.py → <repo>/hooks/brain_security.py
+~/.brain/hooks/brain_capture.py        → <repo>/hooks/brain_capture.py
+~/.brain/hooks/brain_session_start.py  → <repo>/hooks/brain_session_start.py
+~/.brain/hooks/brain_prompt_check.py   → <repo>/hooks/brain_prompt_check.py
+~/.brain/hooks/brain_common.py         → <repo>/hooks/brain_common.py
+~/.brain/hooks/brain_security.py       → <repo>/hooks/brain_security.py
 ```
 
-**Skills** — symlink each skill directory from `<repo>/skills/` to your agent's skills directory. For Claude Code that's `~/.claude/skills/`. For other agents, use wherever skills are registered.
+On Windows, use `mklink` (requires admin) or copy the files instead.
 
-**Templates** — copy `<repo>/templates/schema.template.md` to `~/.brain/templates/`.
+Symlink each skill directory from `<repo>/skills/` to your agent's skills directory:
+- Claude Code: `~/.claude/skills/`
+- Other agents: wherever skills are registered
+
+Copy `<repo>/templates/schema.template.md` to `~/.brain/templates/`.
 
 ## Step 3: Register hooks in your agent config
 
@@ -51,7 +64,7 @@ You know your own config format. Register these hooks:
 | Pre-compact / pre-compress | `python3 ~/.brain/hooks/brain_capture.py` | Capture before context loss |
 | Session end / stop | `python3 ~/.brain/hooks/brain_capture.py` | Capture on exit |
 
-For Claude Code, read `<repo>/hooks/claude-code-hooks.json` and merge into `~/.claude/settings.json` under `hooks`.
+For Claude Code, read `<repo>/hooks/claude-code-hooks.json` and merge into `~/.claude/settings.json` under `hooks`. Use absolute paths (resolve `~` to the actual home directory).
 
 For other agents, use your native hook registration mechanism.
 
