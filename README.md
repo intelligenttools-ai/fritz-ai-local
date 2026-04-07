@@ -4,23 +4,39 @@ Agent-agnostic brain overlay system for personal knowledge vaults.
 
 Fritz Local adds a `.brain/` overlay to existing vault structures (Obsidian, Joplin, Logseq, or plain folders) without moving or restructuring any files. It provides a universal schema that Claude Code, Codex, Gemini CLI, and Hermes Agent can all read and follow.
 
-## What it does
+## Quick Start
 
-- **Manifest**: Maps brain concepts (capture, knowledge, index) to your existing folder paths
-- **Schema**: Defines agent behavior contracts (session start, capture, ingest, promote, query, lint)
-- **Adapters**: Generates per-agent instruction files (CLAUDE.md, AGENTS.md, GEMINI.md) from the schema
-- **Registry**: Tracks multiple vaults across domains (work, personal, engineering, research)
-- **Hooks**: Shared Python hook scripts wired into each agent's lifecycle (Phase 2)
+Paste this into any agent (Claude Code, Codex, Gemini CLI, Hermes):
 
-## Install
-
-```bash
-git clone https://github.com/intelligenttools-ai/fritz-ai-local.git
-cd fritz-ai-local
-./install.sh
+```
+Clone and set up Fritz Local for this machine:
+git clone https://github.com/intelligenttools-ai/fritz-ai-local.git ~/fritz-ai-local
+cd ~/fritz-ai-local && ./install.sh
+Then read SETUP.md and complete the setup steps for this agent.
 ```
 
-This creates `~/.brain/` and deploys overlays to detected vaults.
+For manual setup, see [SETUP.md](SETUP.md).
+
+## What it does
+
+- **Captures every conversation** — hooks fire on session end/compaction, save to `~/.brain/capture/daily/`
+- **Compiles knowledge** — `/brain-compile` promotes captures into structured articles, routed to the correct vault by content analysis
+- **Queries across vaults** — `/brain-query` searches all vaults and captures
+- **Ingests external sources** — `/brain-ingest` imports URLs, videos, papers
+- **Enforces brain-first** — `UserPromptSubmit` hook reminds agents to check the brain before answering
+- **Validates integrity** — `/brain-lint` checks for stale, broken, or orphaned content
+
+## Architecture
+
+```
+Every session → ~/.brain/capture/daily/  (dumb, always fires)
+                        ↓
+              /brain-compile  (smart, reads content)
+                        ↓
+         Routes to correct vault by content analysis
+    ┌──────────┼──────────┼──────────┐
+vanillacore  engineering  work    ai-agents
+```
 
 ## Relationship to Fritz-AI
 
@@ -30,16 +46,31 @@ This creates `~/.brain/` and deploys overlays to detected vaults.
 
 ```
 fritz-ai-local/
-├── install.sh                  # Installer
+├── install.sh                  # Installer (symlinks hooks/skills, deploys overlays)
+├── SETUP.md                    # Agent setup instructions (hooks, config, verification)
+├── requirements.txt            # Python dependencies (pyyaml)
 ├── registry/
 │   └── registry.template.yaml  # Vault registry template
 ├── overlays/
 │   └── vanillacore/            # VanillaCore vault overlay
-│       ├── manifest.yaml
-│       ├── schema.md
-│       ├── CLAUDE.md
-│       ├── AGENTS.md
-│       └── GEMINI.md
-├── hooks/                      # Shared Python hooks (Phase 2)
-└── adapters/                   # Adapter generation (Phase 2)
+├── hooks/
+│   ├── brain_common.py         # Shared utilities
+│   ├── brain_session_start.py  # Injects brain context on session start
+│   ├── brain_prompt_check.py   # Enforces brain-first on questions
+│   ├── brain_capture.py        # Saves conversation summary on session end
+│   └── claude-code-hooks.json  # Hook registrations for Claude Code
+└── skills/
+    ├── brain-compile/          # Promote captures → knowledge articles
+    ├── brain-query/            # Search across all vaults
+    ├── brain-ingest/           # Import external sources
+    └── brain-lint/             # Validate vault health
 ```
+
+## Supported agents
+
+| Agent | Hooks | Instruction file | Status |
+|-------|-------|-----------------|--------|
+| Claude Code | SessionStart, UserPromptSubmit, PreCompact, Stop | CLAUDE.md | Active |
+| Codex CLI | SessionStart, Stop | AGENTS.md | Setup instructions in SETUP.md |
+| Gemini CLI | SessionStart, BeforeAgent, PreCompress, SessionEnd | GEMINI.md | Setup instructions in SETUP.md |
+| Hermes Agent | session:start, session:end | HERMES.md | Setup instructions in SETUP.md |
