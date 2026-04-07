@@ -1,51 +1,63 @@
 # Fritz Local — Agent Setup Instructions
 
-You are setting up Fritz Local, an agent-agnostic brain overlay system. Follow these steps exactly.
+You are an AI agent setting up Fritz Local, an agent-agnostic brain overlay system. Follow these steps exactly. All steps are performed by YOU (the agent), not the human.
 
 ## Prerequisites
 
-- Python 3.10+ with `pyyaml` installed
-- Git
-- The fritz-ai-local repository cloned locally
-
-## Step 1: Run the installer
-
-```bash
-cd <path-to-fritz-ai-local>
-./install.sh
+Ensure Python 3.10+ is available. Install `pyyaml` if not present:
+```
+pip install pyyaml
 ```
 
-This creates `~/.brain/` with hooks, capture directories, and a registry template.
+## Step 1: Create the brain directory
 
-## Step 2: Configure the vault registry
+Create `~/.brain/` with these subdirectories:
+```
+~/.brain/
+├── capture/
+│   ├── daily/
+│   └── sessions/
+├── hooks/
+├── tools/
+├── templates/
+└── log.md          (create with header: "# Brain Operations Log")
+```
 
-Edit `~/.brain/registry.yaml`:
-- Set vault paths to match this machine's directory structure
-- Set `default_vault` to the primary vault for captures
-- Mark the primary vault with `status: active`
+## Step 2: Symlink hooks and skills
 
-## Step 3: Set up vaults
+The fritz-ai-local repo contains hooks in `hooks/` and skills in `skills/`. Symlink them to where YOU (this agent) can find them:
 
-For each vault in the registry, run `/brain-setup` in your agent. The agent will:
-1. Explore the vault's directory structure
-2. Generate `.brain/manifest.yaml` mapping brain concepts to existing paths
-3. Generate `.brain/schema.md` from the template
-4. Create instruction files (CLAUDE.md, AGENTS.md, etc.) and symlink to vault root
-5. Create the index if none exists
+**Hooks** — symlink each `.py` file from `<repo>/hooks/` to `~/.brain/hooks/`:
+```
+~/.brain/hooks/brain_capture.py → <repo>/hooks/brain_capture.py
+~/.brain/hooks/brain_session_start.py → <repo>/hooks/brain_session_start.py
+~/.brain/hooks/brain_prompt_check.py → <repo>/hooks/brain_prompt_check.py
+~/.brain/hooks/brain_common.py → <repo>/hooks/brain_common.py
+~/.brain/hooks/brain_security.py → <repo>/hooks/brain_security.py
+```
 
-No hardcoded overlays — the agent figures out the mapping by examining what's there.
+**Skills** — symlink each skill directory from `<repo>/skills/` to your agent's skills directory. For Claude Code that's `~/.claude/skills/`. For other agents, use wherever skills are registered.
 
-## Step 4: Register hooks for your agent
+**Templates** — copy `<repo>/templates/schema.template.md` to `~/.brain/templates/`.
 
-### Claude Code
+## Step 3: Register hooks in your agent config
 
-Add the contents of `hooks/claude-code-hooks.json` to `~/.claude/settings.json` under the `hooks` key. The four events are:
-- `SessionStart` → `brain_session_start.py`
-- `UserPromptSubmit` → `brain_prompt_check.py`
-- `PreCompact` → `brain_capture.py`
-- `Stop` → `brain_capture.py`
+You know your own config format. Register these hooks:
 
-Then add to `~/.claude/CLAUDE.md` (create if it doesn't exist):
+| Event | Script | Purpose |
+|-------|--------|---------|
+| Session start | `python3 ~/.brain/hooks/brain_session_start.py` | Inject brain context |
+| User prompt / before agent | `python3 ~/.brain/hooks/brain_prompt_check.py` | Brain-first enforcement |
+| Pre-compact / pre-compress | `python3 ~/.brain/hooks/brain_capture.py` | Capture before context loss |
+| Session end / stop | `python3 ~/.brain/hooks/brain_capture.py` | Capture on exit |
+
+For Claude Code, read `<repo>/hooks/claude-code-hooks.json` and merge into `~/.claude/settings.json` under `hooks`.
+
+For other agents, use your native hook registration mechanism.
+
+## Step 4: Add brain instructions to your global instruction file
+
+Add this to your global instruction file (CLAUDE.md, AGENTS.md, GEMINI.md, HERMES.md — whichever you read):
 
 ```markdown
 ## Brain System
@@ -55,107 +67,31 @@ Fritz Local brain overlay is active. Before answering questions about prior deci
 2. Search vault knowledge directories (paths in `~/.brain/registry.yaml`)
 3. Use `/brain-query` to search across all vaults
 
-Available brain skills: `/brain-query`, `/brain-compile`, `/brain-ingest`, `/brain-lint`
+Available brain skills: `/brain-query`, `/brain-compile`, `/brain-ingest`, `/brain-lint`, `/brain-sync`, `/brain-setup`
 ```
 
-### OpenAI Codex CLI
+## Step 5: Create the vault registry
 
-Add to `~/.codex/config.toml`:
+Copy `<repo>/registry/registry.template.yaml` to `~/.brain/registry.yaml`. Then ask the human which directories are their knowledge vaults and update the registry with the correct paths, domains, and sync settings.
 
-```toml
-[hooks.SessionStart]
-command = "python3 ~/.brain/hooks/brain_session_start.py"
-timeout_ms = 5000
+## Step 6: Set up each vault
 
-[hooks.Stop]
-command = "python3 ~/.brain/hooks/brain_capture.py"
-timeout_ms = 10000
-```
+For each vault in the registry, run `/brain-setup` (or follow the brain-setup skill instructions). This explores the vault's directory structure and generates the manifest, schema, instruction files, and index.
 
-Add to your project's `AGENTS.md` or create `~/.codex/AGENTS.md`:
+## Step 7: Write your own transcript adapter (if needed)
 
-```markdown
-## Brain System
-
-Fritz Local brain overlay is active. Before answering questions about prior decisions, patterns, or domain knowledge, search `~/.brain/capture/daily/` and vault knowledge directories listed in `~/.brain/registry.yaml`.
-```
-
-### Google Gemini CLI
-
-Add to `~/.gemini/settings.json`:
-
-```json
-{
-  "hooks": {
-    "SessionStart": [{"hooks": [{"type": "command", "command": "python3 ~/.brain/hooks/brain_session_start.py"}]}],
-    "PreCompress": [{"hooks": [{"type": "command", "command": "python3 ~/.brain/hooks/brain_capture.py"}]}],
-    "SessionEnd": [{"hooks": [{"type": "command", "command": "python3 ~/.brain/hooks/brain_capture.py"}]}],
-    "BeforeAgent": [{"hooks": [{"type": "command", "command": "python3 ~/.brain/hooks/brain_prompt_check.py"}]}]
-  }
-}
-```
-
-Add to `~/.gemini/GEMINI.md`:
-
-```markdown
-## Brain System
-
-Fritz Local brain overlay is active. Before answering questions about prior decisions, patterns, or domain knowledge, search `~/.brain/capture/daily/` and vault knowledge directories listed in `~/.brain/registry.yaml`.
-```
-
-### Hermes Agent
-
-Create `~/.hermes/hooks/brain-start/HOOK.yaml`:
-
-```yaml
-name: brain-start
-description: Load brain context on session start
-events: [session:start]
-```
-
-Create `~/.hermes/hooks/brain-start/handler.py`:
+Check `<repo>/adapters/` for your agent type. If it's a stub, implement it — you know your own transcript format better than anyone. The interface is in `<repo>/adapters/base.py`:
 
 ```python
-import subprocess
-from pathlib import Path
-async def handle(event_type, context):
-    subprocess.run(["python3", str(Path.home() / ".brain/hooks/brain_session_start.py")])
+class TranscriptAdapter:
+    def parse(self, transcript_path: Path, max_messages: int = 200) -> CaptureEntry:
+        ...
 ```
 
-Create `~/.hermes/hooks/brain-capture/HOOK.yaml`:
+Register it in `<repo>/adapters/registry.py`. Consider opening a PR to contribute it back.
 
-```yaml
-name: brain-capture
-description: Capture session on end
-events: [session:end]
-```
+## Step 8: Verify
 
-Create `~/.hermes/hooks/brain-capture/handler.py`:
-
-```python
-import subprocess
-from pathlib import Path
-async def handle(event_type, context):
-    subprocess.run(["python3", str(Path.home() / ".brain/hooks/brain_capture.py")])
-```
-
-Add to `~/.hermes/HERMES.md`:
-
-```markdown
-## Brain System
-
-Fritz Local brain overlay is active. Before answering questions about prior decisions, patterns, or domain knowledge, search `~/.brain/capture/daily/` and vault knowledge directories listed in `~/.brain/registry.yaml`.
-```
-
-## Step 5: Verify
-
-Start a new session with your agent. You should see brain system context injected (available vaults, recent captures). Ask a question — you should see a "BRAIN CHECK" reminder in the agent's context.
-
-## Quick Start (paste this into any agent)
-
-```
-Clone and install Fritz Local:
-git clone https://github.com/intelligenttools-ai/fritz-ai-local.git ~/fritz-ai-local
-cd ~/fritz-ai-local && ./install.sh
-Then read SETUP.md and complete steps 2-4 for this agent.
-```
+1. Start a new session — you should see brain context injected
+2. Ask a question — you should see a "BRAIN CHECK" reminder
+3. End the session — a capture should appear in `~/.brain/capture/daily/`
