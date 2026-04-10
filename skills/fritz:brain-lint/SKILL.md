@@ -1,3 +1,11 @@
+---
+name: fritz:brain-lint
+description: >
+  Health checks on the brain overlay — validates vault integrity, finds gaps,
+  reports issues. Use when the user asks to validate, check, or lint brain
+  vaults, or run /fritz:brain-lint.
+---
+
 # Brain Lint
 
 Health checks on the brain overlay — validates integrity, finds gaps, reports issues.
@@ -7,7 +15,7 @@ Health checks on the brain overlay — validates integrity, finds gaps, reports 
 Activate when the user asks to:
 - Lint, validate, or check the brain/knowledge base
 - Find stale, broken, or orphaned content
-- Run `/brain-lint`
+- Run `/fritz:brain-lint`
 
 ## Checks
 
@@ -79,6 +87,6 @@ YYYY-MM-DD HH:MM | LINT | <agent> | N errors, M warnings, vault health X%
 This skill can be run on a schedule. To automate:
 - **Claude Code**: Use `/schedule` to set up a cron trigger
 - **Hermes Agent**: Add a cron job in `~/.hermes/cron/jobs.json`
-- **Generic**: Run via any cron/scheduler that invokes the agent with "run /brain-lint"
+- **Generic**: Run via any cron/scheduler that invokes the agent with "run /fritz:brain-lint"
 
 Recommended frequency: daily or weekly.

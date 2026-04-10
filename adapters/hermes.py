@@ -15,5 +15,5 @@ class HermesAdapter(TranscriptAdapter):
     def parse(self, transcript_path: Path, max_messages: int = 200) -> CaptureEntry:
         # TODO: Parse Hermes Agent transcript format
         # Expected location: ~/.hermes/ session files
-        # The Hermes agent should implement this during /brain-setup
+        # The Hermes agent should implement this during /fritz:brain-setup
         return CaptureEntry(agent=self.agent_name)

@@ -1,3 +1,11 @@
+---
+name: fritz:brain-ingest
+description: >
+  Import external sources into the brain — articles, videos, papers, web pages,
+  handover documents. Use when the user asks to ingest, import, or add external
+  content to the knowledge base, or run /fritz:brain-ingest.
+---
+
 # Brain Ingest
 
 Import external sources into the brain — articles, videos, papers, web pages. This is Karpathy's "raw → wiki" ingest operation.
@@ -7,7 +15,7 @@ Import external sources into the brain — articles, videos, papers, web pages. 
 Activate when the user asks to:
 - Ingest, import, or add an external source to the brain/knowledge base
 - Save an article, video transcript, paper, or web page for future reference
-- Run `/brain-ingest`
+- Run `/fritz:brain-ingest`
 
 ## Workflow
 

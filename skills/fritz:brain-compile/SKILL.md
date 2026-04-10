@@ -1,3 +1,11 @@
+---
+name: fritz:brain-compile
+description: >
+  Promote raw brain captures into compiled knowledge articles across vaults.
+  Use when the user asks to compile, flush, or promote brain captures, process
+  daily logs into knowledge, update the knowledge base, or run /fritz:brain-compile.
+---
+
 # Brain Compile
 
 Promote raw captures into compiled knowledge articles. Reads from the global capture directory (`~/.brain/capture/`) and routes knowledge to the correct vault based on **content**, not working directory.
@@ -8,7 +16,7 @@ Activate when the user asks to:
 - Compile, flush, or promote brain captures
 - Process daily logs into knowledge
 - Update the knowledge base from recent sessions
-- Run `/brain-compile`
+- Run `/fritz:brain-compile`
 
 ## Architecture
 
