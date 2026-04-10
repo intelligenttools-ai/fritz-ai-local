@@ -83,8 +83,8 @@ vaults:
     path: ~/Notes/Work
     sync: local                     # No external sync (default)
 
-  privat:
-    path: ~/Notes/Privat
+  personal:
+    path: ~/Notes/Personal
     sync: none                      # Never sync — private content
 ```
 
