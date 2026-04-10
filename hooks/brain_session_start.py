@@ -30,7 +30,7 @@ def main():
 
     # Always inject brain system awareness
     context_parts.append("# Brain System Active\n")
-    context_parts.append("Knowledge base at `~/.brain/`. Use `/brain-query` to search, `/brain-compile` to promote captures, `/brain-ingest` to import sources.\n")
+    context_parts.append("Knowledge base at `~/.brain/`. Use `/fritz:brain-query` to search, `/fritz:brain-compile` to promote captures, `/fritz:brain-ingest` to import sources.\n")
 
     # List available vaults
     registry = load_registry()

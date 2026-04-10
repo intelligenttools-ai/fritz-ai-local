@@ -15,5 +15,5 @@ class CodexAdapter(TranscriptAdapter):
     def parse(self, transcript_path: Path, max_messages: int = 200) -> CaptureEntry:
         # TODO: Parse Codex transcript format
         # Expected location: ~/.codex/ session files
-        # The Codex agent should implement this during /brain-setup
+        # The Codex agent should implement this during /fritz:brain-setup
         return CaptureEntry(agent=self.agent_name)

@@ -1,3 +1,11 @@
+---
+name: fritz:brain-setup
+description: >
+  Set up the Fritz Local brain overlay for a new vault. Explores directory
+  structure, generates manifest and schema, creates instruction files, registers
+  the vault. Use when the user asks to set up a new brain vault, or run /fritz:brain-setup.
+---
+
 # Brain Setup
 
 Set up the Fritz Local brain overlay for a vault. Explores the vault's directory structure, generates the manifest and schema, creates instruction files, and registers the vault.
@@ -7,7 +15,7 @@ Set up the Fritz Local brain overlay for a vault. Explores the vault's directory
 Activate when the user asks to:
 - Set up a vault for the brain system
 - Initialize the brain for a directory/vault
-- Run `/brain-setup`
+- Run `/fritz:brain-setup`
 - "Add this vault to the brain"
 
 Also activate when the brain system is installed but a vault in the registry has no `.brain/manifest.yaml`.

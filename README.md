@@ -12,25 +12,25 @@ Clone https://github.com/intelligenttools-ai/fritz-ai-local.git to ~/.fritz-ai-l
 Then read SETUP.md in that repo and follow all steps to install Fritz Local on this machine for this agent.
 ```
 
-That's it. The agent reads SETUP.md, creates `~/.brain/`, symlinks hooks and skills, registers them in its config, sets up the vault registry, and runs `/brain-setup` for each vault. No shell scripts, works on any OS.
+That's it. The agent reads SETUP.md, creates `~/.brain/`, symlinks hooks and skills, registers them in its config, sets up the vault registry, and runs `/fritz:brain-setup` for each vault. No shell scripts, works on any OS.
 
 ## What it does
 
 - **Captures every conversation** — hooks fire on session end, save to `~/.brain/capture/daily/`
-- **Compiles knowledge** — `/brain-compile` promotes captures into articles, routed by content
-- **Queries across vaults** — `/brain-query` searches all vaults and captures
-- **Ingests external sources** — `/brain-ingest` imports URLs, videos, papers
+- **Compiles knowledge** — `/fritz:brain-compile` promotes captures into articles, routed by content
+- **Queries across vaults** — `/fritz:brain-query` searches all vaults and captures
+- **Ingests external sources** — `/fritz:brain-ingest` imports URLs, videos, papers
 - **Enforces brain-first** — hook reminds agents to check the brain before answering
-- **Validates integrity** — `/brain-lint` checks for stale, broken, or orphaned content
-- **Syncs externally** — `/brain-sync` pushes to any target the agent has tools for
-- **Sets up vaults** — `/brain-setup` explores any directory and generates the manifest
+- **Validates integrity** — `/fritz:brain-lint` checks for stale, broken, or orphaned content
+- **Syncs externally** — `/fritz:brain-sync` pushes to any target the agent has tools for
+- **Sets up vaults** — `/fritz:brain-setup` explores any directory and generates the manifest
 
 ## Architecture
 
 ```
 Every session → ~/.brain/capture/daily/  (dumb, always fires)
                         ↓
-              /brain-compile  (smart, reads content)
+              /fritz:brain-compile  (smart, reads content)
                         ↓
          Routes to correct vault by content analysis
     ┌──────────┼──────────┼──────────┐
@@ -68,12 +68,13 @@ fritz-ai-local/
 │   ├── brain_security.py       # Tier enforcement library
 │   └── claude-code-hooks.json  # Hook registration reference
 ├── skills/
-│   ├── brain-setup/            # Agent-driven vault initialization
-│   ├── brain-compile/          # Promote captures → knowledge articles
-│   ├── brain-query/            # Search across all vaults
-│   ├── brain-ingest/           # Import external sources
-│   ├── brain-lint/             # Validate vault health (schedulable)
-│   └── brain-sync/             # Push to external systems (target-agnostic)
+│   ├── fritz:brain-setup/      # Agent-driven vault initialization
+│   ├── fritz:brain-compile/    # Promote captures → knowledge articles
+│   ├── fritz:brain-query/      # Search across all vaults
+│   ├── fritz:brain-ingest/     # Import external sources
+│   ├── fritz:brain-lint/       # Validate vault health (schedulable)
+│   ├── fritz:brain-sync/       # Push to external systems (target-agnostic)
+│   └── fritz:handover/         # Structured session handover documents
 ├── registry/
 │   └── registry.template.yaml  # Vault registry template
 └── docs/

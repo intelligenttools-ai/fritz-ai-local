@@ -1,0 +1,19 @@
+# Fritz-ai-local Brain Hooks for Codex CLI
+# Add these entries to ~/.codex/config.toml
+#
+# Hook equivalents:
+#   SessionStart     = Claude Code:SessionStart, Gemini:SessionStart
+#   UserPromptSubmit = Claude Code:UserPromptSubmit, Gemini:BeforeAgent
+#   Stop             = Claude Code:Stop, Gemini:SessionEnd
+
+[[hooks]]
+event = "SessionStart"
+command = "python3 ~/.brain/hooks/brain_session_start.py"
+
+[[hooks]]
+event = "UserPromptSubmit"
+command = "python3 ~/.brain/hooks/brain_prompt_check.py"
+
+[[hooks]]
+event = "Stop"
+command = "python3 ~/.brain/hooks/brain_capture.py"

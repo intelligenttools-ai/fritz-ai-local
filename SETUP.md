@@ -47,9 +47,13 @@ Symlink each `.py` file from `<repo>/hooks/` to `~/.brain/hooks/`:
 
 On Windows, use `mklink` (requires admin) or copy the files instead.
 
-Symlink each skill directory from `<repo>/skills/` to your agent's skills directory:
+Symlink each `fritz:*` skill directory from `<repo>/skills/` to your agent's skills directory:
 - Claude Code: `~/.claude/skills/`
+- Codex CLI: `~/.codex/skills/`
+- Gemini CLI: `~/.gemini/skills/`
 - Other agents: wherever skills are registered
+
+All skills are prefixed with `fritz:` to avoid conflicts with other skill providers.
 
 Copy `<repo>/templates/schema.template.md` to `~/.brain/templates/`.
 
@@ -64,9 +68,12 @@ You know your own config format. Register these hooks:
 | Pre-compact / pre-compress | `python3 ~/.brain/hooks/brain_capture.py` | Capture before context loss |
 | Session end / stop | `python3 ~/.brain/hooks/brain_capture.py` | Capture on exit |
 
-For Claude Code, read `<repo>/hooks/claude-code-hooks.json` and merge into `~/.claude/settings.json` under `hooks`. Use absolute paths (resolve `~` to the actual home directory).
+Reference hook configurations for each agent are in `<repo>/hooks/`:
+- Claude Code: `claude-code-hooks.json` → merge into `~/.claude/settings.json` under `hooks`
+- Codex CLI: `codex-hooks.toml` → append to `~/.codex/config.toml`
+- Gemini CLI: `gemini-hooks.json` → merge into `~/.gemini/settings.json` under `hooks`
 
-For other agents, use your native hook registration mechanism.
+Use absolute paths (resolve `~` to the actual home directory). For other agents, use your native hook registration mechanism.
 
 ## Step 4: Add brain instructions to your global instruction file
 
@@ -78,9 +85,9 @@ Add this to your global instruction file (CLAUDE.md, AGENTS.md, GEMINI.md, HERME
 Fritz Local brain overlay is active. Before answering questions about prior decisions, patterns, or domain knowledge:
 1. Check `~/.brain/capture/daily/` for recent session captures
 2. Search vault knowledge directories (paths in `~/.brain/registry.yaml`)
-3. Use `/brain-query` to search across all vaults
+3. Use `/fritz:brain-query` to search across all vaults
 
-Available brain skills: `/brain-query`, `/brain-compile`, `/brain-ingest`, `/brain-lint`, `/brain-sync`, `/brain-setup`
+Available fritz skills: `/fritz:brain-query`, `/fritz:brain-compile`, `/fritz:brain-ingest`, `/fritz:brain-lint`, `/fritz:brain-sync`, `/fritz:brain-setup`, `/fritz:handover`
 ```
 
 ## Step 5: Create the vault registry
@@ -89,7 +96,7 @@ Copy `<repo>/registry/registry.template.yaml` to `~/.brain/registry.yaml`. Then 
 
 ## Step 6: Set up each vault
 
-For each vault in the registry, run `/brain-setup` (or follow the brain-setup skill instructions). This explores the vault's directory structure and generates the manifest, schema, instruction files, and index.
+For each vault in the registry, run `/fritz:brain-setup` (or follow the fritz:brain-setup skill instructions). This explores the vault's directory structure and generates the manifest, schema, instruction files, and index.
 
 ## Step 7: Write your own transcript adapter (if needed)
 

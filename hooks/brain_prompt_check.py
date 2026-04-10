@@ -101,7 +101,7 @@ def main():
     reminder = (
         "BRAIN CHECK: Before answering, search the knowledge base. "
         f"Vaults: {', '.join(vault_names)}. "
-        "Use /brain-query or search knowledge/ directories and ~/.brain/capture/daily/ for relevant prior decisions, patterns, and facts."
+        "Use /fritz:brain-query or search knowledge/ directories and ~/.brain/capture/daily/ for relevant prior decisions, patterns, and facts."
     )
 
     response = {
