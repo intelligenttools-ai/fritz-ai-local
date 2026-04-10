@@ -8,12 +8,12 @@
 
 [[hooks]]
 event = "SessionStart"
-command = "python3 /Users/karsten/.brain/hooks/brain_session_start.py"
+command = "python3 ~/.brain/hooks/brain_session_start.py"
 
 [[hooks]]
 event = "UserPromptSubmit"
-command = "python3 /Users/karsten/.brain/hooks/brain_prompt_check.py"
+command = "python3 ~/.brain/hooks/brain_prompt_check.py"
 
 [[hooks]]
 event = "Stop"
-command = "python3 /Users/karsten/.brain/hooks/brain_capture.py"
+command = "python3 ~/.brain/hooks/brain_capture.py"
