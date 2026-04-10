@@ -42,7 +42,7 @@ Combine findings into a clear answer. Always cite sources:
 Based on your knowledge base:
 
 - [Topic X](vault://engineering/knowledge/k8s-networking.md): ...
-- [Decision Y](vault://vanillacore/knowledge/invoicing-workflow.md): ...
+- [Decision Y](vault://my-vault/knowledge/invoicing-workflow.md): ...
 - [Raw capture](~/.brain/capture/daily/2026-04-05.md): ...
 ```
 
@@ -65,7 +65,7 @@ For vaults with many articles, read the index first to narrow the search before 
 A query like "what do I know about Keycloak?" should search:
 - `engineering` vault (infrastructure knowledge)
 - `work` vault (customer implementations)
-- `vanillacore` vault (business operations)
+- `my-vault` vault (business operations)
 - `~/.brain/capture/daily/` (recent uncategorized captures)
 
 Use `vault://` URIs in citations so the user can navigate to the source.

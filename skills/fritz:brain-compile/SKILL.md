@@ -39,9 +39,9 @@ If no previous COMPILE exists, process all captures.
 For each capture file, read the content and for each promotable item determine:
 
 **Which vault does this belong in?** Route based on content:
-- VanillaCore business operations → `vanillacore` vault
+- Business operations → `my-vault` vault
 - Engineering runbooks, infrastructure → `engineering` vault
-- Personal notes, ideas → `privat` vault
+- Personal notes, ideas → `personal` vault
 - AI agent development, research → `ai-agents` vault
 - General work topics → `work` vault
 

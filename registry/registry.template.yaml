@@ -5,11 +5,11 @@ version: 1
 
 # Default vault for captures when cwd doesn't match any vault.
 # Every conversation gets captured, regardless of where it happens.
-default_vault: vanillacore
+default_vault: my-vault
 
 vaults:
-  vanillacore:
-    path: ~/Notes/VanillaCore
+  my-vault:
+    path: ~/Notes/MyVault
     domain: work
     sync: affine
     # affine_workspace_id: "<your-workspace-id>"
@@ -19,8 +19,8 @@ vaults:
     domain: work
     sync: local
 
-  privat:
-    path: ~/Notes/Privat
+  personal:
+    path: ~/Notes/Personal
     domain: personal
     sync: local
 
@@ -29,7 +29,7 @@ vaults:
     domain: engineering
     sync: affine
 
-  ai-agents:
-    path: ~/Notes/AI-Agents-Hermes
+  research:
+    path: ~/Notes/Research
     domain: research
     sync: local
