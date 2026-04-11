@@ -151,7 +151,30 @@ def resolve_project_vault(cwd: str) -> tuple[str | None, dict | None, Path | Non
         if vault_name in vaults:
             config = vaults[vault_name]
             vault_path = Path(config["path"]).expanduser().resolve()
-            return vault_name, config, vault_path, fritz_local
+            # Trust boundary: only honor .fritz-local.json if cwd is within
+            # a registered vault path or the fritz-ai-local repo itself.
+            # This prevents an untrusted cloned repo from redirecting hooks
+            # into personal vaults.
+            cwd_resolved = Path(cwd).resolve()
+            trusted = False
+            for _, vc in vaults.items():
+                vp = Path(vc["path"]).expanduser().resolve()
+                try:
+                    cwd_resolved.relative_to(vp)
+                    trusted = True
+                    break
+                except ValueError:
+                    continue
+            if not trusted:
+                # Check if cwd is within the fritz-ai-local repo
+                try:
+                    cwd_resolved.relative_to(FRITZ_REPO.resolve())
+                    trusted = True
+                except ValueError:
+                    pass
+            if trusted:
+                return vault_name, config, vault_path, fritz_local
+            # Untrusted location — ignore .fritz-local.json, fall through
 
     # Fallback to cwd matching
     vault_name, vault_config, vault_path = find_vault_for_cwd(cwd)

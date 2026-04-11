@@ -61,7 +61,14 @@ def check_for_updates(context_parts: list[str]):
             capture_output=True, text=True, timeout=5,
         )
 
-        if result.returncode == 0 and result.stdout.strip():
+        if result.returncode != 0:
+            # git log failed — don't cache, allow retry next session
+            return
+
+        # Record successful check timestamp (even if no updates found)
+        check_file.write_text(str(now))
+
+        if result.stdout.strip():
             commits = result.stdout.strip().split("\n")
             local_version = get_fritz_version() or "unknown"
 
@@ -80,9 +87,8 @@ def check_for_updates(context_parts: list[str]):
                 context_parts.append(f"- ... and {len(commits) - 10} more")
             context_parts.append("\nRun `/fritz:update` to upgrade, or: `git -C ~/.fritz-ai-local pull`\n")
 
-        # Record check timestamp
-        check_file.write_text(str(now))
     except (subprocess.TimeoutExpired, OSError):
+        # Network/auth failure — don't cache, allow retry next session
         pass
 
 

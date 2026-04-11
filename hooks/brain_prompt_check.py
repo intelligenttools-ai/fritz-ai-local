@@ -72,56 +72,73 @@ def extract_keywords(prompt: str) -> list[str]:
     return [w for w in words if w not in stop_words]
 
 
+def _match_file(md_file: Path, keywords: list[str]) -> bool:
+    """Check if a markdown file matches any keyword by filename or heading."""
+    name_lower = md_file.stem.lower().replace("-", " ").replace("_", " ")
+    for kw in keywords:
+        if kw in name_lower:
+            return True
+    # Check first 5 lines for heading match
+    try:
+        with open(md_file) as f:
+            head = "".join(f.readline() for _ in range(5)).lower()
+        for kw in keywords:
+            if kw in head:
+                return True
+    except OSError:
+        pass
+    return False
+
+
 def search_knowledge_files(vault_path: Path, manifest: dict, keywords: list[str],
                            project_name: str | None, max_chars: int) -> str:
     """Search knowledge directories for files matching keywords. Return formatted results."""
     results = []
     seen_paths = set()
 
+    # Collect all search directories: knowledge path, per-project dirs, common/
+    search_dirs = []
+
     knowledge_path = resolve_path(vault_path, manifest, "knowledge")
-    if not knowledge_path or not knowledge_path.exists():
+    if knowledge_path and knowledge_path.exists():
+        search_dirs.append(knowledge_path)
+
+    # Also search per-project directories (decisions/, runbooks/, context/)
+    projects = manifest.get("projects", {})
+    if project_name and project_name in projects:
+        project_dir = vault_path / projects[project_name]
+        for subdir in ("decisions", "runbooks", "context"):
+            sub = project_dir / subdir
+            if sub.exists() and sub not in search_dirs:
+                search_dirs.append(sub)
+
+    # Also search common/ if it exists
+    common_dir = vault_path / "common"
+    if common_dir.exists() and common_dir not in search_dirs:
+        search_dirs.append(common_dir)
+
+    if not search_dirs:
         return ""
 
-    # Search knowledge files by filename and first-line heading
-    for md_file in knowledge_path.rglob("*.md"):
-        if md_file.name == "index.md":
-            continue
-        rel = str(md_file.relative_to(vault_path))
-        name_lower = md_file.stem.lower().replace("-", " ").replace("_", " ")
+    # Search all collected directories
+    for search_dir in search_dirs:
+        for md_file in search_dir.rglob("*.md"):
+            if md_file.name == "index.md":
+                continue
+            if str(md_file) in seen_paths:
+                continue
+            if _match_file(md_file, keywords):
+                results.append(str(md_file))
+                seen_paths.add(str(md_file))
 
-        matched = False
-        for kw in keywords:
-            if kw in name_lower:
-                matched = True
-                break
-
-        if not matched:
-            # Check first 5 lines for heading match
-            try:
-                with open(md_file) as f:
-                    head = "".join(f.readline() for _ in range(5)).lower()
-                for kw in keywords:
-                    if kw in head:
-                        matched = True
-                        break
-            except OSError:
-                pass
-
-        if matched and str(md_file) not in seen_paths:
-            results.append(str(md_file))
-            seen_paths.add(str(md_file))
-
-    # Search feedback files for current project
+    # Search feedback files for current project (always include all, not keyword-matched)
     feedback_results = []
-    if project_name:
-        projects = manifest.get("projects", {})
-        project_rel = projects.get(project_name)
-        if project_rel:
-            feedback_dir = vault_path / project_rel / "feedback"
-            if feedback_dir.exists():
-                for f in sorted(feedback_dir.glob("*.md")):
-                    if f.name != "index.md":
-                        feedback_results.append(str(f))
+    if project_name and project_name in projects:
+        feedback_dir = vault_path / projects[project_name] / "feedback"
+        if feedback_dir.exists():
+            for f in sorted(feedback_dir.glob("*.md")):
+                if f.name != "index.md":
+                    feedback_results.append(str(f))
 
     if not results and not feedback_results:
         return ""

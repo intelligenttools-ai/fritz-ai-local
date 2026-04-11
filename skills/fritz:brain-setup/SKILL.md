@@ -131,33 +131,36 @@ Based on the human's answers, create the agreed structure. Never create anything
 
 **Per-project structure** (if confirmed):
 
-For each confirmed project directory, create `.brain/` overlay:
+For each confirmed project, create directories **at the vault root** (not inside `.brain/`):
 
 ```
-<project-dir>/.brain/
-  index.md              # Project brain index
+<vault-root>/<project-name>/
+  index.md              # Project overview and links
   feedback/
-    index.md
+    index.md            # User corrections and preferences
   decisions/
-    index.md
+    index.md            # Architecture and design decisions
   runbooks/
-    index.md
+    index.md            # Operational fixes and debugging guides
   context/
-    index.md
+    index.md            # Requirements, background, state
 ```
 
 `index.md` files should contain a brief header and a note that content will be populated as the project evolves.
 
 **Common/shared area** (if confirmed):
 
+Create at the vault root (not inside `.brain/`):
+
 ```
-<vault-root>/.brain/common/
+<vault-root>/common/
+  index.md              # Shared knowledge overview
   patterns/
-    index.md
+    index.md            # Reusable patterns across projects
   research/
-    index.md
+    index.md            # Research results and findings
   conventions/
-    index.md
+    index.md            # Team conventions and standards
 ```
 
 **.fritz-local.json files** (if confirmed):
@@ -193,8 +196,15 @@ paths:
   memory: <path if found>
 
 project_structure:
-  - <project-name-1>
-  - <project-name-2>
+  - index.md
+  - feedback/
+  - decisions/
+  - runbooks/
+  - context/
+
+projects:
+  <project-name-1>: <project-name-1>/
+  <project-name-2>: <project-name-2>/
 
 exclude:
   - ".obsidian/"
@@ -204,7 +214,7 @@ exclude:
 
 **Registry entry**:
 
-Add or update the vault entry in `~/.brain/registry.yaml`. If the human specified a context injection level in Question 6, record it in the vault entry:
+Add or update the vault entry in `~/.brain/registry.yaml`:
 
 ```yaml
 vaults:
@@ -212,7 +222,15 @@ vaults:
     path: <vault-path>
     domain: <domain>
     sync: local
-    context_injection: <level>   # only if not "off"
+```
+
+If the human specified a context injection level in Question 6, record it in
+each `.fritz-local.json` file (per-project), NOT in the registry vault entry.
+For global injection, add it to the `settings:` block in the registry instead:
+
+```yaml
+settings:
+  context_injection: <level>
 ```
 
 **Instruction files** (always create):
