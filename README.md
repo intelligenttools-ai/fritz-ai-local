@@ -37,14 +37,6 @@ Every session → ~/.brain/capture/daily/  (dumb, always fires)
  vault-a    vault-b    vault-c    vault-d
 ```
 
-## Relationship to Fritz-AI
-
-[Fritz-AI](https://github.com/intelligenttools-ai/fritz-ai) is the intelligence layer — extraction pipelines, SQLite + embeddings, N-tier hierarchy, multi-machine sync. Fritz Local is the **capture and integration layer** that Fritz-AI builds on:
-
-- Fritz Local captures raw transcripts and routes them to vaults
-- Fritz-AI picks up captures, runs dual-LLM extraction, stores in the memory hierarchy
-- Fritz Local works standalone. Fritz-AI adds intelligence on top.
-
 ## Structure
 
 ```

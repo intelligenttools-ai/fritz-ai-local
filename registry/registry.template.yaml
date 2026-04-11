@@ -4,8 +4,21 @@ version: 1
 # Each vault gets a .brain/ overlay without restructuring existing folders.
 
 # Default vault for captures when cwd doesn't match any vault.
-# Every conversation gets captured, regardless of where it happens.
 default_vault: my-vault
+
+# Global settings (all optional, shown with defaults)
+settings:
+  # Context injection: off | light | full (default: off)
+  # - off: advisory "BRAIN CHECK" reminder only
+  # - light: hook searches knowledge dirs, injects matching file paths
+  # - full: light + agent must spawn subagent to read/synthesize
+  # context_injection: off
+
+  # Max characters for context injection output (default: 8000)
+  # max_injection_chars: 8000
+
+  # Check for Fritz Local updates on session start (default: true)
+  # update_check: true
 
 vaults:
   my-vault:

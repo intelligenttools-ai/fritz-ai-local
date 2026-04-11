@@ -115,3 +115,53 @@ Register it in `<repo>/adapters/registry.py`. Consider opening a PR to contribut
 1. Start a new session — you should see brain context injected
 2. Ask a question — you should see a "BRAIN CHECK" reminder
 3. End the session — a capture should appear in `~/.brain/capture/daily/`
+
+## Step 9: Configure per-project bindings (optional)
+
+For each source code project that should be linked to a brain vault, create a `.fritz-local.json` file in the project root:
+
+```json
+{
+  "vault": "<vault-name>",
+  "project": "<project-name>",
+  "brain_home": "~/.brain",
+  "context_injection": "off"
+}
+```
+
+Fields:
+- `vault`: name of the vault in `~/.brain/registry.yaml`
+- `project`: project directory name within the vault
+- `brain_home`: path to brain directory (default `~/.brain`)
+- `context_injection`: `off` (default) | `light` | `full`
+
+This file is safe to commit to version control — it contains no secrets.
+
+Context injection levels:
+- `off`: advisory "BRAIN CHECK" reminder only (no token cost)
+- `light`: hook searches knowledge dirs, injects matching file paths (low token cost)
+- `full`: light + agent must spawn subagent to read/synthesize (higher token cost)
+
+## Step 10: Configure global settings (optional)
+
+Add a `settings` block to `~/.brain/registry.yaml` for global defaults:
+
+```yaml
+settings:
+  # context_injection: off    # off | light | full — inherited by all projects
+  # max_injection_chars: 8000 # cap on injected context size
+  # update_check: true        # check for Fritz Local updates on session start
+```
+
+Per-project `.fritz-local.json` overrides global settings.
+
+## Step 11: Keeping Fritz Local updated
+
+Fritz Local checks for updates on session start (once per 24 hours). When an update is available, you'll see a notification with the changelog.
+
+To update, run `/fritz:update` or manually:
+```
+git -C ~/.fritz-ai-local pull
+```
+
+Symlinked hooks and skills update immediately after pull. New skills are automatically symlinked by `/fritz:update`.
