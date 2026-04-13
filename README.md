@@ -16,14 +16,19 @@ That's it. The agent reads SETUP.md, creates `~/.brain/`, symlinks hooks and ski
 
 ## What it does
 
+- **Sets up vaults** — `/fritz:brain-setup` explores any directory and generates the manifest
 - **Captures every conversation** — hooks fire on session end, save to `~/.brain/capture/daily/`
+- **Ingests external sources** — `/fritz:brain-ingest` imports URLs, videos, papers
 - **Compiles knowledge** — `/fritz:brain-compile` promotes captures into articles, routed by content
 - **Queries across vaults** — `/fritz:brain-query` searches all vaults and captures
-- **Ingests external sources** — `/fritz:brain-ingest` imports URLs, videos, papers
-- **Enforces brain-first** — hook reminds agents to check the brain before answering
-- **Validates integrity** — `/fritz:brain-lint` checks for stale, broken, or orphaned content
 - **Syncs externally** — `/fritz:brain-sync` pushes to any target the agent has tools for
-- **Sets up vaults** — `/fritz:brain-setup` explores any directory and generates the manifest
+- **Validates integrity** — `/fritz:brain-lint` checks for stale, broken, or orphaned content
+- **Enforces brain-first** — hook reminds agents to check the brain before answering
+- **Stays up to date** — `/fritz:update` pulls the latest version and runs pending migrations
+
+## Session handover
+
+`/fritz:handover` produces a structured handover document so you can continue work in a fresh agent session without losing context. Before writing the document it compiles pending captures and ingests session decisions and patterns, so the knowledge is preserved in the brain — not just in the handover file. Use it when you're about to hit a context limit, switch machines, or hand work off to another agent.
 
 ## Architecture
 
@@ -58,7 +63,9 @@ fritz-ai-local/
 │   ├── brain_prompt_check.py   # Enforces brain-first on questions
 │   ├── brain_capture.py        # Saves conversation summary on session end
 │   ├── brain_security.py       # Tier enforcement library
-│   └── claude-code-hooks.json  # Hook registration reference
+│   ├── claude-code-hooks.json  # Claude Code hook registration reference
+│   ├── codex-hooks.toml        # Codex CLI hook registration reference
+│   └── gemini-hooks.json       # Gemini CLI hook registration reference
 ├── skills/
 │   ├── fritz:brain-setup/      # Agent-driven vault initialization
 │   ├── fritz:brain-compile/    # Promote captures → knowledge articles
@@ -66,7 +73,8 @@ fritz-ai-local/
 │   ├── fritz:brain-ingest/     # Import external sources
 │   ├── fritz:brain-lint/       # Validate vault health (schedulable)
 │   ├── fritz:brain-sync/       # Push to external systems (target-agnostic)
-│   └── fritz:handover/         # Structured session handover documents
+│   ├── fritz:handover/         # Structured session handover documents
+│   └── fritz:update/           # Self-update + pending migrations
 ├── registry/
 │   └── registry.template.yaml  # Vault registry template
 └── docs/
