@@ -3,9 +3,26 @@ version: 1
 # Vault registry — edit paths for your machine.
 # Each vault gets a .brain/ overlay without restructuring existing folders.
 
+# Default vault for captures when cwd doesn't match any vault.
+default_vault: my-vault
+
+# Global settings (all optional, shown with defaults)
+settings:
+  # Context injection: off | light | full (default: off)
+  # - off: advisory "BRAIN CHECK" reminder only
+  # - light: hook searches knowledge dirs, injects matching file paths
+  # - full: light + agent must spawn subagent to read/synthesize
+  # context_injection: off
+
+  # Max characters for context injection output (default: 8000)
+  # max_injection_chars: 8000
+
+  # Check for Fritz Local updates on session start (default: true)
+  # update_check: true
+
 vaults:
-  vanillacore:
-    path: ~/Notes/VanillaCore
+  my-vault:
+    path: ~/Notes/MyVault
     domain: work
     sync: affine
     # affine_workspace_id: "<your-workspace-id>"
@@ -15,8 +32,8 @@ vaults:
     domain: work
     sync: local
 
-  privat:
-    path: ~/Notes/Privat
+  personal:
+    path: ~/Notes/Personal
     domain: personal
     sync: local
 
@@ -25,7 +42,7 @@ vaults:
     domain: engineering
     sync: affine
 
-  ai-agents:
-    path: ~/Notes/AI-Agents-Hermes
+  research:
+    path: ~/Notes/Research
     domain: research
     sync: local

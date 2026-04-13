@@ -1,0 +1,41 @@
+{
+  "_comment": "Add these to ~/.gemini/settings.json under 'hooks'. Fritz-ai-local hook registrations for Gemini CLI.",
+  "_equivalents": {
+    "SessionStart": "Claude Code:SessionStart, Codex:SessionStart",
+    "BeforeAgent": "Claude Code:UserPromptSubmit, Codex:UserPromptSubmit",
+    "SessionEnd": "Claude Code:Stop, Codex:Stop"
+  },
+  "SessionStart": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 ~/.brain/hooks/brain_session_start.py",
+          "timeout": 5
+        }
+      ]
+    }
+  ],
+  "BeforeAgent": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 ~/.brain/hooks/brain_prompt_check.py",
+          "timeout": 3
+        }
+      ]
+    }
+  ],
+  "SessionEnd": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "python3 ~/.brain/hooks/brain_capture.py",
+          "timeout": 10
+        }
+      ]
+    }
+  ]
+}
