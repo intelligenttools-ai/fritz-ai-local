@@ -80,7 +80,7 @@ def _match_file(md_file: Path, keywords: list[str]) -> bool:
             return True
     # Check first 5 lines for heading match
     try:
-        with open(md_file) as f:
+        with open(md_file, encoding="utf-8", errors="replace") as f:
             head = "".join(f.readline() for _ in range(5)).lower()
         for kw in keywords:
             if kw in head:
