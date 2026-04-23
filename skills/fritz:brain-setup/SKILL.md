@@ -315,9 +315,13 @@ not a changelog.
 
 ### At handover and session end
 
-`/fritz:brain-sync` is a **required** step of `/fritz:handover`. Do not
-complete a handover without it. Unsynced knowledge is lost knowledge — a
-handover that skips sync is not a handover, it is a context dump.
+For vaults with an external sync target (`sync` is not `local` or `none`),
+`/fritz:handover` must run `/fritz:brain-sync` as its final preservation
+step. Unsynced knowledge in those vaults is lost knowledge — a handover
+that skips sync is not a handover, it is a context dump. Vaults configured
+with `sync: local` or `sync: none` have no external surface to push to;
+their preservation path is the local capture → compile pipeline that
+handover already runs earlier.
 ```
 
 **Brain Knowledge (context injection) section — append to `brain.md` only if

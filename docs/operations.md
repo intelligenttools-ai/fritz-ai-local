@@ -106,7 +106,10 @@ whatever tools the agent has for the configured target. Configure the
 target in the vault's registry entry (`sync:` field) and any target-
 specific identifiers (e.g. `affine_workspace_id`).
 
-The brain contract requires sync as the last step of any handover.
+`/fritz:handover` runs sync automatically as its last preservation step
+for vaults that have a sync target configured. Vaults set to `sync: local`
+or `sync: none` skip the push — their preservation path is the local
+capture → compile pipeline that runs earlier in handover.
 
 ## Troubleshooting
 

@@ -66,9 +66,11 @@ Reads the registry for vaults where `sync` is not `local` or `none`.
 Uses the vault's `log.md` to find the last sync timestamp, then pushes
 articles modified since then.
 
-**Required step of `/fritz:handover`.** The brain contract forbids
-completing a handover without syncing — unsynced knowledge is lost
-knowledge.
+Invoked automatically by `/fritz:handover` for vaults that have a sync
+target configured. Vaults with `sync: local` or `sync: none` have no
+external surface to push to, so handover skips this step for them — the
+preservation path for those vaults is the local capture → compile
+pipeline that runs earlier in the handover flow.
 
 ## `/fritz:brain-lint`
 
