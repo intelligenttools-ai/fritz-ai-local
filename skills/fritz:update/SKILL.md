@@ -55,13 +55,36 @@ Each migration script:
 
 After running, append the migration number to `~/.brain/.migrations-run`.
 
-### 5. Report
+### 5. Scan vaults for brain contract drift
+
+The brain contract declared in `fritz:brain-setup` carries a
+`brain_contract_version`. When the skill ships a new version, existing vaults
+keep their older `brain.md` until the human re-runs setup there.
+
+This step is a passive scan — read-only. No writes, no prompts, no per-vault
+updates.
+
+1. Read the current version declared in
+   `~/.fritz-ai-local/skills/fritz:brain-setup/SKILL.md` by locating the line
+   `The current brain contract version is \`N\``. If it cannot be parsed,
+   skip this step silently.
+2. Read `~/.brain/registry.yaml` and iterate over its `vaults:` entries.
+3. For each vault, open `<vault-path>/.brain/instructions/brain.md` and parse
+   its frontmatter. If the file is absent, the vault has not been set up with
+   the new architecture yet — flag it for the report as "no brain.md".
+4. If the file's `brain_contract_version` is less than the current version,
+   flag the vault for the report as "outdated (vN → vM)".
+5. Do not touch any file. This is a detection step only.
+
+### 6. Report
 
 Show the user:
 - Version change (e.g., `1.0.0 → 1.1.0`)
 - New skills added
 - Removed skills (warnings only)
 - Migrations run and their summaries
+- Brain contract drift: list of vaults with outdated or missing `brain.md`,
+  along with "Run `/fritz:brain-setup` in those vaults to refresh."
 - Any errors encountered
 
 ## Important

@@ -233,19 +233,101 @@ settings:
   context_injection: <level>
 ```
 
-**Instruction files** (always create):
+**Shared instruction file** (single source of truth):
 
-Create `.brain/instructions/` with agent instruction files: `CLAUDE.md`, `AGENTS.md`, `GEMINI.md`.
+The brain contract lives as a single file at `.brain/instructions/brain.md`.
+It is the canonical, agent-neutral source. Its frontmatter carries a
+`brain_contract_version` integer so that future setups can detect drift.
 
-Each should contain:
+**The current brain contract version is `1`.** Bump this line when the
+contract body below changes substantively.
+
+Contents of `.brain/instructions/brain.md`:
+- Frontmatter: `type: instructions`, `brain_contract_version: <current>`
 - Vault name and domain
 - Quick reference to key paths from the manifest
 - "Save key decisions and lessons before session end" instruction
 - "Read `.brain/schema.md` for full details" pointer
+- The **Knowledge Management (Mandatory)** section defined below
+- The **Brain Knowledge (context injection)** section if context injection
+  level is `full`
 
-If context injection level is `full`, add to each instruction file:
+**Handling when `brain.md` already exists:**
 
+1. **Exists, current version, suitable for your ecosystem** → do NOT recreate
+   or rewrite it. Just add the reference from your own root file (below).
+2. **Exists, older `brain_contract_version`** → ask the human whether to
+   update it in place. Never overwrite silently. If yes, replace the body
+   with the current contract and bump the version; if no, leave it and still
+   add your reference.
+3. **Exists but unsuitable for your ecosystem** (e.g., references tools or
+   conventions that don't fit your runtime) → do NOT modify the shared
+   `brain.md` to accommodate your agent alone. Ask the human whether to
+   create a sibling variant (e.g., `.brain/instructions/brain-<agent>.md`)
+   and reference that variant from your own root file instead.
+
+**Reference from the current agent's root** (idempotent):
+
+The running agent knows its own project-root instruction file and the
+reference/import syntax its ecosystem supports. Using that knowledge, add a
+single reference pointing to `.brain/instructions/brain.md` (or the variant
+chosen above) from its own root file. Append-only; if a reference to that
+path already exists, skip.
+
+Do NOT touch root files belonging to other agents. Each agent adds its own
+reference when it runs `/fritz:brain-setup` in the vault.
+
+**Knowledge Management (Mandatory) section — body for `.brain/instructions/brain.md`:**
+
+```markdown
+## Knowledge Management (Mandatory)
+
+This project is part of a Fritz Local brain overlay. The brain toolchain is
+**not optional and not passive** — use it actively, every session. Skipping
+these steps wastes accumulated knowledge and causes the team to re-solve
+already-solved problems.
+
+### Before planning, research, debugging, or any non-trivial change
+
+Run `/fritz:brain-query` to search for prior decisions, patterns, runbooks,
+and similar issues. Apply what you find. Do not implement solutions the brain
+already contains — extend them.
+
+This step is mandatory before:
+- Designing a feature, fix, or refactor
+- Debugging a failure or regression
+- Making an architectural decision
+- Answering a substantive question about this project or its domain
+
+### During execution
+
+Capture decisions, trade-offs, surprises, and new runbooks as you work.
+`~/.brain/capture/daily/` is the live inbox — write as you learn, not only at
+the end.
+
+### After execution
+
+Run `/fritz:brain-ingest` to promote new knowledge — runbooks, patterns,
+post-incident learnings, external sources — into the brain. Run
+`/fritz:brain-compile` to consolidate captures into compiled articles when
+enough material has accumulated. Scope to what is worth preserving; this is
+not a changelog.
+
+### At handover and session end
+
+For vaults with an external sync target (`sync` is not `local` or `none`),
+`/fritz:handover` must run `/fritz:brain-sync` as its final preservation
+step. Unsynced knowledge in those vaults is lost knowledge — a handover
+that skips sync is not a handover, it is a context dump. Vaults configured
+with `sync: local` or `sync: none` have no external surface to push to;
+their preservation path is the local capture → compile pipeline that
+handover already runs earlier.
 ```
+
+**Brain Knowledge (context injection) section — append to `brain.md` only if
+context injection is `full`:**
+
+```markdown
 ## Brain Knowledge
 
 When starting work in this vault, spawn a subagent to search `.brain/` and
@@ -275,6 +357,9 @@ After execution, show the human:
 
 - What was created (with paths)
 - What paths were mapped in the manifest
+- Whether `.brain/instructions/brain.md` was created or already existed
+- Which root-level instruction file of the current agent received a reference
+  (and whether it was newly added or already present)
 - What was skipped (and why)
 - Any items the agent couldn't resolve (ask for clarification)
 
@@ -289,3 +374,18 @@ After execution, show the human:
 - If a concept has no matching directory, use `.brain/` defaults and note it in the report.
 - Exclude sensitive directories (keys, credentials, secrets) from the manifest.
 - If the user says "add a project", skip vault identity questions and go straight to per-project questions for the new project only.
+- Only touch the current agent's own root instruction file. Never write
+  integration points for other agents — each agent configures itself when it
+  runs setup in the vault.
+- The root-file reference is append-only and idempotent: if a reference to
+  the chosen brain contract file already exists, skip.
+- The brain contract lives in `.brain/instructions/brain.md` as a single
+  shared source. Do not inline its content into root files. Do not duplicate
+  it per agent. Reference it.
+- Never silently overwrite `brain.md`. If the version is older, ask the
+  human whether to update in place. If the content is unsuitable for the
+  current agent's ecosystem, ask the human whether to create a sibling
+  variant — never mutate the shared file to fit one agent.
+- `brain.md` is created only when absent. When present and current, just
+  reference it. This step does not require a Phase 3 confirmation on first
+  creation — the contract is part of the overlay, not an option.
