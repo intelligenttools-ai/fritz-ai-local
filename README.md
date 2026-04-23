@@ -78,8 +78,18 @@ fritz-ai-local/
 ├── registry/
 │   └── registry.template.yaml  # Vault registry template
 └── docs/
+    ├── README.md               # Documentation index
+    ├── concepts.md             # Vaults, manifest, brain contract, captures
+    ├── architecture.md         # Hooks, capture→compile flow, adapter layer
+    ├── skills.md               # Per-skill purpose and lifecycle position
+    ├── operations.md           # Updating, drift, troubleshooting
     └── security-model.md       # 4-tier zero-trust security model
 ```
+
+## Documentation
+
+See [`docs/`](docs/) for reference documentation. Start with
+[`docs/README.md`](docs/README.md) for the full table of contents.
 
 ## Supported agents
 
