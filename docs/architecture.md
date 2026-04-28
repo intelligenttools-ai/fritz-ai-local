@@ -55,9 +55,10 @@ happens in `adapters/`:
 - `adapters/base.py` — `TranscriptAdapter` interface and `CaptureEntry`
   data class.
 - `adapters/claude_code.py` — implemented (Claude Code JSONL format).
-- `adapters/codex.py`, `adapters/gemini.py`, `adapters/hermes.py` —
-  stubs. The installing agent generates its own adapter during setup,
-  because it knows its own transcript format better than anyone.
+- `adapters/codex.py`, `adapters/gemini.py` — stubs. The installing
+  agent generates its own adapter during setup, because it knows its own
+  transcript format better than anyone.
+- `adapters/hermes.py` — implemented (Hermes Agent JSONL session format).
 - `adapters/registry.py` — agent detection + adapter selection.
 
 A new-agent integration is: implement the adapter, register it, optionally

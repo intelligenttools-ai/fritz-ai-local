@@ -55,7 +55,7 @@ fritz-ai-local/
 │   ├── claude_code.py          # Claude Code JSONL parser
 │   ├── codex.py                # Stub — agent generates during setup
 │   ├── gemini.py               # Stub — agent generates during setup
-│   ├── hermes.py               # Stub — agent generates during setup
+│   ├── hermes.py               # Hermes Agent JSONL parser
 │   └── registry.py             # Agent detection + adapter selection
 ├── hooks/
 │   ├── brain_common.py         # Shared utilities
@@ -100,4 +100,4 @@ Any agent that can read markdown and run Python:
 | Claude Code | SessionStart, UserPromptSubmit, PreCompact, Stop | Implemented |
 | Codex CLI | SessionStart, Stop | Stub — agent generates |
 | Gemini CLI | SessionStart, BeforeAgent, PreCompress, SessionEnd | Stub — agent generates |
-| Hermes Agent | session:start, session:end | Stub — agent generates |
+| Hermes Agent | pre_llm_call, on_session_finalize shell hooks | Implemented |
