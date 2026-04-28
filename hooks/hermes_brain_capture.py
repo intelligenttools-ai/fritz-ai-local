@@ -33,8 +33,13 @@ def _candidate_transcripts(session_id: str) -> list[Path]:
         # Session IDs are commonly either the JSONL stem or embedded in it.
         for pattern in (f"{session_id}.jsonl", f"*{session_id}*.jsonl"):
             candidates.extend(sessions.glob(pattern))
-    if not candidates:
-        candidates.extend(sessions.glob("*.jsonl"))
+    else:
+        # Without a session id, fall back only when the session directory is
+        # unambiguous. Guessing the newest transcript in a concurrent profile can
+        # capture the wrong conversation.
+        all_transcripts = list(sessions.glob("*.jsonl"))
+        if len(all_transcripts) == 1:
+            candidates.extend(all_transcripts)
     return sorted(set(candidates), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
 
 

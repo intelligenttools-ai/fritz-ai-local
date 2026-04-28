@@ -15,8 +15,9 @@ To apply an update:
 ```
 
 The skill `git pull`s the repo, symlinks any new `fritz:*` skills into
-each installed agent's skill directory, runs pending migrations, scans
-vaults for brain-contract drift, and prints a report.
+each installed agent's skill directory, refreshes managed hook symlinks,
+runs pending migrations, scans vaults for brain-contract drift, and prints a
+report.
 
 If you prefer manual control:
 
@@ -25,7 +26,7 @@ git -C ~/.fritz-ai-local pull
 ```
 
 Symlinked hooks and skills update immediately. Run `/fritz:update`
-afterwards to pick up new skills and run migrations.
+afterwards to pick up new skills/hooks and run migrations.
 
 ## Brain contract drift
 
@@ -120,6 +121,8 @@ capture → compile pipeline that runs earlier in handover.
   `.fritz-local.json` is present and points at a registered vault.
 - Run the hook manually: `python3 ~/.brain/hooks/brain_session_start.py`.
   It prints what it would inject.
+- For Hermes Agent profiles, run the wrapper instead and pass the active cwd:
+  `python3 ~/.brain/hooks/hermes_brain_context.py <<<'{"cwd":"/path/to/project"}'`.
 
 ### Captures are not being written
 
@@ -128,6 +131,8 @@ capture → compile pipeline that runs earlier in handover.
 - Check `~/.brain/log.md` for errors from previous runs.
 - Confirm the transcript adapter for your agent is implemented
   (`adapters/<agent>.py`). Stubs return empty captures.
+- For Hermes Agent profiles, ensure `HERMES_HOME` points at the profile whose
+  `sessions/` directory contains the active JSONL transcript.
 
 ### A skill is not found
 

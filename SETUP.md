@@ -45,6 +45,13 @@ Symlink each `.py` file from `<repo>/hooks/` to `~/.brain/hooks/`:
 ~/.brain/hooks/brain_security.py       → <repo>/hooks/brain_security.py
 ```
 
+If the agent runtime uses Fritz wrapper hooks, symlink those too. Hermes Agent
+requires both wrappers:
+```
+~/.brain/hooks/hermes_brain_context.py  → <repo>/hooks/hermes_brain_context.py
+~/.brain/hooks/hermes_brain_capture.py  → <repo>/hooks/hermes_brain_capture.py
+```
+
 On Windows, use `mklink` (requires admin) or copy the files instead.
 
 Symlink each `fritz:*` skill directory from `<repo>/skills/` to your agent's skills directory:
@@ -72,7 +79,7 @@ Reference hook configurations for each agent are in `<repo>/hooks/`:
 - Claude Code: `claude-code-hooks.json` → merge into `~/.claude/settings.json` under `hooks`
 - Codex CLI: `codex-hooks.toml` → append to `~/.codex/config.toml`
 - Gemini CLI: `gemini-hooks.json` → merge into `~/.gemini/settings.json` under `hooks`
-- Hermes Agent: `hermes-hooks.yaml` → merge into the active Hermes `config.yaml` profile under `hooks`
+- Hermes Agent: `hermes-hooks.yaml` → merge into the active Hermes `config.yaml` profile under `hooks`. Ensure `HERMES_HOME` points at the active profile directory when running Hermes under a non-default profile such as `~/.hermes-dev` or `~/.hermes-infra`.
 
 Use absolute paths (resolve `~` to the actual home directory). For other agents, use your native hook registration mechanism.
 
@@ -94,6 +101,11 @@ Available fritz skills: `/fritz:brain-query`, `/fritz:brain-compile`, `/fritz:br
 ## Step 5: Create the vault registry
 
 Copy `<repo>/registry/registry.template.yaml` to `~/.brain/registry.yaml`. Then ask the human which directories are their knowledge vaults and update the registry with the correct paths, domains, and sync settings.
+
+If the human wants one vault to be active for future source projects that do
+not yet have `.fritz-local.json`, set `default_vault: <vault-name>` in the
+registry. This is useful for agent profiles dedicated to one domain, such as a
+development agent whose default vault is `~/Notes/development`.
 
 ## Step 6: Set up each vault
 

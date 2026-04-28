@@ -43,8 +43,15 @@ registers whichever ones exist.
 | (`brain_security.py`)       | Library, not a hook                          | Enforces the four security tiers for any hook/skill that performs writes.              |
 
 All hooks read `~/.brain/registry.yaml` and, when the working directory has
-one, `.fritz-local.json`. They never modify vault content directly —
-writes go through skills.
+one, `.fritz-local.json`. If no registered vault matches the working directory,
+the hooks fall back to `default_vault` when it is configured. They never modify
+vault content directly — writes go through skills.
+
+Hermes Agent uses shell-hook wrappers because Hermes expects hook stdout in its
+own `{"context": "..."}` shape and does not pass `transcript_path` on session
+finalization. `hermes_brain_context.py` translates Fritz session-start context
+for `pre_llm_call`; `hermes_brain_capture.py` resolves the active Hermes JSONL
+transcript from `$HERMES_HOME/sessions` before invoking `brain_capture.py`.
 
 ## Adapter layer
 

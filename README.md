@@ -65,7 +65,10 @@ fritz-ai-local/
 │   ├── brain_security.py       # Tier enforcement library
 │   ├── claude-code-hooks.json  # Claude Code hook registration reference
 │   ├── codex-hooks.toml        # Codex CLI hook registration reference
-│   └── gemini-hooks.json       # Gemini CLI hook registration reference
+│   ├── gemini-hooks.json       # Gemini CLI hook registration reference
+│   ├── hermes-hooks.yaml       # Hermes Agent hook registration reference
+│   ├── hermes_brain_context.py # Hermes wrapper for context injection
+│   └── hermes_brain_capture.py # Hermes wrapper for session-finalize capture
 ├── skills/
 │   ├── fritz:brain-setup/      # Agent-driven vault initialization
 │   ├── fritz:brain-compile/    # Promote captures → knowledge articles
@@ -100,4 +103,4 @@ Any agent that can read markdown and run Python:
 | Claude Code | SessionStart, UserPromptSubmit, PreCompact, Stop | Implemented |
 | Codex CLI | SessionStart, Stop | Stub — agent generates |
 | Gemini CLI | SessionStart, BeforeAgent, PreCompress, SessionEnd | Stub — agent generates |
-| Hermes Agent | pre_llm_call, on_session_finalize shell hooks | Implemented |
+| Hermes Agent | pre_llm_call, on_session_finalize shell hooks | Implemented via wrappers |
