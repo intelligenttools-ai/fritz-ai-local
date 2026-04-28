@@ -1,9 +1,9 @@
 ---
 name: fritz:update
 description: >
-  Update Fritz Local to the latest version. Pulls from git, symlinks new skills,
-  runs pending migrations, and reports changes. Use when the session-start hook
-  reports an update is available, or run /fritz:update manually.
+  Update Fritz Local to the latest version. Pulls from git, symlinks new skills
+  and managed hooks, runs pending migrations, and reports changes. Use when the
+  session-start hook reports an update is available, or run /fritz:update manually.
 ---
 
 # Update
@@ -32,7 +32,7 @@ On Windows use `%USERPROFILE%\.fritz-ai-local`. If the pull fails (dirty tree, m
 
 Read `~/.fritz-ai-local/VERSION` for the new version. Compare with the version shown in the update notification (if any). Report the version bump.
 
-### 3. Symlink new skills
+### 3. Symlink new skills and managed hooks
 
 List all directories in `~/.fritz-ai-local/skills/`. For each `fritz:*` skill directory, check if a symlink exists in the agent's skill directory:
 - Claude Code: `~/.claude/skills/`
@@ -42,6 +42,19 @@ List all directories in `~/.fritz-ai-local/skills/`. For each `fritz:*` skill di
 If a skill directory exists in the repo but has no symlink, create the symlink.
 
 If a skill directory was removed from the repo but a symlink still exists, **warn the user** but do NOT delete the symlink. The human decides.
+
+Then refresh managed hook symlinks from `~/.fritz-ai-local/hooks/` into
+`~/.brain/hooks/` for all Python hook files required by the current agent.
+At minimum keep these common hooks current:
+- `brain_capture.py`
+- `brain_session_start.py`
+- `brain_prompt_check.py`
+- `brain_common.py`
+- `brain_security.py`
+
+For Hermes Agent, also symlink:
+- `hermes_brain_context.py`
+- `hermes_brain_capture.py`
 
 ### 4. Run pending migrations
 
@@ -81,6 +94,7 @@ updates.
 Show the user:
 - Version change (e.g., `1.0.0 → 1.1.0`)
 - New skills added
+- Hook symlinks refreshed or missing
 - Removed skills (warnings only)
 - Migrations run and their summaries
 - Brain contract drift: list of vaults with outdated or missing `brain.md`,
