@@ -1,0 +1,15 @@
+# Hermes Agent shell-hook reference for Fritz Local.
+#
+# Merge into the Hermes profile config.yaml (usually ~/.hermes/config.yaml or
+# a profile-specific config such as ~/.hermes-infra/config.yaml), then restart
+# Hermes/gateway. Hermes shell hooks are opt-in; hooks_auto_accept lets
+# non-interactive gateway sessions load these managed local hooks.
+
+hooks_auto_accept: true
+hooks:
+  pre_llm_call:
+    - command: "python3 ~/.brain/hooks/hermes_brain_context.py"
+      timeout: 15
+  on_session_finalize:
+    - command: "python3 ~/.brain/hooks/hermes_brain_capture.py"
+      timeout: 30

@@ -137,47 +137,59 @@ def load_settings() -> dict:
 
 
 def resolve_project_vault(cwd: str) -> tuple[str | None, dict | None, Path | None, dict | None]:
-    """Resolve cwd to vault using .fritz-local.json first, then cwd matching.
+    """Resolve cwd to vault using a trusted .fritz-local.json, cwd, or default.
 
     Returns (vault_name, vault_config, vault_path, fritz_local_config).
-    fritz_local_config is the parsed .fritz-local.json or None.
+    fritz_local_config is the parsed .fritz-local.json only when the cwd is
+    trusted to control project/context settings.
     """
-    fritz_local = load_fritz_local(cwd)
+    registry = load_registry()
+    vaults = registry.get("vaults", {})
+    cwd_resolved = Path(cwd).resolve()
+
+    # Trust boundary: only honor any .fritz-local.json fields if cwd is within a
+    # registered vault path or the fritz-ai-local repo itself. This prevents an
+    # untrusted cloned repo from steering default-vault context injection.
+    trusted = False
+    for _, vc in vaults.items():
+        vp = Path(vc["path"]).expanduser().resolve()
+        try:
+            cwd_resolved.relative_to(vp)
+            trusted = True
+            break
+        except ValueError:
+            continue
+    if not trusted:
+        try:
+            cwd_resolved.relative_to(FRITZ_REPO.resolve())
+            trusted = True
+        except ValueError:
+            pass
+
+    fritz_local = load_fritz_local(cwd) if trusted else None
 
     if fritz_local and "vault" in fritz_local:
-        registry = load_registry()
         vault_name = fritz_local["vault"]
-        vaults = registry.get("vaults", {})
         if vault_name in vaults:
             config = vaults[vault_name]
             vault_path = Path(config["path"]).expanduser().resolve()
-            # Trust boundary: only honor .fritz-local.json if cwd is within
-            # a registered vault path or the fritz-ai-local repo itself.
-            # This prevents an untrusted cloned repo from redirecting hooks
-            # into personal vaults.
-            cwd_resolved = Path(cwd).resolve()
-            trusted = False
-            for _, vc in vaults.items():
-                vp = Path(vc["path"]).expanduser().resolve()
-                try:
-                    cwd_resolved.relative_to(vp)
-                    trusted = True
-                    break
-                except ValueError:
-                    continue
-            if not trusted:
-                # Check if cwd is within the fritz-ai-local repo
-                try:
-                    cwd_resolved.relative_to(FRITZ_REPO.resolve())
-                    trusted = True
-                except ValueError:
-                    pass
-            if trusted:
-                return vault_name, config, vault_path, fritz_local
-            # Untrusted location — ignore .fritz-local.json, fall through
+            return vault_name, config, vault_path, fritz_local
 
-    # Fallback to cwd matching
+    # Fallback to cwd matching.
     vault_name, vault_config, vault_path = find_vault_for_cwd(cwd)
+    if vault_path:
+        return vault_name, vault_config, vault_path, fritz_local
+
+    # Finally, use only an explicitly configured default_vault. This keeps brain
+    # context active for new source projects before they have a trusted
+    # .fritz-local.json binding, without implicitly exposing the first active
+    # vault in arbitrary directories.
+    default_name = registry.get("default_vault")
+    if default_name and default_name in vaults:
+        vault_config = vaults[default_name]
+        vault_path = Path(vault_config["path"]).expanduser().resolve()
+        return default_name, vault_config, vault_path, fritz_local
+
     return vault_name, vault_config, vault_path, fritz_local
 
 
