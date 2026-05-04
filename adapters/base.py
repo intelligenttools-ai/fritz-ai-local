@@ -69,7 +69,6 @@ class TranscriptAdapter:
         # Path-based detection: transcript or cwd points to pi session storage.
         # This is needed because hooks run as standalone scripts where
         # PI_CODING_AGENT_DIR may not be set.
-        import os
         cwd = hook_input.get("cwd", "")
         transcript_path = hook_input.get("transcript_path", "")
         if ".pi/agent/sessions" in cwd or ".pi/agent/sessions" in transcript_path:
