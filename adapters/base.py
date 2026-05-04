@@ -65,6 +65,8 @@ class TranscriptAdapter:
             return "gemini"
         if os.environ.get("CODEX_SESSION_ID"):
             return "codex"
+        if os.environ.get("PI_CODING_AGENT_DIR"):
+            return "pi"
 
-        # Default: Claude Code (most common)
-        return "claude_code"
+        # No known agent detected — caller must handle fallback explicitly.
+        return "unknown"
