@@ -7,6 +7,7 @@ from .claude_code import ClaudeCodeAdapter
 from .codex import CodexAdapter
 from .gemini import GeminiAdapter
 from .hermes import HermesAdapter
+from .pi_agent import PiAgentAdapter
 
 
 ADAPTERS: dict[str, TranscriptAdapter] = {
@@ -14,13 +15,18 @@ ADAPTERS: dict[str, TranscriptAdapter] = {
     "codex": CodexAdapter(),
     "gemini": GeminiAdapter(),
     "hermes": HermesAdapter(),
+    "pi": PiAgentAdapter(),
 }
 
 
 def get_adapter(hook_input: dict) -> TranscriptAdapter:
-    """Detect the running agent and return the appropriate adapter."""
+    """Detect the running agent and return the appropriate adapter.
+
+    Raises KeyError if no known agent is detected — the caller must handle
+    fallback explicitly (or not).  No implicit default.
+    """
     agent = TranscriptAdapter.detect(hook_input)
-    return ADAPTERS.get(agent, ClaudeCodeAdapter())
+    return ADAPTERS[agent]  # KeyError if unknown — caller decides fallback
 
 
 def parse_transcript(hook_input: dict, transcript_path: str, max_messages: int = 200) -> CaptureEntry:
