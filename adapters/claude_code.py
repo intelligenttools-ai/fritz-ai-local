@@ -20,7 +20,7 @@ class ClaudeCodeAdapter(TranscriptAdapter):
 
         messages = []
         try:
-            with open(transcript_path) as f:
+            with open(transcript_path, encoding="utf-8", errors="replace") as f:
                 for line in f:
                     line = line.strip()
                     if not line:

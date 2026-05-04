@@ -17,7 +17,7 @@ def load_registry() -> dict:
     """Load the vault registry."""
     if not REGISTRY_PATH.exists():
         return {"version": 1, "vaults": {}}
-    with open(REGISTRY_PATH) as f:
+    with open(REGISTRY_PATH, encoding="utf-8") as f:
         return yaml.safe_load(f) or {"version": 1, "vaults": {}}
 
 
@@ -78,7 +78,7 @@ def load_manifest(vault_path: Path) -> dict | None:
     manifest_path = vault_path / ".brain" / "manifest.yaml"
     if not manifest_path.exists():
         return None
-    with open(manifest_path) as f:
+    with open(manifest_path, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
@@ -96,7 +96,7 @@ def append_log(vault_path: Path, operation: str, agent: str, summary: str):
     log_path = vault_path / ".brain" / "log.md"
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
     entry = f"{timestamp} | {operation} | {agent} | {summary}\n"
-    with open(log_path, "a") as f:
+    with open(log_path, "a", encoding="utf-8") as f:
         f.write(entry)
 
 
@@ -123,7 +123,7 @@ def load_fritz_local(cwd: str) -> dict | None:
         candidate = parent / FRITZ_LOCAL_FILENAME
         if candidate.exists():
             try:
-                with open(candidate) as f:
+                with open(candidate, encoding="utf-8") as f:
                     return json.load(f)
             except (json.JSONDecodeError, OSError):
                 return None
@@ -232,5 +232,5 @@ def get_fritz_version() -> str | None:
     """Read VERSION from the fritz-ai-local repo."""
     version_path = FRITZ_REPO / "VERSION"
     if version_path.exists():
-        return version_path.read_text().strip()
+        return version_path.read_text(encoding="utf-8").strip()
     return None

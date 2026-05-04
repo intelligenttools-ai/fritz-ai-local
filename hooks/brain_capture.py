@@ -80,7 +80,7 @@ def main():
     daily_file = CAPTURE_DIR / f"{today_str()}.md"
 
     if daily_file.exists():
-        with open(daily_file, "a") as f:
+        with open(daily_file, "a", encoding="utf-8") as f:
             f.write(f"\n{summary}\n")
     else:
         header = (
@@ -92,14 +92,14 @@ def main():
             f"# Daily Log — {today_str()}\n\n"
             f"{summary}\n"
         )
-        with open(daily_file, "w") as f:
+        with open(daily_file, "w", encoding="utf-8") as f:
             f.write(header)
 
     # Append to global log
     log_file = BRAIN_HOME / "log.md"
     if log_file.exists():
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-        with open(log_file, "a") as f:
+        with open(log_file, "a", encoding="utf-8") as f:
             f.write(f"{timestamp} | CAPTURE | {entry.agent} | {event}: {len(entry.topics)} topics from {entry.cwd or 'unknown'}\n")
 
     sys.exit(0)
