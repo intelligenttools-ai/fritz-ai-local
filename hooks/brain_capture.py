@@ -6,6 +6,7 @@ Uses adapter layer to parse agent-specific transcript formats.
 
 Works with:
 - Claude Code: PreCompact and Stop events
+- pi: session end (JSONL tree format)
 - Codex: Stop event
 - Gemini CLI: PreCompress and SessionEnd events
 - Hermes Agent: session:end event
@@ -22,6 +23,7 @@ sys.path.insert(0, str(_this_dir.parent))
 
 from brain_common import read_hook_input, today_str, BRAIN_HOME
 from adapters.registry import parse_transcript
+from adapters.base import CaptureEntry
 
 
 MAX_SUMMARY_CHARS = 8000
@@ -67,10 +69,20 @@ def main():
     if not transcript_path:
         sys.exit(0)
 
-    # Parse transcript using the adapter for the detected agent
-    entry = parse_transcript(hook_input, transcript_path)
+    # Parse transcript using the adapter for the detected agent.
+    # If no known agent is detected, fall back to a safe empty capture
+    # so the hook doesn't crash — the brain still gets an entry with agent="unknown".
+    try:
+        entry = parse_transcript(hook_input, transcript_path)
+    except KeyError:
+        # No known adapter for this agent — write a minimal entry
+        # so the daily log still gets a timestamped marker.
+        entry = CaptureEntry(
+            agent="unknown",
+            cwd=hook_input.get("cwd", ""),
+        )
 
-    if entry.is_empty():
+    if entry.is_empty() and entry.agent == "unknown":
         sys.exit(0)
 
     summary = format_capture(entry)
