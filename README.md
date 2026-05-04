@@ -4,7 +4,7 @@ Agent-agnostic brain overlay system for personal knowledge vaults.
 
 ## Install
 
-Paste this into your agent (Claude Code, Codex, Gemini CLI, Hermes, or any other):
+Paste this into your agent (Claude Code, Codex, Gemini CLI, Hermes, pi, or any other):
 
 ```
 Clone https://github.com/intelligenttools-ai/fritz-ai-local.git to ~/.fritz-ai-local
@@ -53,6 +53,7 @@ fritz-ai-local/
 ├── adapters/
 │   ├── base.py                 # TranscriptAdapter interface + CaptureEntry
 │   ├── claude_code.py          # Claude Code JSONL parser
+│   ├── pi_agent.py             # pi-coding-agent session format (tree)
 │   ├── codex.py                # Stub — agent generates during setup
 │   ├── gemini.py               # Stub — agent generates during setup
 │   ├── hermes.py               # Stub — agent generates during setup
@@ -98,6 +99,7 @@ Any agent that can read markdown and run Python:
 | Agent | Hooks | Transcript adapter |
 |-------|-------|--------------------|
 | Claude Code | SessionStart, UserPromptSubmit, PreCompact, Stop | Implemented |
-| Codex CLI | SessionStart, Stop | Stub — agent generates |
-| Gemini CLI | SessionStart, BeforeAgent, PreCompress, SessionEnd | Stub — agent generates |
+| pi          | (see below)    | Implemented |
+| Codex CLI   | SessionStart, Stop | Stub — agent generates |
+| Gemini CLI  | SessionStart, BeforeAgent, PreCompress, SessionEnd | Stub — agent generates |
 | Hermes Agent | session:start, session:end | Stub — agent generates |
