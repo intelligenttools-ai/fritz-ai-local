@@ -62,11 +62,14 @@ happens in `adapters/`:
 - `adapters/base.py` — `TranscriptAdapter` interface and `CaptureEntry`
   data class.
 - `adapters/claude_code.py` — implemented (Claude Code JSONL format).
+- `adapters/pi_agent.py` — implemented (pi-coding-agent JSONL session
+  format with tree structure).
 - `adapters/codex.py`, `adapters/gemini.py` — stubs. The installing
   agent generates its own adapter during setup, because it knows its own
   transcript format better than anyone.
 - `adapters/hermes.py` — implemented (Hermes Agent JSONL session format).
-- `adapters/registry.py` — agent detection + adapter selection.
+- `adapters/registry.py` — agent detection + adapter selection. Raises
+  `KeyError` for unknown agents; callers must handle fallback explicitly.
 
 A new-agent integration is: implement the adapter, register it, optionally
 PR it back.
