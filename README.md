@@ -68,6 +68,7 @@ fritz-ai-local/
 │   ├── codex-hooks.toml        # Codex CLI hook registration reference
 │   ├── gemini-hooks.json       # Gemini CLI hook registration reference
 │   ├── hermes-hooks.yaml       # Hermes Agent hook registration reference
+│   ├── pi-extension.ts         # pi-coding-agent extension hook bridge
 │   ├── hermes_brain_context.py # Hermes wrapper for context injection
 │   └── hermes_brain_capture.py # Hermes wrapper for session-finalize capture
 ├── skills/
@@ -102,7 +103,7 @@ Any agent that can read markdown and run Python:
 | Agent | Hooks | Transcript adapter |
 |-------|-------|--------------------|
 | Claude Code | SessionStart, UserPromptSubmit, PreCompact, Stop | Implemented |
-| pi          | (see below)    | Implemented |
+| pi          | session_start, before_agent_start, session_before_compact, session_shutdown via `hooks/pi-extension.ts` | Implemented |
 | Codex CLI   | SessionStart, Stop | Stub — agent generates |
 | Gemini CLI  | SessionStart, BeforeAgent, PreCompress, SessionEnd | Stub — agent generates |
 | Hermes Agent | pre_llm_call, on_session_finalize shell hooks | Implemented via wrappers |

@@ -111,6 +111,7 @@ You know your own config format. Register these hooks:
 
 Reference hook configurations for each agent are in `<repo>/hooks/`:
 - Claude Code: `claude-code-hooks.json` → merge into `~/.claude/settings.json` under `hooks`
+- Pi (`pi-coding-agent`): copy or symlink `pi-extension.ts` to `~/.pi/agent/extensions/fritz-brain.ts`, then run `/reload`
 - Codex CLI: `codex-hooks.toml` → append to `~/.codex/config.toml`
 - Gemini CLI: `gemini-hooks.json` → merge into `~/.gemini/settings.json` under `hooks`
 - Hermes Agent: `hermes-hooks.yaml` → merge into the active Hermes `config.yaml` profile under `hooks`. Ensure `HERMES_HOME` points at the active profile directory when running Hermes under a non-default profile such as `~/.hermes-dev` or `~/.hermes-infra`.
