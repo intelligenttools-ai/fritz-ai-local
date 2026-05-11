@@ -41,7 +41,8 @@ Important settings:
   `/Users/YOUR_USER/Notes=/vaults/notes`.
   Registry paths using `~/Notes/...` are mapped through this host root inside
   the container.
-- `LLM_ENDPOINT`: any OpenAI-compatible local or remote endpoint.
+- `LLM_PROTOCOL`: `openai-compatible` or `anthropic-compatible`.
+- `LLM_ENDPOINT`: protocol-compatible local or remote endpoint.
 - `LLM_API_KEY`: optional. Leave empty for endpoints that do not
   require a key.
 - `EMBEDDING_ENABLED`: enables embedding endpoint probes. Defaults to `false`.
