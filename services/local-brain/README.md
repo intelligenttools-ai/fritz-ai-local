@@ -2,11 +2,13 @@
 
 Optional Dockerized service-mode add-on for Fritz Local.
 
-The MVP is intentionally compile-only. It loads
+The MVP starts with conservative compile and sync workflows. Compile loads
 `skills/fritz:brain-compile/SKILL.md` as the compile agent's task instructions,
 wraps all captures as untrusted data, asks a Pydantic AI agent for structured
 article write proposals, and applies only proposals that pass Python path and
-policy validation.
+policy validation. Sync loads `skills/fritz:brain-sync/SKILL.md` as policy
+context, but execution is deterministic and limited to `none`, `local`, and
+guarded `git` targets.
 
 The compile agent can use one bounded read-only context tool to load captures,
 vaults, and existing article paths. It cannot write directly.
@@ -23,7 +25,8 @@ vaults, and existing article paths. It cannot write directly.
   proxy or token.
 - The service cannot write `registry.yaml`, `.brain/manifest.yaml`,
   `.brain/schema.md`, identity files, or excluded paths.
-- The service cannot delete files or sync externally in the MVP.
+- The service cannot delete files. External sync is limited to explicit `git`
+  pushes, and first real external sync is blocked unless configured.
 
 ## Configure
 
@@ -45,6 +48,8 @@ Important settings:
   input truncation. Defaults to `4000`.
 - `COMPILE_MAX_CAPTURES`: default maximum captures per run when the request does
   not specify `max_captures`, also used by the scheduler. Defaults to `1`.
+- `ALLOW_FIRST_EXTERNAL_SYNC`: allows the first non-dry-run external sync, such
+  as `git push`, for vaults with no previous `SYNC` log. Defaults to `false`.
 
 ## Run
 
@@ -80,6 +85,22 @@ Apply compile proposals:
 curl -X POST http://127.0.0.1:8765/v1/compile/run \
   -H 'content-type: application/json' \
   -d '{"dry_run": false, "max_captures": 1}'
+```
+
+Dry-run sync:
+
+```bash
+curl -X POST http://127.0.0.1:8765/v1/sync/run \
+  -H 'content-type: application/json' \
+  -d '{"dry_run": true}'
+```
+
+Sync one vault with git push enabled by registry config:
+
+```bash
+curl -X POST http://127.0.0.1:8765/v1/sync/run \
+  -H 'content-type: application/json' \
+  -d '{"dry_run": false, "vault": "engineering"}'
 ```
 
 If `API_TOKEN` is set, add:

@@ -37,6 +37,8 @@ class Settings(BaseSettings):
     api_token: str | None = Field(default=None, validation_alias=AliasChoices("LOCAL_BRAIN_API_TOKEN", "API_TOKEN"))
 
     compile_skill_name: str = Field(default="fritz:brain-compile", validation_alias=AliasChoices("LOCAL_BRAIN_COMPILE_SKILL_NAME", "COMPILE_SKILL_NAME"))
+    sync_skill_name: str = Field(default="fritz:brain-sync", validation_alias=AliasChoices("LOCAL_BRAIN_SYNC_SKILL_NAME", "SYNC_SKILL_NAME"))
+    allow_first_external_sync: bool = Field(default=False, validation_alias=AliasChoices("LOCAL_BRAIN_ALLOW_FIRST_EXTERNAL_SYNC", "ALLOW_FIRST_EXTERNAL_SYNC"))
     capture_max_chars: int = Field(default=4000, ge=500, validation_alias=AliasChoices("LOCAL_BRAIN_CAPTURE_MAX_CHARS", "CAPTURE_MAX_CHARS"))
     compile_max_captures: int = Field(default=1, ge=1, validation_alias=AliasChoices("LOCAL_BRAIN_COMPILE_MAX_CAPTURES", "COMPILE_MAX_CAPTURES"))
 

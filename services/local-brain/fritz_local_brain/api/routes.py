@@ -9,11 +9,13 @@ from pydantic_ai.exceptions import ModelAPIError, UsageLimitExceeded
 
 from ..compile_workflow import run_compile
 from ..config import get_settings
-from ..models import CompileRunRequest, CompileRunResult, StatusResult
+from ..models import CompileRunRequest, CompileRunResult, StatusResult, SyncRunRequest, SyncRunResult
+from ..sync_workflow import run_sync
 from .auth import require_token
 
 router = APIRouter()
 compile_lock = asyncio.Lock()
+sync_lock = asyncio.Lock()
 
 
 @router.get("/health")
@@ -29,6 +31,7 @@ async def status() -> StatusResult:
         interval_minutes=settings.interval_minutes,
         brain_home=str(settings.brain_home),
         skills_dir=str(settings.skills_dir),
+        allow_first_external_sync=settings.allow_first_external_sync,
     )
 
 
@@ -43,3 +46,11 @@ async def compile_run(request: CompileRunRequest) -> CompileRunResult:
             raise HTTPException(status_code=502, detail=f"Compile agent exceeded run limits: {exc}") from exc
         except ModelAPIError as exc:
             raise HTTPException(status_code=502, detail=f"Compile model request failed: {exc.message}") from exc
+
+
+@router.post("/v1/sync/run", response_model=SyncRunResult, dependencies=[Depends(require_token)])
+async def sync_run(request: SyncRunRequest) -> SyncRunResult:
+    if sync_lock.locked():
+        raise HTTPException(status_code=409, detail="Sync already running")
+    async with sync_lock:
+        return await run_sync(get_settings(), request)

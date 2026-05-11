@@ -32,7 +32,7 @@ That's it. The agent reads SETUP.md, creates `~/.brain/`, symlinks hooks and ski
 
 ## Local Brain service
 
-An optional Dockerized Local Brain service lives in [`services/local-brain/`](services/local-brain/). The initial service is compile-only: it loads the existing `fritz:brain-compile` skill as Pydantic AI agent instructions, treats captures as untrusted data, produces structured write proposals, and applies only policy-validated knowledge/index/log writes. Future service functionality is tracked in [`.planning/roadmap.md`](.planning/roadmap.md).
+An optional Dockerized Local Brain service lives in [`services/local-brain/`](services/local-brain/). The service starts with safe compile and sync workflows: compile loads `fritz:brain-compile` as Pydantic AI agent instructions and applies only policy-validated knowledge/index/log writes, while sync supports no-op local targets plus guarded git pushes. Future service functionality is tracked in [`.planning/roadmap.md`](.planning/roadmap.md).
 
 ## Architecture
 

@@ -58,6 +58,37 @@ class CompileRunResult(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
+class SyncRunRequest(BaseModel):
+    """Request body for a manual sync run."""
+
+    dry_run: bool = True
+    vault: str | None = None
+
+
+class SyncVaultResult(BaseModel):
+    """Sync outcome for one vault."""
+
+    vault: str
+    target: str
+    first_sync: bool
+    articles_considered: int = 0
+    articles_to_sync: list[str] = Field(default_factory=list)
+    pushed: bool = False
+    skipped: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+
+class SyncRunResult(BaseModel):
+    """Structured sync run result."""
+
+    run_id: str
+    started_at: datetime
+    finished_at: datetime
+    dry_run: bool
+    results: list[SyncVaultResult] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+
 class StatusResult(BaseModel):
     """Service status without secrets."""
 
@@ -66,3 +97,4 @@ class StatusResult(BaseModel):
     interval_minutes: int
     brain_home: str
     skills_dir: str
+    allow_first_external_sync: bool
