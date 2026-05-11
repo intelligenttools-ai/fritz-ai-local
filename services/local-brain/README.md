@@ -176,6 +176,24 @@ Available tools mirror the safe service workflows:
 - `brain_recent_runs`
 - `brain_query`
 
+## CLI
+
+The image also includes a small REST CLI for manual operations:
+
+```bash
+docker compose -f services/local-brain/docker-compose.example.yml exec local-brain \
+  fritz-local-brain-cli status
+```
+
+Useful commands:
+
+- `fritz-local-brain-cli status`
+- `fritz-local-brain-cli compile --max-captures 1`
+- `fritz-local-brain-cli sync --vault engineering`
+- `fritz-local-brain-cli recent-runs --limit 5`
+- `fritz-local-brain-cli query "local brain" --limit 5`
+- `fritz-local-brain-cli lint`
+
 ## Roadmap
 
 Deferred functionality is tracked in `.planning/roadmap.md` at the repository
