@@ -44,6 +44,11 @@ Important settings:
 - `LLM_ENDPOINT`: any OpenAI-compatible local or remote endpoint.
 - `LLM_API_KEY`: optional. Leave empty for endpoints that do not
   require a key.
+- `EMBEDDING_ENABLED`: enables embedding endpoint probes. Defaults to `false`.
+- `EMBEDDING_ENDPOINT`: OpenAI-compatible embedding endpoint, configured
+  independently from `LLM_ENDPOINT`.
+- `EMBEDDING_MODEL`: embedding model name used for dimension probes.
+- `EMBEDDING_API_KEY`: optional embedding API key.
 - `CAPTURE_MAX_CHARS`: maximum characters read from each capture before model
   input truncation. Defaults to `4000`.
 - `COMPILE_MAX_CAPTURES`: default maximum captures per run when the request does
@@ -113,6 +118,20 @@ Recent runs:
 
 ```bash
 curl 'http://127.0.0.1:8765/v1/runs/recent?limit=10'
+```
+
+Embedding status:
+
+```bash
+curl http://127.0.0.1:8765/v1/embeddings/status
+```
+
+Probe embedding dimensions after setting `EMBEDDING_ENABLED=true`:
+
+```bash
+curl -X POST http://127.0.0.1:8765/v1/embeddings/probe \
+  -H 'content-type: application/json' \
+  -d '{"dry_run": false}'
 ```
 
 ## MCP

@@ -107,6 +107,46 @@ class RecentRunsResult(BaseModel):
     runs: list[RecentRun] = Field(default_factory=list)
 
 
+class EmbeddingMetadata(BaseModel):
+    """Stored embedding model metadata."""
+
+    protocol: str
+    base_url: str
+    model: str
+    dimensions: int
+    probed_at: datetime
+
+
+class EmbeddingStatusResult(BaseModel):
+    """Embedding configuration and last probe metadata without secrets."""
+
+    enabled: bool
+    protocol: str
+    base_url: str
+    model: str
+    metadata: EmbeddingMetadata | None = None
+
+
+class EmbeddingProbeRequest(BaseModel):
+    """Request body for embedding dimension probing."""
+
+    dry_run: bool = True
+
+
+class EmbeddingProbeResult(BaseModel):
+    """Result of probing an embedding endpoint for vector dimensions."""
+
+    enabled: bool
+    dry_run: bool
+    protocol: str
+    base_url: str
+    model: str
+    dimensions: int | None = None
+    metadata_path: str | None = None
+    stored: bool = False
+    error: str | None = None
+
+
 class StatusResult(BaseModel):
     """Service status without secrets."""
 

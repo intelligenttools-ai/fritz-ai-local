@@ -9,7 +9,18 @@ from pydantic_ai.exceptions import ModelAPIError, UsageLimitExceeded
 
 from ..compile_workflow import run_compile
 from ..config import get_settings
-from ..models import CompileRunRequest, CompileRunResult, RecentRunsResult, StatusResult, SyncRunRequest, SyncRunResult
+from ..embeddings import embedding_status, probe_embedding_dimensions
+from ..models import (
+    CompileRunRequest,
+    CompileRunResult,
+    EmbeddingProbeRequest,
+    EmbeddingProbeResult,
+    EmbeddingStatusResult,
+    RecentRunsResult,
+    StatusResult,
+    SyncRunRequest,
+    SyncRunResult,
+)
 from ..run_history import recent_runs, record_compile, record_sync
 from ..sync_workflow import run_sync
 from .auth import require_token
@@ -64,3 +75,13 @@ async def sync_run(request: SyncRunRequest) -> SyncRunResult:
 @router.get("/v1/runs/recent", response_model=RecentRunsResult, dependencies=[Depends(require_token)])
 async def runs_recent(limit: int = 10) -> RecentRunsResult:
     return RecentRunsResult(runs=recent_runs(limit))
+
+
+@router.get("/v1/embeddings/status", response_model=EmbeddingStatusResult, dependencies=[Depends(require_token)])
+async def embeddings_status() -> EmbeddingStatusResult:
+    return embedding_status(get_settings())
+
+
+@router.post("/v1/embeddings/probe", response_model=EmbeddingProbeResult, dependencies=[Depends(require_token)])
+async def embeddings_probe(request: EmbeddingProbeRequest) -> EmbeddingProbeResult:
+    return await probe_embedding_dimensions(get_settings(), request)

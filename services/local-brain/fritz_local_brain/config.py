@@ -32,6 +32,13 @@ class Settings(BaseSettings):
     llm_api_key: str | None = Field(default=None, validation_alias=AliasChoices("LOCAL_BRAIN_LLM_API_KEY", "LLM_API_KEY"))
     llm_timeout_seconds: float = Field(default=120.0, validation_alias=AliasChoices("LOCAL_BRAIN_LLM_TIMEOUT_SECONDS", "LLM_TIMEOUT_SECONDS"))
 
+    embedding_enabled: bool = Field(default=False, validation_alias=AliasChoices("LOCAL_BRAIN_EMBEDDING_ENABLED", "EMBEDDING_ENABLED"))
+    embedding_protocol: str = Field(default="openai-compatible", validation_alias=AliasChoices("LOCAL_BRAIN_EMBEDDING_PROTOCOL", "EMBEDDING_PROTOCOL"))
+    embedding_base_url: str = Field(default="http://host.docker.internal:1234/v1", validation_alias=AliasChoices("LOCAL_BRAIN_EMBEDDING_BASE_URL", "EMBEDDING_ENDPOINT", "EMBEDDING_BASE_URL"))
+    embedding_model: str = Field(default="local-embedding-model", validation_alias=AliasChoices("LOCAL_BRAIN_EMBEDDING_MODEL", "EMBEDDING_MODEL"))
+    embedding_api_key: str | None = Field(default=None, validation_alias=AliasChoices("LOCAL_BRAIN_EMBEDDING_API_KEY", "EMBEDDING_API_KEY"))
+    embedding_timeout_seconds: float = Field(default=60.0, validation_alias=AliasChoices("LOCAL_BRAIN_EMBEDDING_TIMEOUT_SECONDS", "EMBEDDING_TIMEOUT_SECONDS"))
+
     api_host: str = Field(default="127.0.0.1", validation_alias=AliasChoices("LOCAL_BRAIN_API_HOST", "API_HOST"))
     api_port: int = Field(default=8765, validation_alias=AliasChoices("LOCAL_BRAIN_API_PORT", "API_PORT"))
     api_token: str | None = Field(default=None, validation_alias=AliasChoices("LOCAL_BRAIN_API_TOKEN", "API_TOKEN"))
@@ -47,16 +54,30 @@ class Settings(BaseSettings):
             return self.llm_api_key
         return None
 
+    def normalized_embedding_api_key(self) -> str | None:
+        if self.embedding_api_key and self.embedding_api_key.strip():
+            return self.embedding_api_key
+        return None
+
     def normalized_llm_base_url(self) -> str:
         """Return a Docker-reachable LLM endpoint for host-local defaults."""
 
-        parsed = urlsplit(self.llm_base_url)
-        if Path("/.dockerenv").exists() and parsed.hostname in {"localhost", "127.0.0.1"}:
-            host = "host.docker.internal"
-            if parsed.port:
-                host = f"{host}:{parsed.port}"
-            return urlunsplit((parsed.scheme, host, parsed.path, parsed.query, parsed.fragment))
-        return self.llm_base_url
+        return _normalized_container_url(self.llm_base_url)
+
+    def normalized_embedding_base_url(self) -> str:
+        """Return a Docker-reachable embedding endpoint for host-local defaults."""
+
+        return _normalized_container_url(self.embedding_base_url)
+
+
+def _normalized_container_url(url: str) -> str:
+    parsed = urlsplit(url)
+    if Path("/.dockerenv").exists() and parsed.hostname in {"localhost", "127.0.0.1"}:
+        host = "host.docker.internal"
+        if parsed.port:
+            host = f"{host}:{parsed.port}"
+        return urlunsplit((parsed.scheme, host, parsed.path, parsed.query, parsed.fragment))
+    return url
 
 
 @lru_cache
