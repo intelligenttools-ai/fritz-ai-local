@@ -64,6 +64,40 @@ All skills are prefixed with `fritz:` to avoid conflicts with other skill provid
 
 Copy `<repo>/templates/schema.template.md` to `~/.brain/templates/`.
 
+### Dual-variant strategy (agents that cannot handle colons)
+
+The repo uses `fritz:*` (colon) in directory names and SKILL.md frontmatter. This is the
+single source of truth — changing it would break every existing installation.
+
+Agents whose runtime requires skill names to match the parent directory name and only
+accept `lowercase a-z, 0-9, hyphens` (no colons) must create **local hyphenated copies**
+during setup. The repo stays unchanged.
+
+For each skill in `<repo>/skills/`, create a local copy with:
+- **Directory name**: replace `:` with `-` (e.g., `fritz-brain-query/`)
+- **SKILL.md frontmatter**: change `name: fritz:brain-query` to `name: fritz-brain-query`
+- **Slash commands inside SKILL.md text**: change `/fritz:brain-*` to `/fritz-brain-*`
+
+The local copy is a standalone file — not a symlink. It contains the full SKILL.md content
+with hyphenated names throughout, so slash commands inside the skill text also resolve
+correctly.
+
+Example for pi-agent (where `~/.agents/skills/` is the skills directory):
+```bash
+for skill_dir in <repo>/skills/fritz:*; do
+  skill_name=$(basename "$skill_dir")
+  hyphen_name="${skill_name//:/-}"
+  target="$HOME/.agents/skills/$hyphen_name"
+  mkdir -p "$target"
+  sed 's/name: fritz:/name: fritz-/' "$skill_dir/SKILL.md" \
+    | sed 's|/fritz:brain-|/fritz-brain-|g; s|/fritz:update|/fritz-update|g' \
+    > "$target/SKILL.md"
+done
+```
+
+Agents that support colons (Claude Code, Gemini CLI, etc.) skip this step entirely and
+use the colon-named symlinks directly.
+
 ## Step 3: Register hooks in your agent config
 
 You know your own config format. Register these hooks:
@@ -77,6 +111,7 @@ You know your own config format. Register these hooks:
 
 Reference hook configurations for each agent are in `<repo>/hooks/`:
 - Claude Code: `claude-code-hooks.json` → merge into `~/.claude/settings.json` under `hooks`
+- Pi (`pi-coding-agent`): copy or symlink `pi-extension.ts` to `~/.pi/agent/extensions/fritz-brain.ts`, then run `/reload`
 - Codex CLI: `codex-hooks.toml` → append to `~/.codex/config.toml`
 - Gemini CLI: `gemini-hooks.json` → merge into `~/.gemini/settings.json` under `hooks`
 - Hermes Agent: `hermes-hooks.yaml` → merge into the active Hermes `config.yaml` profile under `hooks`. Ensure `HERMES_HOME` points at the active profile directory when running Hermes under a non-default profile such as `~/.hermes-dev` or `~/.hermes-infra`.

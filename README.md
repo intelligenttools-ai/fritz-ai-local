@@ -4,7 +4,7 @@ Agent-agnostic brain overlay system for personal knowledge vaults.
 
 ## Install
 
-Paste this into your agent (Claude Code, Codex, Gemini CLI, Hermes, or any other):
+Paste this into your agent (Claude Code, Codex, Gemini CLI, Hermes, pi, or any other):
 
 ```
 Clone https://github.com/intelligenttools-ai/fritz-ai-local.git to ~/.fritz-ai-local
@@ -53,6 +53,7 @@ fritz-ai-local/
 ├── adapters/
 │   ├── base.py                 # TranscriptAdapter interface + CaptureEntry
 │   ├── claude_code.py          # Claude Code JSONL parser
+│   ├── pi_agent.py             # pi-coding-agent session format (tree)
 │   ├── codex.py                # Stub — agent generates during setup
 │   ├── gemini.py               # Stub — agent generates during setup
 │   ├── hermes.py               # Hermes Agent JSONL parser
@@ -67,6 +68,7 @@ fritz-ai-local/
 │   ├── codex-hooks.toml        # Codex CLI hook registration reference
 │   ├── gemini-hooks.json       # Gemini CLI hook registration reference
 │   ├── hermes-hooks.yaml       # Hermes Agent hook registration reference
+│   ├── pi-extension.ts         # pi-coding-agent extension hook bridge
 │   ├── hermes_brain_context.py # Hermes wrapper for context injection
 │   └── hermes_brain_capture.py # Hermes wrapper for session-finalize capture
 ├── skills/
@@ -101,6 +103,7 @@ Any agent that can read markdown and run Python:
 | Agent | Hooks | Transcript adapter |
 |-------|-------|--------------------|
 | Claude Code | SessionStart, UserPromptSubmit, PreCompact, Stop | Implemented |
-| Codex CLI | SessionStart, Stop | Stub — agent generates |
-| Gemini CLI | SessionStart, BeforeAgent, PreCompress, SessionEnd | Stub — agent generates |
+| pi          | session_start, before_agent_start, session_before_compact, session_shutdown via `hooks/pi-extension.ts` | Implemented |
+| Codex CLI   | SessionStart, Stop | Stub — agent generates |
+| Gemini CLI  | SessionStart, BeforeAgent, PreCompress, SessionEnd | Stub — agent generates |
 | Hermes Agent | pre_llm_call, on_session_finalize shell hooks | Implemented via wrappers |
