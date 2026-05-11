@@ -134,6 +134,22 @@ curl -X POST http://127.0.0.1:8765/v1/embeddings/probe \
   -d '{"dry_run": false}'
 ```
 
+Read-only query:
+
+```bash
+curl -X POST http://127.0.0.1:8765/v1/query/run \
+  -H 'content-type: application/json' \
+  -d '{"query": "local brain", "limit": 5}'
+```
+
+Dry-run lint:
+
+```bash
+curl -X POST http://127.0.0.1:8765/v1/lint/run \
+  -H 'content-type: application/json' \
+  -d '{"dry_run": true}'
+```
+
 ## MCP
 
 Run the stdio MCP server from the same image when an MCP host needs direct tool
@@ -149,7 +165,7 @@ Available tools mirror the safe service workflows:
 - `brain_compile`
 - `brain_sync`
 - `brain_recent_runs`
-- `brain_query`, currently returns unavailable until the query workflow exists
+- `brain_query`
 
 ## Roadmap
 

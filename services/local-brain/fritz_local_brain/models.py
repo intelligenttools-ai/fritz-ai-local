@@ -147,6 +147,62 @@ class EmbeddingProbeResult(BaseModel):
     error: str | None = None
 
 
+class QueryRunRequest(BaseModel):
+    """Request body for a read-only brain query."""
+
+    query: str = Field(min_length=1)
+    vault: str | None = None
+    limit: int = Field(default=10, ge=1, le=50)
+
+
+class QueryMatch(BaseModel):
+    """Knowledge article match for a query."""
+
+    vault: str
+    path: str
+    title: str
+    snippet: str
+
+
+class QueryRunResult(BaseModel):
+    """Structured read-only query result."""
+
+    run_id: str
+    started_at: datetime
+    finished_at: datetime
+    query: str
+    matches: list[QueryMatch] = Field(default_factory=list)
+    skipped: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+
+class LintRunRequest(BaseModel):
+    """Request body for a brain lint run."""
+
+    dry_run: bool = True
+    vault: str | None = None
+
+
+class LintFinding(BaseModel):
+    """Health finding from a lint run."""
+
+    vault: str
+    severity: Literal["error", "warning"]
+    path: str
+    message: str
+
+
+class LintRunResult(BaseModel):
+    """Structured lint result."""
+
+    run_id: str
+    started_at: datetime
+    finished_at: datetime
+    dry_run: bool
+    findings: list[LintFinding] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+
 class StatusResult(BaseModel):
     """Service status without secrets."""
 

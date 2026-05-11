@@ -10,17 +10,23 @@ from pydantic_ai.exceptions import ModelAPIError, UsageLimitExceeded
 from ..compile_workflow import run_compile
 from ..config import get_settings
 from ..embeddings import embedding_status, probe_embedding_dimensions
+from ..lint_workflow import run_lint
 from ..models import (
     CompileRunRequest,
     CompileRunResult,
     EmbeddingProbeRequest,
     EmbeddingProbeResult,
     EmbeddingStatusResult,
+    LintRunRequest,
+    LintRunResult,
+    QueryRunRequest,
+    QueryRunResult,
     RecentRunsResult,
     StatusResult,
     SyncRunRequest,
     SyncRunResult,
 )
+from ..query_workflow import run_query
 from ..run_history import recent_runs, record_compile, record_sync
 from ..sync_workflow import run_sync
 from .auth import require_token
@@ -28,6 +34,7 @@ from .auth import require_token
 router = APIRouter()
 compile_lock = asyncio.Lock()
 sync_lock = asyncio.Lock()
+lint_lock = asyncio.Lock()
 
 
 @router.get("/health")
@@ -85,3 +92,16 @@ async def embeddings_status() -> EmbeddingStatusResult:
 @router.post("/v1/embeddings/probe", response_model=EmbeddingProbeResult, dependencies=[Depends(require_token)])
 async def embeddings_probe(request: EmbeddingProbeRequest) -> EmbeddingProbeResult:
     return await probe_embedding_dimensions(get_settings(), request)
+
+
+@router.post("/v1/query/run", response_model=QueryRunResult, dependencies=[Depends(require_token)])
+async def query_run(request: QueryRunRequest) -> QueryRunResult:
+    return await run_query(get_settings(), request)
+
+
+@router.post("/v1/lint/run", response_model=LintRunResult, dependencies=[Depends(require_token)])
+async def lint_run(request: LintRunRequest) -> LintRunResult:
+    if lint_lock.locked():
+        raise HTTPException(status_code=409, detail="Lint already running")
+    async with lint_lock:
+        return await run_lint(get_settings(), request)

@@ -8,7 +8,8 @@ from mcp.server.fastmcp import FastMCP
 
 from .compile_workflow import run_compile
 from .config import get_settings
-from .models import CompileRunRequest, SyncRunRequest
+from .models import CompileRunRequest, QueryRunRequest, SyncRunRequest
+from .query_workflow import run_query
 from .run_history import recent_runs, record_compile, record_sync
 from .sync_workflow import run_sync
 
@@ -57,14 +58,11 @@ def brain_recent_runs(limit: int = 10) -> dict[str, Any]:
 
 
 @mcp.tool()
-def brain_query(query: str) -> dict[str, Any]:
-    """Report query availability without adding capabilities beyond the API."""
+async def brain_query(query: str, vault: str | None = None, limit: int = 10) -> dict[str, Any]:
+    """Run the same read-only query workflow as POST /v1/query/run."""
 
-    return {
-        "query": query,
-        "available": False,
-        "error": "Brain query is not implemented in the Local Brain service yet.",
-    }
+    result = await run_query(get_settings(), QueryRunRequest(query=query, vault=vault, limit=limit))
+    return result.model_dump(mode="json")
 
 
 def main() -> None:
