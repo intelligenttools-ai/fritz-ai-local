@@ -30,6 +30,10 @@ That's it. The agent reads SETUP.md, creates `~/.brain/`, symlinks hooks and ski
 
 `/fritz:handover` produces a structured handover document so you can continue work in a fresh agent session without losing context. Before writing the document it compiles pending captures and ingests session decisions and patterns, so the knowledge is preserved in the brain — not just in the handover file. Use it when you're about to hit a context limit, switch machines, or hand work off to another agent.
 
+## Local Brain service
+
+An optional Dockerized Local Brain service lives in [`services/local-brain/`](services/local-brain/). The initial service is compile-only: it loads the existing `fritz:brain-compile` skill as Pydantic AI agent instructions, treats captures as untrusted data, produces structured write proposals, and applies only policy-validated knowledge/index/log writes. Future service functionality is tracked in [`.planning/roadmap.md`](.planning/roadmap.md).
+
 ## Architecture
 
 ```

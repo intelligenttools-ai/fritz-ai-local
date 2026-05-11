@@ -1,0 +1,14 @@
+services:
+  local-brain:
+    build:
+      context: ../..
+      dockerfile: services/local-brain/Dockerfile
+    env_file:
+      - ../../.env
+    environment:
+      API_HOST: 0.0.0.0
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - ${HOME}/.brain:/data/brain
+      - ${HOME}/Notes:/vaults/notes
