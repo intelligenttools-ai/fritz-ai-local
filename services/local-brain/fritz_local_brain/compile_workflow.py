@@ -37,6 +37,7 @@ async def run_compile(settings: Settings, request: CompileRunRequest) -> Compile
     }
     capture_limit = request.max_captures or settings.compile_max_captures
     capture_paths = list_daily_captures(settings.brain_home, capture_limit)
+    allowed_sources = {path.resolve() for path in capture_paths}
     article_paths: dict[str, list[str]] = {}
     for name, manifest in manifests.items():
         knowledge_root = resolve_manifest_path(vault_paths[name], manifest, "knowledge")
@@ -77,7 +78,7 @@ Available vaults:
 
     for proposal in output.proposals:
         try:
-            target = validate_article_write(proposal, vault_paths, manifests, settings.brain_home)
+            target = validate_article_write(proposal, vault_paths, manifests, settings.brain_home, allowed_sources)
             apply_article_write(target, proposal, request.dry_run)
             update_directory_index(target, proposal.title, proposal.summary, request.dry_run)
             applied.append(

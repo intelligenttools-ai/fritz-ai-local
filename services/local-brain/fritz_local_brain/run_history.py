@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections import deque
+from datetime import datetime
+from uuid import uuid4
 
 from .models import CompileRunResult, RecentRun, SyncRunResult
 
@@ -39,6 +41,22 @@ def record_sync(result: SyncRunResult) -> None:
             finished_at=result.finished_at,
             dry_run=result.dry_run,
             status=status,
+            summary=summary,
+        )
+    )
+
+
+def record_failure(kind: str, started_at: datetime, finished_at: datetime, dry_run: bool, summary: str) -> None:
+    if kind not in {"compile", "sync"}:
+        raise ValueError(f"Unsupported run history kind: {kind}")
+    _RUNS.appendleft(
+        RecentRun(
+            kind=kind,
+            run_id=str(uuid4()),
+            started_at=started_at,
+            finished_at=finished_at,
+            dry_run=dry_run,
+            status="error",
             summary=summary,
         )
     )

@@ -16,6 +16,7 @@ class PolicyError(RuntimeError):
 
 
 FORBIDDEN_PARTS = {"registry.yaml", "manifest.yaml", "schema.md"}
+IDENTITY_PATH_KEYS = {"soul", "user", "memory"}
 
 
 def is_excluded(path: Path, vault_path: Path, manifest: dict[str, Any]) -> bool:
@@ -41,6 +42,7 @@ def validate_article_write(
     vault_paths: dict[str, Path],
     manifests: dict[str, dict[str, Any]],
     brain_home: Path,
+    allowed_sources: set[Path] | None = None,
 ) -> Path:
     if proposal.vault not in vault_paths:
         raise PolicyError(f"Unknown vault: {proposal.vault}")
@@ -69,6 +71,10 @@ def validate_article_write(
         raise PolicyError(f"Target escapes knowledge path: {proposal.relative_path}")
     if is_excluded(target, vault_path, manifest):
         raise PolicyError(f"Target is excluded: {proposal.relative_path}")
+    for key in IDENTITY_PATH_KEYS:
+        identity_path = resolve_manifest_path(vault_path, manifest, key)
+        if identity_path and target == identity_path.resolve():
+            raise PolicyError(f"Target is a manifest identity file: {proposal.relative_path}")
     if proposal.operation == "update" and not target.exists():
         raise PolicyError(f"Update target does not exist: {proposal.relative_path}")
     if proposal.operation == "create" and target.exists():
@@ -82,8 +88,13 @@ def validate_article_write(
             source_path = Path(source).expanduser()
         if not source_path.is_absolute():
             source_path = brain_home / source_path
+        source_path = source_path.resolve()
         if not is_relative_to(source_path, capture_root):
             raise PolicyError(f"Source is not in capture root: {source}")
+        if not source_path.exists():
+            raise PolicyError(f"Source does not exist: {source}")
+        if allowed_sources is not None and source_path not in allowed_sources:
+            raise PolicyError(f"Source was not provided to the compile agent: {source}")
 
     proposal.frontmatter.setdefault("type", "article")
     proposal.frontmatter.setdefault("title", proposal.title)
