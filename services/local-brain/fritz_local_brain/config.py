@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     api_host: str = Field(default="127.0.0.1", validation_alias=AliasChoices("LOCAL_BRAIN_API_HOST", "API_HOST"))
     api_port: int = Field(default=8765, validation_alias=AliasChoices("LOCAL_BRAIN_API_PORT", "API_PORT"))
     api_token: str | None = Field(default=None, validation_alias=AliasChoices("LOCAL_BRAIN_API_TOKEN", "API_TOKEN"))
+    approval_token: str | None = Field(default=None, validation_alias=AliasChoices("LOCAL_BRAIN_APPROVAL_TOKEN", "APPROVAL_TOKEN"))
+    large_batch_threshold: int = Field(default=10, ge=1, validation_alias=AliasChoices("LOCAL_BRAIN_LARGE_BATCH_THRESHOLD", "LARGE_BATCH_THRESHOLD"))
 
     compile_skill_name: str = Field(default="fritz:brain-compile", validation_alias=AliasChoices("LOCAL_BRAIN_COMPILE_SKILL_NAME", "COMPILE_SKILL_NAME"))
     sync_skill_name: str = Field(default="fritz:brain-sync", validation_alias=AliasChoices("LOCAL_BRAIN_SYNC_SKILL_NAME", "SYNC_SKILL_NAME"))
@@ -60,6 +62,9 @@ class Settings(BaseSettings):
         if self.embedding_api_key and self.embedding_api_key.strip():
             return self.embedding_api_key
         return None
+
+    def approval_matches(self, token: str | None) -> bool:
+        return bool(self.approval_token and token and token == self.approval_token)
 
     def normalized_llm_base_url(self) -> str:
         """Return a Docker-reachable LLM endpoint for host-local defaults."""

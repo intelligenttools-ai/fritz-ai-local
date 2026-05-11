@@ -42,6 +42,7 @@ class CompileRunRequest(BaseModel):
 
     dry_run: bool = True
     max_captures: int | None = Field(default=None, ge=1)
+    approval_token: str | None = None
 
 
 class CompileRunResult(BaseModel):
@@ -63,6 +64,7 @@ class SyncRunRequest(BaseModel):
 
     dry_run: bool = True
     vault: str | None = None
+    approval_token: str | None = None
 
 
 class SyncVaultResult(BaseModel):

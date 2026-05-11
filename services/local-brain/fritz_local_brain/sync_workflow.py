@@ -35,7 +35,8 @@ async def run_sync(settings: Settings, request: SyncRunRequest) -> SyncRunResult
             errors.append(f"{name}: missing manifest")
             continue
         registry_config = registry.get("vaults", {}).get(name, {})
-        result = agent.run_vault(name, vault_path, registry_config, manifest, request.dry_run)
+        approved = settings.approval_matches(request.approval_token)
+        result = agent.run_vault(name, vault_path, registry_config, manifest, request.dry_run, approved)
         results.append(result)
         if result.pushed:
             summary = f"Synced {len(result.articles_to_sync)} articles from {name} to git"

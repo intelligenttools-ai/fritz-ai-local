@@ -35,6 +35,7 @@ class BrainSyncAgent:
         registry_config: dict[str, Any],
         manifest: dict[str, Any],
         dry_run: bool,
+        approved: bool,
     ) -> SyncVaultResult:
         target = str(registry_config.get("sync") or "local").strip().lower()
         result = SyncVaultResult(vault=vault, target=target, first_sync=False)
@@ -65,6 +66,9 @@ class BrainSyncAgent:
             return result
         if result.first_sync and not dry_run and not self.allow_first_external_sync:
             result.errors.append("First external sync is blocked; set ALLOW_FIRST_EXTERNAL_SYNC=true to permit it")
+            return result
+        if result.first_sync and not dry_run and not approved:
+            result.errors.append("First external sync requires approval_token matching APPROVAL_TOKEN")
             return result
 
         if dry_run:

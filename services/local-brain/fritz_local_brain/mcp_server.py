@@ -33,19 +33,30 @@ def brain_status() -> dict[str, Any]:
 
 
 @mcp.tool()
-async def brain_compile(dry_run: bool = True, max_captures: int | None = None) -> dict[str, Any]:
+async def brain_compile(
+    dry_run: bool = True,
+    max_captures: int | None = None,
+    approval_token: str | None = None,
+) -> dict[str, Any]:
     """Run the same compile workflow as POST /v1/compile/run."""
 
-    result = await run_compile(get_settings(), CompileRunRequest(dry_run=dry_run, max_captures=max_captures))
+    result = await run_compile(
+        get_settings(),
+        CompileRunRequest(dry_run=dry_run, max_captures=max_captures, approval_token=approval_token),
+    )
     record_compile(result)
     return result.model_dump(mode="json")
 
 
 @mcp.tool()
-async def brain_sync(dry_run: bool = True, vault: str | None = None) -> dict[str, Any]:
+async def brain_sync(
+    dry_run: bool = True,
+    vault: str | None = None,
+    approval_token: str | None = None,
+) -> dict[str, Any]:
     """Run the same sync workflow as POST /v1/sync/run."""
 
-    result = await run_sync(get_settings(), SyncRunRequest(dry_run=dry_run, vault=vault))
+    result = await run_sync(get_settings(), SyncRunRequest(dry_run=dry_run, vault=vault, approval_token=approval_token))
     record_sync(result)
     return result.model_dump(mode="json")
 

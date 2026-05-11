@@ -55,6 +55,10 @@ Important settings:
   not specify `max_captures`, also used by the scheduler. Defaults to `1`.
 - `ALLOW_FIRST_EXTERNAL_SYNC`: allows the first non-dry-run external sync, such
   as `git push`, for vaults with no previous `SYNC` log. Defaults to `false`.
+- `APPROVAL_TOKEN`: separate high-impact approval token. Leave empty to block
+  operations that require approval.
+- `LARGE_BATCH_THRESHOLD`: compile proposal count above which non-dry-run
+  compile requires `approval_token`. Defaults to `10`.
 
 ## Run
 
@@ -107,6 +111,10 @@ curl -X POST http://127.0.0.1:8765/v1/sync/run \
   -H 'content-type: application/json' \
   -d '{"dry_run": false, "vault": "engineering"}'
 ```
+
+High-impact operations require an approval token in the request body. This covers
+first real external sync and large non-dry-run compile batches. Delete,
+registry, manifest, and schema writes are still not implemented by the service.
 
 If `API_TOKEN` is set, add:
 

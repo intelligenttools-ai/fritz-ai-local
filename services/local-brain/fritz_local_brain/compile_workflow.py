@@ -68,6 +68,13 @@ Available vaults:
     result = await agent.run(prompt, deps=deps, usage_limits=UsageLimits(request_limit=3))
     output = result.output
 
+    if not request.dry_run and len(output.proposals) > settings.large_batch_threshold:
+        if not settings.approval_matches(request.approval_token):
+            errors.append(
+                f"Large compile batch requires approval: {len(output.proposals)} proposals exceeds threshold {settings.large_batch_threshold}"
+            )
+            output.proposals.clear()
+
     for proposal in output.proposals:
         try:
             target = validate_article_write(proposal, vault_paths, manifests, settings.brain_home)
