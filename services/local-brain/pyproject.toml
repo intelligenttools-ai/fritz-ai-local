@@ -5,6 +5,7 @@ description = "Optional service-mode Local Brain for Fritz Local"
 requires-python = ">=3.11"
 dependencies = [
   "fastapi>=0.115",
+  "mcp>=1.10",
   "pydantic>=2.8",
   "pydantic-ai-slim[openai]>=1.0",
   "pydantic-settings>=2.4",
@@ -14,6 +15,7 @@ dependencies = [
 
 [project.scripts]
 fritz-local-brain = "fritz_local_brain.app:main"
+fritz-local-brain-mcp = "fritz_local_brain.mcp_server:main"
 
 [build-system]
 requires = ["hatchling"]

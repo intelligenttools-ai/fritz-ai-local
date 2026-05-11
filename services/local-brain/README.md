@@ -109,6 +109,29 @@ If `API_TOKEN` is set, add:
 -H "authorization: Bearer $API_TOKEN"
 ```
 
+Recent runs:
+
+```bash
+curl 'http://127.0.0.1:8765/v1/runs/recent?limit=10'
+```
+
+## MCP
+
+Run the stdio MCP server from the same image when an MCP host needs direct tool
+access instead of REST:
+
+```bash
+docker compose -f services/local-brain/docker-compose.example.yml run --rm local-brain fritz-local-brain-mcp
+```
+
+Available tools mirror the safe service workflows:
+
+- `brain_status`
+- `brain_compile`
+- `brain_sync`
+- `brain_recent_runs`
+- `brain_query`, currently returns unavailable until the query workflow exists
+
 ## Roadmap
 
 Deferred functionality is tracked in `.planning/roadmap.md` at the repository

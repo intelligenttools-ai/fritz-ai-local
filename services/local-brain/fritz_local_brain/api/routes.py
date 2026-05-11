@@ -9,7 +9,8 @@ from pydantic_ai.exceptions import ModelAPIError, UsageLimitExceeded
 
 from ..compile_workflow import run_compile
 from ..config import get_settings
-from ..models import CompileRunRequest, CompileRunResult, StatusResult, SyncRunRequest, SyncRunResult
+from ..models import CompileRunRequest, CompileRunResult, RecentRunsResult, StatusResult, SyncRunRequest, SyncRunResult
+from ..run_history import recent_runs, record_compile, record_sync
 from ..sync_workflow import run_sync
 from .auth import require_token
 
@@ -41,7 +42,9 @@ async def compile_run(request: CompileRunRequest) -> CompileRunResult:
         raise HTTPException(status_code=409, detail="Compile already running")
     async with compile_lock:
         try:
-            return await run_compile(get_settings(), request)
+            result = await run_compile(get_settings(), request)
+            record_compile(result)
+            return result
         except UsageLimitExceeded as exc:
             raise HTTPException(status_code=502, detail=f"Compile agent exceeded run limits: {exc}") from exc
         except ModelAPIError as exc:
@@ -53,4 +56,11 @@ async def sync_run(request: SyncRunRequest) -> SyncRunResult:
     if sync_lock.locked():
         raise HTTPException(status_code=409, detail="Sync already running")
     async with sync_lock:
-        return await run_sync(get_settings(), request)
+        result = await run_sync(get_settings(), request)
+        record_sync(result)
+        return result
+
+
+@router.get("/v1/runs/recent", response_model=RecentRunsResult, dependencies=[Depends(require_token)])
+async def runs_recent(limit: int = 10) -> RecentRunsResult:
+    return RecentRunsResult(runs=recent_runs(limit))

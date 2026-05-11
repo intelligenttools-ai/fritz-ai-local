@@ -89,6 +89,24 @@ class SyncRunResult(BaseModel):
     errors: list[str] = Field(default_factory=list)
 
 
+class RecentRun(BaseModel):
+    """Bounded in-process record of a service run."""
+
+    kind: Literal["compile", "sync"]
+    run_id: str
+    started_at: datetime
+    finished_at: datetime
+    dry_run: bool
+    status: Literal["ok", "error"]
+    summary: str
+
+
+class RecentRunsResult(BaseModel):
+    """Recent service runs."""
+
+    runs: list[RecentRun] = Field(default_factory=list)
+
+
 class StatusResult(BaseModel):
     """Service status without secrets."""
 
