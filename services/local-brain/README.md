@@ -13,6 +13,28 @@ guarded `git` targets.
 The compile agent can use one bounded read-only context tool to load captures,
 vaults, and existing article paths. It cannot write directly.
 
+## Agent Operating Mode
+
+When this service is enabled for a Fritz Local installation, agents should treat
+it as the primary execution path for the workflows it provides:
+
+- Compile: use `/v1/compile/run`, `brain_compile`, or `fritz-local-brain-cli compile`.
+- Sync: use `/v1/sync/run`, `brain_sync`, or `fritz-local-brain-cli sync`.
+- Query: use `/v1/query/run`, `brain_query`, or `fritz-local-brain-cli query`.
+- Lint: use `/v1/lint/run` or `fritz-local-brain-cli lint`.
+- Embeddings: use `/v1/embeddings/status` and `/v1/embeddings/probe`.
+
+Do not duplicate those same operations by also running the equivalent local
+slash-skill workflow in the same session, unless the service is unavailable or
+the human explicitly asks for the non-service path. For example, handover
+preparation should use service-backed compile/sync when those steps are needed,
+then write the handover document; it should not also run `/fritz:brain-compile`
+or `/fritz:brain-sync` for the same work.
+
+The service does not replace capture hooks, vault setup, ingest, update, or the
+act of writing a handover document. Use the existing Fritz Local hooks and skills
+for workflows that the service does not provide.
+
 ## Safety Defaults
 
 - Scheduler is disabled by default.

@@ -196,6 +196,12 @@ Important service safety notes:
 - The service must not write registry, manifest, schema, identity files, or excluded paths.
 - Full service documentation is in `<repo>/services/local-brain/README.md`.
 
+Agent operating rule when the service is enabled:
+- Use the Dockerized service as the primary execution path for supported workflows: compile, sync, query, lint, embedding status/probe, MCP, and CLI operations.
+- Do not run the equivalent local slash-skill workflow for the same supported operation in the same session unless the service is unavailable or the human explicitly asks for the non-service path.
+- For handover preparation, use service-backed compile and sync where those steps are needed, then write the handover document. Do not duplicate compile/sync by also invoking `/fritz:brain-compile` or `/fritz:brain-sync` directly.
+- Continue to use local hooks and slash skills for workflows the service does not provide, including capture hooks, setup, ingest, update, and writing the handover document itself.
+
 ## Step 12: Keeping Fritz Local updated
 
 Fritz Local checks for updates on session start (once per 24 hours). When an update is available, you'll see a notification with the changelog.
