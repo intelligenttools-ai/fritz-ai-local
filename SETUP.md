@@ -155,7 +155,48 @@ settings:
 
 Per-project `.fritz-local.json` overrides global settings.
 
-## Step 11: Keeping Fritz Local updated
+## Step 11: Offer the Dockerized Local Brain service (optional)
+
+After the brain overlay and vault registry are working, ask the human whether they want to set up the optional Dockerized Local Brain service.
+
+Use this exact decision prompt:
+
+> Fritz Local can also run an optional Dockerized Local Brain service for compile, sync, query, lint, embeddings, MCP, and CLI workflows. It is disabled by default and uses dry-run/safety gates by default. Do you want me to configure and start it now?
+
+If the human says no, skip this step. Do not start Docker automatically without explicit approval.
+
+If the human says yes:
+
+1. Confirm Docker or a compatible runtime is available.
+2. Copy `<repo>/.env.example` to `<repo>/.env` if it does not already exist.
+3. Edit `<repo>/.env` for the local machine:
+   - `BRAIN_HOME=/data/brain`
+   - `BRAIN_PATH_MAP=<host-notes-root>=/vaults/notes`, matching the path style used in `~/.brain/registry.yaml`
+   - `LLM_PROTOCOL=openai-compatible` or `anthropic-compatible`
+   - `LLM_ENDPOINT=<OpenAI-compatible or Anthropic-compatible endpoint>`
+   - `LLM_MODEL=<model-name>`
+   - Leave `API_HOST=127.0.0.1` unless the human explicitly asks to expose the service off-host.
+   - Set `API_TOKEN` before exposing the API beyond localhost.
+4. Start the service:
+   ```bash
+   docker compose -f <repo>/services/local-brain/docker-compose.example.yml up --build -d
+   ```
+5. Verify it:
+   ```bash
+   curl http://127.0.0.1:8765/health
+   curl http://127.0.0.1:8765/v1/status
+   curl -X POST http://127.0.0.1:8765/v1/compile/run \
+     -H 'content-type: application/json' \
+     -d '{"dry_run": true, "max_captures": 1}'
+   ```
+
+Important service safety notes:
+- Manual compile and sync should be dry-run first.
+- First real external sync and large compile batches require explicit approval configuration.
+- The service must not write registry, manifest, schema, identity files, or excluded paths.
+- Full service documentation is in `<repo>/services/local-brain/README.md`.
+
+## Step 12: Keeping Fritz Local updated
 
 Fritz Local checks for updates on session start (once per 24 hours). When an update is available, you'll see a notification with the changelog.
 
