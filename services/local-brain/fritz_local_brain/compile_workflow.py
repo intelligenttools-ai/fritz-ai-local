@@ -81,14 +81,15 @@ Available vaults:
             target = validate_article_write(proposal, vault_paths, manifests, settings.brain_home, allowed_sources)
             apply_article_write(target, proposal, request.dry_run)
             update_directory_index(target, proposal.title, proposal.summary, request.dry_run)
-            applied.append(
-                AppliedArticleWrite(
-                    vault=proposal.vault,
-                    path=str(target),
-                    operation=proposal.operation,
-                    title=proposal.title,
+            if not request.dry_run:
+                applied.append(
+                    AppliedArticleWrite(
+                        vault=proposal.vault,
+                        path=str(target),
+                        operation=proposal.operation,
+                        title=proposal.title,
+                    )
                 )
-            )
         except (OSError, PolicyError, ValueError) as exc:
             errors.append(f"{proposal.vault}/{proposal.relative_path}: {exc}")
 
