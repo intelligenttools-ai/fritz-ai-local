@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
-
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic_ai.exceptions import ModelAPIError, UsageLimitExceeded
 
@@ -26,15 +24,13 @@ from ..models import (
     SyncRunRequest,
     SyncRunResult,
 )
+from ..operation_locks import OperationAlreadyRunning, compile_lock, lint_lock, sync_lock
 from ..query_workflow import run_query
 from ..run_history import recent_runs, record_compile, record_sync
 from ..sync_workflow import run_sync
 from .auth import require_token
 
 router = APIRouter()
-compile_lock = asyncio.Lock()
-sync_lock = asyncio.Lock()
-lint_lock = asyncio.Lock()
 
 
 @router.get("/health")
@@ -56,27 +52,31 @@ async def status() -> StatusResult:
 
 @router.post("/v1/compile/run", response_model=CompileRunResult, dependencies=[Depends(require_token)])
 async def compile_run(request: CompileRunRequest) -> CompileRunResult:
-    if compile_lock.locked():
-        raise HTTPException(status_code=409, detail="Compile already running")
-    async with compile_lock:
-        try:
-            result = await run_compile(get_settings(), request)
-            record_compile(result)
-            return result
-        except UsageLimitExceeded as exc:
-            raise HTTPException(status_code=502, detail=f"Compile agent exceeded run limits: {exc}") from exc
-        except ModelAPIError as exc:
-            raise HTTPException(status_code=502, detail=f"Compile model request failed: {exc.message}") from exc
+    settings = get_settings()
+    try:
+        async with compile_lock.guard(settings.brain_home):
+            try:
+                result = await run_compile(settings, request)
+                record_compile(result)
+                return result
+            except UsageLimitExceeded as exc:
+                raise HTTPException(status_code=502, detail=f"Compile agent exceeded run limits: {exc}") from exc
+            except ModelAPIError as exc:
+                raise HTTPException(status_code=502, detail=f"Compile model request failed: {exc.message}") from exc
+    except OperationAlreadyRunning as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.post("/v1/sync/run", response_model=SyncRunResult, dependencies=[Depends(require_token)])
 async def sync_run(request: SyncRunRequest) -> SyncRunResult:
-    if sync_lock.locked():
-        raise HTTPException(status_code=409, detail="Sync already running")
-    async with sync_lock:
-        result = await run_sync(get_settings(), request)
-        record_sync(result)
-        return result
+    settings = get_settings()
+    try:
+        async with sync_lock.guard(settings.brain_home):
+            result = await run_sync(settings, request)
+            record_sync(result)
+            return result
+    except OperationAlreadyRunning as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get("/v1/runs/recent", response_model=RecentRunsResult, dependencies=[Depends(require_token)])
@@ -101,7 +101,9 @@ async def query_run(request: QueryRunRequest) -> QueryRunResult:
 
 @router.post("/v1/lint/run", response_model=LintRunResult, dependencies=[Depends(require_token)])
 async def lint_run(request: LintRunRequest) -> LintRunResult:
-    if lint_lock.locked():
-        raise HTTPException(status_code=409, detail="Lint already running")
-    async with lint_lock:
-        return await run_lint(get_settings(), request)
+    settings = get_settings()
+    try:
+        async with lint_lock.guard(settings.brain_home):
+            return await run_lint(settings, request)
+    except OperationAlreadyRunning as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc

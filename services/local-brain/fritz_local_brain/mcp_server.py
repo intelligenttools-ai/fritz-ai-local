@@ -9,6 +9,7 @@ from mcp.server.fastmcp import FastMCP
 from .compile_workflow import run_compile
 from .config import get_settings
 from .models import CompileRunRequest, QueryRunRequest, SyncRunRequest
+from .operation_locks import compile_lock, sync_lock
 from .query_workflow import run_query
 from .run_history import recent_runs, record_compile, record_sync
 from .sync_workflow import run_sync
@@ -40,12 +41,14 @@ async def brain_compile(
 ) -> dict[str, Any]:
     """Run the same compile workflow as POST /v1/compile/run."""
 
-    result = await run_compile(
-        get_settings(),
-        CompileRunRequest(dry_run=dry_run, max_captures=max_captures, approval_token=approval_token),
-    )
-    record_compile(result)
-    return result.model_dump(mode="json")
+    settings = get_settings()
+    async with compile_lock.guard(settings.brain_home):
+        result = await run_compile(
+            settings,
+            CompileRunRequest(dry_run=dry_run, max_captures=max_captures, approval_token=approval_token),
+        )
+        record_compile(result)
+        return result.model_dump(mode="json")
 
 
 @mcp.tool()
@@ -56,9 +59,11 @@ async def brain_sync(
 ) -> dict[str, Any]:
     """Run the same sync workflow as POST /v1/sync/run."""
 
-    result = await run_sync(get_settings(), SyncRunRequest(dry_run=dry_run, vault=vault, approval_token=approval_token))
-    record_sync(result)
-    return result.model_dump(mode="json")
+    settings = get_settings()
+    async with sync_lock.guard(settings.brain_home):
+        result = await run_sync(settings, SyncRunRequest(dry_run=dry_run, vault=vault, approval_token=approval_token))
+        record_sync(result)
+        return result.model_dump(mode="json")
 
 
 @mcp.tool()
