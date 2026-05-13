@@ -24,6 +24,9 @@ from brain_common import (
     read_hook_input, load_registry, load_manifest, resolve_path,
     resolve_project_vault, get_context_injection_level,
     get_max_injection_chars, BRAIN_HOME,
+    local_brain_service_available, local_brain_service_instructions,
+    local_brain_setup_suggestion, local_brain_setup_suggestions_enabled,
+    local_brain_service_configured, local_brain_configuration_decision_prompt,
 )
 
 
@@ -46,6 +49,17 @@ IMPLEMENTATION_SIGNALS = [
     "implement", "build", "create", "fix", "refactor", "deploy",
     "add feature", "write code", "set up", "configure", "migrate",
     "update the", "change the", "modify", "redesign",
+]
+
+BRAIN_SERVICE_PHRASES = [
+    "local brain", "brain service", "dockerized local brain", "fritz local brain",
+    "brain capture", "brain captures", "brain vault", "brain lint",
+    "brain compile", "brain sync", "brain query", "knowledge base",
+    "/fritz:brain", "/fritz:handover",
+]
+BRAIN_SERVICE_ACTIONS = [
+    "compile", "sync", "query", "lint", "handover", "embedding", "mcp",
+    "capture", "captures", "vault", "vaults", "knowledge",
 ]
 
 # Skip enforcement for these
@@ -192,7 +206,19 @@ def should_check_brain(prompt: str) -> str | None:
         if signal in lower:
             return "implementation"
 
+    if should_suggest_local_brain_service(prompt):
+        return "query"
+
     return None
+
+
+def should_suggest_local_brain_service(prompt: str) -> bool:
+    lower = prompt.lower()
+    if any(phrase in lower for phrase in BRAIN_SERVICE_PHRASES):
+        return True
+    if not re.search(r"\bbrain\b", lower):
+        return False
+    return any(re.search(rf"\b{re.escape(action)}\b", lower) for action in BRAIN_SERVICE_ACTIONS)
 
 
 def main():
@@ -239,13 +265,25 @@ def main():
         if not has_knowledge and not has_captures:
             sys.exit(0)
 
-        vault_names = list(vaults.keys())
-        reminder = (
-            "BRAIN CHECK: Before answering, search the knowledge base. "
-            f"Vaults: {', '.join(vault_names)}. "
-            "Use /fritz:brain-query or search knowledge/ directories and "
-            "~/.brain/capture/daily/ for relevant prior decisions, patterns, and facts."
-        )
+        if local_brain_service_available():
+            reminder = (
+                "BRAIN CHECK: Before answering, use the Local Brain service for supported brain workflows.\n\n"
+                f"{local_brain_service_instructions()}\n\n"
+                "For this prompt, prefer the service-backed query command shown above "
+                "before falling back to local file search."
+            )
+        else:
+            vault_names = list(vaults.keys())
+            reminder = (
+                "BRAIN CHECK: Before answering, search the knowledge base. "
+                f"Vaults: {', '.join(vault_names)}. "
+                "Use /fritz:brain-query or search knowledge/ directories and "
+                "~/.brain/capture/daily/ for relevant prior decisions, patterns, and facts."
+            )
+            if not local_brain_service_configured() and should_suggest_local_brain_service(prompt):
+                reminder = f"{reminder}\n\n{local_brain_configuration_decision_prompt()}"
+            elif local_brain_setup_suggestions_enabled() and should_suggest_local_brain_service(prompt):
+                reminder = f"{reminder}\n\n{local_brain_setup_suggestion()}"
 
         response = {
             "hookSpecificOutput": {
@@ -257,6 +295,26 @@ def main():
         sys.exit(0)
 
     # Level: light or full — search and inject file paths
+    if local_brain_service_available():
+        injection = (
+            f"{local_brain_service_instructions()}\n\n"
+            "BRAIN CHECK: Use the service-backed query path for this prompt before local file search. "
+            "If the service returns insufficient results, then fall back to local knowledge files."
+        )
+        if level == "full":
+            injection += (
+                "\n\nMANDATORY (context_injection: full): You MUST spawn a subagent to run the service-backed query "
+                "and synthesize the results before responding. This is not optional."
+            )
+        response = {
+            "hookSpecificOutput": {
+                "hookEventName": hook_input.get("hook_event_name", "UserPromptSubmit"),
+                "additionalContext": injection,
+            }
+        }
+        print(json.dumps(response))
+        sys.exit(0)
+
     max_chars = get_max_injection_chars(fritz_local)
     project_name = fritz_local.get("project") if fritz_local else None
     keywords = extract_keywords(prompt)
@@ -274,6 +332,11 @@ def main():
             "but relevant knowledge may exist. Check feedback/ and decisions/ "
             "for this project before proceeding."
         )
+
+    if not local_brain_service_configured() and should_suggest_local_brain_service(prompt):
+        injection = f"{injection}\n\n{local_brain_configuration_decision_prompt()}"
+    elif local_brain_setup_suggestions_enabled() and should_suggest_local_brain_service(prompt):
+        injection = f"{injection}\n\n{local_brain_setup_suggestion()}"
 
     # Level: full — append subagent instruction
     if level == "full" and injection:

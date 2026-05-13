@@ -32,6 +32,18 @@ to the appropriate vault.
 
 ## Workflow
 
+### Service-first gate
+
+If this skill is invoked by an interactive agent, first read `~/.brain/registry.yaml`. If `settings.local_brain_service` is absent, ask the human which behavior they want, then write the selected setting before choosing the compile path. The choices are: enable and configure the Docker service, keep local workflows with future setup suggestions, or keep local workflows without suggestions.
+
+After the setting exists, check `settings.local_brain_service.enabled`. It must be boolean `true`; strings such as `"true"` or `"false"` do not enable service routing. If enabled, check whether the configured service is reachable with `GET <base_url>/v1/status`, using the token from `settings.local_brain_service.api_token_env` when that environment variable is set. Only use loopback URLs unless `settings.local_brain_service.allow_remote: true` is explicitly configured. Reject service URLs with credentials, query strings, fragments, or non-root paths. If enabled and reachable, use the service-backed compile path first: `fritz-local-brain-cli --base-url <base_url> compile` (plus `--token "$<api_token_env>"` when a token is configured) or `POST <base_url>/v1/compile/run`. Do not also perform the manual compile workflow below for the same captures unless the service is unavailable or the human explicitly requests the non-service path.
+
+If the service is disabled or not reachable, continue with the manual workflow below. The Docker service is optional and absence of the service is not an error.
+
+If service mode is disabled and `settings.local_brain_service.suggest_setup` is not `false`, you may briefly offer to configure the optional Docker stack when compile is repeated, slow, or part of a larger automated brain workflow. Do not block the compile task if the human declines.
+
+If these instructions are being used inside the Local Brain service compile agent itself, do not call the service again. Continue with the workflow below and return the requested structured compile output.
+
 ### 1. Read the vault registry
 
 Read `~/.brain/registry.yaml` to get all available vaults and their domains.

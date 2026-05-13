@@ -151,6 +151,12 @@ settings:
   # context_injection: off    # off | light | full — inherited by all projects
   # max_injection_chars: 8000 # cap on injected context size
   # update_check: true        # check for Fritz Local updates on session start
+  # local_brain_service:      # optional Dockerized service, disabled by default
+  #   enabled: false
+  #   base_url: http://127.0.0.1:8765
+  #   api_token_env: LOCAL_BRAIN_API_TOKEN
+  #   allow_remote: false     # keep false unless intentionally using a trusted remote service
+  #   suggest_setup: true      # agents may suggest setup for supported brain workflows
 ```
 
 Per-project `.fritz-local.json` overrides global settings.
@@ -163,7 +169,7 @@ Use this exact decision prompt:
 
 > Fritz Local can also run an optional Dockerized Local Brain service for compile, sync, query, lint, embeddings, MCP, and CLI workflows. It is disabled by default and uses dry-run/safety gates by default. Do you want me to configure and start it now?
 
-If the human says no, skip this step. Do not start Docker automatically without explicit approval.
+If the human says no, skip Docker setup but still write `settings.local_brain_service` to `~/.brain/registry.yaml` with `enabled: false`. Ask whether future setup suggestions should remain enabled. Set `suggest_setup: true` if they want future suggestions, or `suggest_setup: false` if they do not. Do not leave the setting absent after asking. Do not start Docker automatically without explicit approval.
 
 If the human says yes:
 
@@ -180,8 +186,18 @@ If the human says yes:
 4. Start the service:
    ```bash
    docker compose -f <repo>/services/local-brain/docker-compose.example.yml up --build -d
+    ```
+5. Record the rollout decision in `~/.brain/registry.yaml`:
+   ```yaml
+   settings:
+     local_brain_service:
+       enabled: true
+       base_url: http://127.0.0.1:8765
+       api_token_env: LOCAL_BRAIN_API_TOKEN
+       allow_remote: false
+       suggest_setup: true
    ```
-5. Verify it:
+6. Verify it:
    ```bash
    curl http://127.0.0.1:8765/health
    curl http://127.0.0.1:8765/v1/status
@@ -196,11 +212,19 @@ Important service safety notes:
 - The service must not write registry, manifest, schema, identity files, or excluded paths.
 - Full service documentation is in `<repo>/services/local-brain/README.md`.
 
-Agent operating rule when the service is enabled:
+Agent operating rule when `settings.local_brain_service.enabled: true` and the service health check passes:
 - Use the Dockerized service as the primary execution path for supported workflows: compile, sync, query, lint, embedding status/probe, MCP, and CLI operations.
 - Do not run the equivalent local slash-skill workflow for the same supported operation in the same session unless the service is unavailable or the human explicitly asks for the non-service path.
 - For handover preparation, use service-backed compile and sync where those steps are needed, then write the handover document. Do not duplicate compile/sync by also invoking `/fritz:brain-compile` or `/fritz:brain-sync` directly.
 - Continue to use local hooks and slash skills for workflows the service does not provide, including capture hooks, setup, ingest, update, and writing the handover document itself.
+
+If `settings.local_brain_service` is absent, agents must ask the human which behavior to use and then write the selected setting to `~/.brain/registry.yaml`. Absence means unconfigured, not disabled.
+
+If `settings.local_brain_service.enabled` is false, agents must use the original local hooks and slash-skill behavior even if a process happens to be listening on the default service port.
+
+When service mode is disabled and `settings.local_brain_service.suggest_setup` is not `false`, hooks may inject an advisory for supported brain workflows so agents can ask whether the human wants to configure the optional Docker stack. This advisory never enables the service by itself and must not block fallback local execution.
+
+For safety, hooks only probe loopback service URLs by default (`127.0.0.1`, `localhost`, `::1`) and reject credential-bearing URLs, query strings, fragments, and non-root paths. Set `allow_remote: true` only when the human intentionally points agents at a trusted remote Local Brain service. `LOCAL_BRAIN_BASE_URL` is only accepted for loopback overrides; remote service URLs must be written explicitly in the registry. Availability checks use `/v1/status`, not unauthenticated `/health`; if the service uses an API token, expose it to agents through the configured `api_token_env` environment variable.
 
 ## Step 12: Keeping Fritz Local updated
 
@@ -212,3 +236,5 @@ git -C ~/.fritz-ai-local pull
 ```
 
 Symlinked hooks and skills update immediately after pull. New skills are automatically symlinked by `/fritz:update`.
+
+Existing installs receive a Local Brain service decision prompt through `/fritz:update` and the hooks when `settings.local_brain_service` is absent. The update path does not enable Docker or change execution behavior by default; it asks the human, writes the selected registry setting, and then follows that setting.
