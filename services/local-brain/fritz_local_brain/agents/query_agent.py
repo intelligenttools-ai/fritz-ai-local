@@ -34,6 +34,8 @@ class BrainQueryAgent:
         for path in sorted(knowledge_root.glob("**/*.md")):
             if len(matches) >= remaining:
                 break
+            if not _is_regular_knowledge_file(path, knowledge_root):
+                continue
             if is_excluded(path, vault_path, manifest):
                 continue
             text = path.read_text(encoding="utf-8", errors="replace")
@@ -49,6 +51,15 @@ class BrainQueryAgent:
                 )
             )
         return matches
+
+
+def _is_regular_knowledge_file(path: Path, knowledge_root: Path) -> bool:
+    try:
+        path.resolve().relative_to(knowledge_root.resolve())
+        path.relative_to(knowledge_root)
+    except ValueError:
+        return False
+    return path.is_file() and not path.is_symlink()
 
 
 def _title_for(path: Path, text: str) -> str:

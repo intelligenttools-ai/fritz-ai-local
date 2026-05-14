@@ -78,6 +78,9 @@ Important settings:
   not specify `max_captures`, also used by the scheduler. Defaults to `1`.
 - `ALLOW_FIRST_EXTERNAL_SYNC`: allows the first non-dry-run external sync, such
   as `git push`, for vaults with no previous `SYNC` log. Defaults to `false`.
+- `API_TOKEN`: required bearer token for all `/v1/*` endpoints. Use a unique
+  random value and export the same value in the environment named by
+  `settings.local_brain_service.api_token_env`.
 - `APPROVAL_TOKEN`: separate high-impact approval token. Leave empty to block
   operations that require approval.
 - `LARGE_BATCH_THRESHOLD`: compile proposal count above which non-dry-run
@@ -139,7 +142,7 @@ High-impact operations require an approval token in the request body. This cover
 first real external sync and large non-dry-run compile batches. Delete,
 registry, manifest, and schema writes are still not implemented by the service.
 
-If `API_TOKEN` is set, add:
+All `/v1/*` endpoints require:
 
 ```bash
 -H "authorization: Bearer $API_TOKEN"

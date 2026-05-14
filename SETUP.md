@@ -182,7 +182,8 @@ If the human says yes:
    - `LLM_ENDPOINT=<OpenAI-compatible or Anthropic-compatible endpoint>`
    - `LLM_MODEL=<model-name>`
    - Leave `API_HOST=127.0.0.1` unless the human explicitly asks to expose the service off-host.
-   - Set `API_TOKEN` before exposing the API beyond localhost.
+   - Set `API_TOKEN` to a unique random value. All `/v1/*` endpoints require it.
+   - Export the same value in the environment named by `api_token_env`, for example `LOCAL_BRAIN_API_TOKEN`.
 4. Start the service:
    ```bash
    docker compose -f <repo>/services/local-brain/docker-compose.example.yml up --build -d
@@ -200,8 +201,9 @@ If the human says yes:
 6. Verify it:
    ```bash
    curl http://127.0.0.1:8765/health
-   curl http://127.0.0.1:8765/v1/status
+   curl -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" http://127.0.0.1:8765/v1/status
    curl -X POST http://127.0.0.1:8765/v1/compile/run \
+     -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" \
      -H 'content-type: application/json' \
      -d '{"dry_run": true, "max_captures": 1}'
    ```
