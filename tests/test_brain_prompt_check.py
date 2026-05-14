@@ -1,0 +1,49 @@
+import io
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+HOOKS = ROOT / "hooks"
+sys.path.insert(0, str(HOOKS))
+
+import brain_prompt_check  # noqa: E402
+
+
+def _run_prompt_hook(monkeypatch, capsys, tmp_path, prompt: str) -> str:
+    capture_dir = tmp_path / "capture" / "daily"
+    capture_dir.mkdir(parents=True)
+    (capture_dir / "today.md").write_text("capture")
+
+    hook_input = {
+        "hook_event_name": "UserPromptSubmit",
+        "cwd": str(ROOT),
+        "user_prompt": prompt,
+    }
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(hook_input)))
+    monkeypatch.setattr(brain_prompt_check, "BRAIN_HOME", tmp_path)
+    monkeypatch.setattr(brain_prompt_check, "load_registry", lambda: {"vaults": {"test": {"path": str(tmp_path)}}})
+    monkeypatch.setattr(brain_prompt_check, "resolve_project_vault", lambda cwd: (None, None, None, None))
+    monkeypatch.setattr(brain_prompt_check, "local_brain_service_available", lambda: True)
+    monkeypatch.setattr(brain_prompt_check, "local_brain_service_instructions", lambda: "SERVICE QUERY INSTRUCTIONS")
+
+    with pytest.raises(SystemExit):
+        brain_prompt_check.main()
+
+    return json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+
+
+def test_generic_setup_prompt_does_not_inject_service_query(monkeypatch, capsys, tmp_path):
+    context = _run_prompt_hook(monkeypatch, capsys, tmp_path, "Set up Hermes agents and tools on Mac Mini")
+
+    assert "SERVICE QUERY INSTRUCTIONS" not in context
+    assert "service-backed query" not in context
+
+
+def test_brain_setup_prompt_still_injects_service_query(monkeypatch, capsys, tmp_path):
+    context = _run_prompt_hook(monkeypatch, capsys, tmp_path, "Set up Local Brain query support")
+
+    assert "SERVICE QUERY INSTRUCTIONS" in context

@@ -202,12 +202,12 @@ def should_check_brain(prompt: str) -> str | None:
         if signal in lower:
             return "query"
 
+    if should_suggest_local_brain_service(prompt):
+        return "query"
+
     for signal in IMPLEMENTATION_SIGNALS:
         if signal in lower:
             return "implementation"
-
-    if should_suggest_local_brain_service(prompt):
-        return "query"
 
     return None
 
@@ -265,7 +265,7 @@ def main():
         if not has_knowledge and not has_captures:
             sys.exit(0)
 
-        if local_brain_service_available():
+        if prompt_type == "query" and local_brain_service_available():
             reminder = (
                 "BRAIN CHECK: Before answering, use the Local Brain service for supported brain workflows.\n\n"
                 f"{local_brain_service_instructions()}\n\n"
@@ -295,7 +295,7 @@ def main():
         sys.exit(0)
 
     # Level: light or full — search and inject file paths
-    if local_brain_service_available():
+    if prompt_type == "query" and local_brain_service_available():
         injection = (
             f"{local_brain_service_instructions()}\n\n"
             "BRAIN CHECK: Use the service-backed query path for this prompt before local file search. "
