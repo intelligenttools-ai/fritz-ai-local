@@ -25,24 +25,32 @@ def _hold_operation_lock(brain_home: str, name: str, ready: object, release: obj
     asyncio.run(scenario())
 
 
-def test_compile_lock_is_shared_by_rest_and_mcp(tmp_path: Path) -> None:
+def test_compile_lock_is_shared_by_rest_and_mcp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = Settings(LOCAL_BRAIN_HOME=tmp_path, API_TOKEN="secret")
+    monkeypatch.setattr(routes, "get_settings", lambda: settings)
+    monkeypatch.setattr(mcp_server, "get_settings", lambda: settings)
+
     async def scenario() -> None:
         async with compile_lock.guard(tmp_path):
             with pytest.raises(HTTPException, match="409: Compile already running"):
                 await routes.compile_run(CompileRunRequest())
             with pytest.raises(RuntimeError, match="Compile already running"):
-                await mcp_server.brain_compile()
+                await mcp_server.brain_compile(api_token="secret")
 
     asyncio.run(scenario())
 
 
-def test_sync_lock_is_shared_by_rest_and_mcp(tmp_path: Path) -> None:
+def test_sync_lock_is_shared_by_rest_and_mcp(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = Settings(LOCAL_BRAIN_HOME=tmp_path, API_TOKEN="secret")
+    monkeypatch.setattr(routes, "get_settings", lambda: settings)
+    monkeypatch.setattr(mcp_server, "get_settings", lambda: settings)
+
     async def scenario() -> None:
         async with sync_lock.guard(tmp_path):
             with pytest.raises(HTTPException, match="409: Sync already running"):
                 await routes.sync_run(SyncRunRequest())
             with pytest.raises(RuntimeError, match="Sync already running"):
-                await brain_sync()
+                await brain_sync(api_token="secret")
 
     asyncio.run(scenario())
 
@@ -55,7 +63,7 @@ def test_compile_entrypoints_reject_another_process_lock(tmp_path: Path, monkeyp
     process.start()
     try:
         assert ready.wait(5)
-        settings = Settings(LOCAL_BRAIN_HOME=tmp_path)
+        settings = Settings(LOCAL_BRAIN_HOME=tmp_path, API_TOKEN="secret")
         monkeypatch.setattr(routes, "get_settings", lambda: settings)
         monkeypatch.setattr(mcp_server, "get_settings", lambda: settings)
 
@@ -63,7 +71,7 @@ def test_compile_entrypoints_reject_another_process_lock(tmp_path: Path, monkeyp
             with pytest.raises(HTTPException, match="409: Compile already running"):
                 await routes.compile_run(CompileRunRequest())
             with pytest.raises(RuntimeError, match="Compile already running"):
-                await mcp_server.brain_compile()
+                await mcp_server.brain_compile(api_token="secret")
 
         asyncio.run(scenario())
     finally:

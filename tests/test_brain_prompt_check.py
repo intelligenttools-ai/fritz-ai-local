@@ -112,3 +112,13 @@ def test_service_instructions_use_http_not_host_cli(monkeypatch):
     assert "MCP" in instructions
     assert "curl -fsS" in instructions
     assert "fritz-local-brain-cli" not in instructions
+
+
+def test_rejects_shell_metacharacters_in_service_url(monkeypatch):
+    monkeypatch.setattr(
+        brain_common,
+        "get_local_brain_service_config",
+        lambda: {"base_url": "http://localhost:8765;touch", "allow_remote": False},
+    )
+
+    assert brain_common._validated_local_brain_base_url() is None

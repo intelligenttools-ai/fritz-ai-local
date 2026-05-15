@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib import request
+from urllib.parse import urlsplit, urlunsplit
 
 import yaml
 
@@ -28,6 +29,7 @@ def main() -> None:
     parser.add_argument("--base-url", default=None, help="Override registry service URL")
     parser.add_argument("--token", default=None)
     parser.add_argument("--token-env", default=None, help="Environment variable containing the API token")
+    parser.add_argument("--allow-remote", action="store_true", help="Allow non-loopback service URLs")
     parser.add_argument("--registry", type=Path, default=Path.home() / ".brain" / "registry.yaml")
     subcommands = parser.add_subparsers(dest="command", required=True)
 
@@ -105,15 +107,17 @@ def resolve_connection(args: argparse.Namespace) -> Connection:
     """Resolve service URL/token from explicit args, env, then registry."""
 
     service_config = _load_service_config(getattr(args, "registry", None))
-    base_url = (
+    raw_base_url = (
         getattr(args, "base_url", None)
         or os.environ.get("LOCAL_BRAIN_BASE_URL")
         or service_config.get("base_url")
         or DEFAULT_BASE_URL
     )
+    allow_remote = getattr(args, "allow_remote", False) or service_config.get("allow_remote", False) is True
+    base_url = _validated_base_url(str(raw_base_url), allow_remote)
     token_env = getattr(args, "token_env", None) or service_config.get("api_token_env") or DEFAULT_TOKEN_ENV
     token = getattr(args, "token", None) or os.environ.get(token_env) or None
-    return Connection(base_url=str(base_url), token=token.strip() if isinstance(token, str) and token.strip() else None)
+    return Connection(base_url=base_url, token=token.strip() if isinstance(token, str) and token.strip() else None)
 
 
 def _load_service_config(registry_path: Path | None) -> dict[str, Any]:
@@ -126,6 +130,36 @@ def _load_service_config(registry_path: Path | None) -> dict[str, Any]:
     settings = registry.get("settings", {}) if isinstance(registry, dict) else {}
     config = settings.get("local_brain_service", {}) if isinstance(settings, dict) else {}
     return config if isinstance(config, dict) else {}
+
+
+def _validated_base_url(raw_url: str, allow_remote: bool) -> str:
+    try:
+        parsed = urlsplit(raw_url.strip())
+        parsed_port = parsed.port
+    except ValueError as exc:
+        raise SystemExit(f"Invalid Local Brain base URL: {raw_url}") from exc
+
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise SystemExit(f"Invalid Local Brain base URL: {raw_url}")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in {"", "/"}:
+        raise SystemExit(f"Invalid Local Brain base URL: {raw_url}")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise SystemExit(f"Invalid Local Brain base URL: {raw_url}")
+    if not _netloc_matches_host_port(parsed.netloc, hostname, parsed_port):
+        raise SystemExit(f"Invalid Local Brain base URL: {raw_url}")
+    if hostname not in {"127.0.0.1", "localhost", "::1"} and not allow_remote:
+        raise SystemExit("Remote Local Brain URL is not allowed without --allow-remote or allow_remote: true")
+
+    return urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+
+
+def _netloc_matches_host_port(netloc: str, hostname: str, port: int | None) -> bool:
+    host_forms = {hostname, f"[{hostname}]"} if ":" in hostname else {hostname}
+    if port is not None:
+        host_forms.update({f"{host}:{port}" for host in list(host_forms)})
+    return netloc in host_forms
 
 
 if __name__ == "__main__":

@@ -205,6 +205,9 @@ Available tools mirror the safe service workflows:
 - `brain_embeddings_status`
 - `brain_embeddings_probe`
 
+MCP tools require the same API token as `/v1/*` endpoints. Pass the token via
+the `api_token` tool argument using the secret configured by your MCP host.
+
 ## CLI
 
 The package includes a cross-platform REST CLI for humans, CI, and agents that

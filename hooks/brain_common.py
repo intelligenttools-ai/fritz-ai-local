@@ -188,6 +188,7 @@ def _validated_local_brain_base_url() -> str | None:
 
     try:
         parsed = urlsplit(raw_url.strip())
+        parsed_port = parsed.port
     except ValueError:
         return None
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
@@ -196,12 +197,23 @@ def _validated_local_brain_base_url() -> str | None:
         return None
     if parsed.path not in {"", "/"}:
         return None
+    if not _netloc_matches_host_port(parsed.netloc, parsed.hostname, parsed_port):
+        return None
     if env_url and not _is_loopback_host(parsed.hostname):
         return None
     if not _is_loopback_host(parsed.hostname) and config.get("allow_remote", False) is not True:
         return None
 
     return urlunsplit((parsed.scheme, parsed.netloc, "", "", ""))
+
+
+def _netloc_matches_host_port(netloc: str, hostname: str | None, port: int | None) -> bool:
+    if not hostname:
+        return False
+    host_forms = {hostname, f"[{hostname}]"} if ":" in hostname else {hostname}
+    if port is not None:
+        host_forms.update({f"{host}:{port}" for host in list(host_forms)})
+    return netloc in host_forms
 
 
 def get_local_brain_base_url() -> str:
@@ -267,7 +279,7 @@ def local_brain_service_instructions() -> str:
         "## Local Brain Service Active\n\n"
         f"The Dockerized Local Brain service is reachable at `{base_url}`. "
         "For supported workflows, use this service layer first instead of duplicating the old local slash-skill workflow.\n\n"
-        "Agent integration order: use registered MCP tools first when available (`brain_query`, `brain_compile`, `brain_sync`, `brain_lint`), "
+        "Agent integration order: use registered MCP tools first when available and authorized (`brain_query`, `brain_compile`, `brain_sync`, `brain_lint`), "
         "then HTTP calls from the host. The optional CLI is for installed local packages only; do not assume it is on the host PATH.\n\n"
         "Supported service-backed workflows:\n"
         f"- Query: `curl -fsS -X POST {base_url}/v1/query/run{auth} -H 'content-type: application/json' -d '{{\"query\":\"<query>\"}}'`\n"
