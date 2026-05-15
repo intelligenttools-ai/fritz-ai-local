@@ -80,6 +80,9 @@ def validate_article_write(
     if proposal.operation == "create" and target.exists():
         raise PolicyError(f"Create target already exists: {proposal.relative_path}")
 
+    if not proposal.sources:
+        raise PolicyError("Knowledge article proposal must include at least one capture source")
+
     capture_root = (brain_home / "capture").resolve()
     for source in proposal.sources:
         if source.startswith("~/.brain/"):

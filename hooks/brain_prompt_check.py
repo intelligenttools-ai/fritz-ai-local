@@ -88,6 +88,8 @@ def extract_keywords(prompt: str) -> list[str]:
 
 def _match_file(md_file: Path, keywords: list[str]) -> bool:
     """Check if a markdown file matches any keyword by filename or heading."""
+    if not _is_regular_markdown_file(md_file):
+        return False
     name_lower = md_file.stem.lower().replace("-", " ").replace("_", " ")
     for kw in keywords:
         if kw in name_lower:
@@ -102,6 +104,10 @@ def _match_file(md_file: Path, keywords: list[str]) -> bool:
     except OSError:
         pass
     return False
+
+
+def _is_regular_markdown_file(md_file: Path) -> bool:
+    return md_file.is_file() and md_file.suffix == ".md" and not md_file.is_symlink()
 
 
 def search_knowledge_files(vault_path: Path, manifest: dict, keywords: list[str],
@@ -138,6 +144,8 @@ def search_knowledge_files(vault_path: Path, manifest: dict, keywords: list[str]
     for search_dir in search_dirs:
         for md_file in search_dir.rglob("*.md"):
             if md_file.name == "index.md":
+                continue
+            if not _is_regular_markdown_file(md_file):
                 continue
             if str(md_file) in seen_paths:
                 continue

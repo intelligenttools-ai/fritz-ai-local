@@ -47,3 +47,26 @@ def test_brain_setup_prompt_still_injects_service_query(monkeypatch, capsys, tmp
     context = _run_prompt_hook(monkeypatch, capsys, tmp_path, "Set up Local Brain query support")
 
     assert "SERVICE QUERY INSTRUCTIONS" in context
+
+
+def test_knowledge_search_skips_symlinked_markdown(tmp_path):
+    vault = tmp_path / "vault"
+    knowledge = vault / "knowledge"
+    knowledge.mkdir(parents=True)
+    safe = knowledge / "safe.md"
+    safe.write_text("# Secret Pattern\n", encoding="utf-8")
+    secret = tmp_path / "secret.md"
+    secret.write_text("# Secret Outside\n", encoding="utf-8")
+    linked = knowledge / "linked.md"
+    linked.symlink_to(secret)
+
+    context = brain_prompt_check.search_knowledge_files(
+        vault,
+        {"paths": {"knowledge": "knowledge"}},
+        ["secret"],
+        None,
+        4000,
+    )
+
+    assert str(safe) in context
+    assert str(linked) not in context
