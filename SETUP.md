@@ -207,10 +207,10 @@ If the human says yes:
    ```yaml
    settings:
      local_brain_service:
-        enabled: true
-        base_url: http://127.0.0.1:8765
-        api_token: replace-with-same-random-token-as-API_TOKEN
-        api_token_env: LOCAL_BRAIN_API_TOKEN
+       enabled: true
+       base_url: http://127.0.0.1:8765
+       api_token: replace-with-same-random-token-as-API_TOKEN
+       api_token_env: LOCAL_BRAIN_API_TOKEN
        allow_remote: false
        suggest_setup: true
    ```

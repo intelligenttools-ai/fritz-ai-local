@@ -43,9 +43,10 @@ for workflows that the service does not provide.
 - Agent runs are capped to a small request limit, the context tool may only be
   used once, and capture text is truncated by `CAPTURE_MAX_CHARS` before it
   reaches the model.
-- API keys are optional.
-- API auth is optional, but bind to `127.0.0.1` unless protected by a reverse
-  proxy or token.
+- LLM and embedding API keys are optional.
+- Local Brain API auth is required for all `/v1/*` endpoints; keep the service
+  bound to `127.0.0.1` unless it is intentionally protected by a trusted reverse
+  proxy.
 - The service cannot write `registry.yaml`, `.brain/manifest.yaml`,
   `.brain/schema.md`, identity files, or excluded paths.
 - The service cannot delete files. External sync is limited to explicit `git`

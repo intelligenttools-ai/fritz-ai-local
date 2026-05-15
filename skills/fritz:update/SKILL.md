@@ -100,10 +100,10 @@ Local Brain service:
      ```yaml
      settings:
        local_brain_service:
-          enabled: true
-          base_url: http://127.0.0.1:8765
-          api_token: <same random value as API_TOKEN, when trusted local agents should authenticate automatically>
-          api_token_env: LOCAL_BRAIN_API_TOKEN
+         enabled: true
+         base_url: http://127.0.0.1:8765
+         api_token: <same random value as API_TOKEN, when trusted local agents should authenticate automatically>
+         api_token_env: LOCAL_BRAIN_API_TOKEN
          allow_remote: false
          suggest_setup: true
      ```
