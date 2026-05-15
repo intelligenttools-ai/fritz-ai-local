@@ -114,6 +114,42 @@ def test_service_instructions_use_http_not_host_cli(monkeypatch):
     assert "fritz-local-brain-cli" not in instructions
 
 
+def test_service_token_can_come_from_registry_when_env_missing(monkeypatch):
+    monkeypatch.delenv("LOCAL_BRAIN_API_TOKEN", raising=False)
+    monkeypatch.setattr(
+        brain_common,
+        "get_local_brain_service_config",
+        lambda: {"api_token_env": "LOCAL_BRAIN_API_TOKEN", "api_token": "registry-token"},
+    )
+
+    assert brain_common.get_local_brain_api_token() == "registry-token"
+
+
+def test_service_registry_token_overrides_stale_env(monkeypatch):
+    monkeypatch.setenv("LOCAL_BRAIN_API_TOKEN", "stale-env-token")
+    monkeypatch.setattr(
+        brain_common,
+        "get_local_brain_service_config",
+        lambda: {"api_token_env": "LOCAL_BRAIN_API_TOKEN", "api_token": "registry-token"},
+    )
+
+    assert brain_common.get_local_brain_api_token() == "registry-token"
+
+
+def test_service_instructions_include_registry_token_header(monkeypatch):
+    monkeypatch.delenv("LOCAL_BRAIN_API_TOKEN", raising=False)
+    monkeypatch.setattr(brain_common, "get_local_brain_base_url", lambda: "http://127.0.0.1:8765")
+    monkeypatch.setattr(
+        brain_common,
+        "get_local_brain_service_config",
+        lambda: {"api_token_env": "LOCAL_BRAIN_API_TOKEN", "api_token": "registry-token"},
+    )
+
+    instructions = brain_common.local_brain_service_instructions()
+
+    assert "authorization: Bearer registry-token" in instructions
+
+
 def test_rejects_shell_metacharacters_in_service_url(monkeypatch):
     monkeypatch.setattr(
         brain_common,

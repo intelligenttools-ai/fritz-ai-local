@@ -81,7 +81,9 @@ Important settings:
   as `git push`, for vaults with no previous `SYNC` log. Defaults to `false`.
 - `API_TOKEN`: required bearer token for all `/v1/*` endpoints. Use a unique
   random value and export the same value in the environment named by
-  `settings.local_brain_service.api_token_env`.
+  `settings.local_brain_service.api_token_env`, or store the same value in
+  `settings.local_brain_service.api_token` on trusted local machines where
+  agents should authenticate without manual shell environment setup.
 - `APPROVAL_TOKEN`: separate high-impact approval token. Leave empty to block
   operations that require approval.
 - `LARGE_BATCH_THRESHOLD`: compile proposal count above which non-dry-run
@@ -90,8 +92,11 @@ Important settings:
 ## Run
 
 ```bash
-docker compose -f services/local-brain/docker-compose.example.yml up --build
+docker compose --env-file .env -f services/local-brain/docker-compose.example.yml up --build
 ```
+
+Pass `--env-file .env` explicitly so Compose interpolates `API_TOKEN` and the
+other service settings from the repository environment file.
 
 ## API
 
@@ -104,13 +109,15 @@ curl http://127.0.0.1:8765/health
 Status:
 
 ```bash
-curl http://127.0.0.1:8765/v1/status
+curl -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" \
+  http://127.0.0.1:8765/v1/status
 ```
 
 Dry-run compile:
 
 ```bash
 curl -X POST http://127.0.0.1:8765/v1/compile/run \
+  -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" \
   -H 'content-type: application/json' \
   -d '{"dry_run": true, "max_captures": 1}'
 ```
@@ -119,6 +126,7 @@ Apply compile proposals:
 
 ```bash
 curl -X POST http://127.0.0.1:8765/v1/compile/run \
+  -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" \
   -H 'content-type: application/json' \
   -d '{"dry_run": false, "max_captures": 1}'
 ```
@@ -127,6 +135,7 @@ Dry-run sync:
 
 ```bash
 curl -X POST http://127.0.0.1:8765/v1/sync/run \
+  -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" \
   -H 'content-type: application/json' \
   -d '{"dry_run": true}'
 ```
@@ -135,6 +144,7 @@ Sync one vault with git push enabled by registry config:
 
 ```bash
 curl -X POST http://127.0.0.1:8765/v1/sync/run \
+  -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" \
   -H 'content-type: application/json' \
   -d '{"dry_run": false, "vault": "engineering"}'
 ```
@@ -146,25 +156,28 @@ registry, manifest, and schema writes are still not implemented by the service.
 All `/v1/*` endpoints require:
 
 ```bash
--H "authorization: Bearer $API_TOKEN"
+-H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN"
 ```
 
 Recent runs:
 
 ```bash
-curl 'http://127.0.0.1:8765/v1/runs/recent?limit=10'
+curl -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" \
+  'http://127.0.0.1:8765/v1/runs/recent?limit=10'
 ```
 
 Embedding status:
 
 ```bash
-curl http://127.0.0.1:8765/v1/embeddings/status
+curl -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" \
+  http://127.0.0.1:8765/v1/embeddings/status
 ```
 
 Probe embedding dimensions after setting `EMBEDDING_ENABLED=true`:
 
 ```bash
 curl -X POST http://127.0.0.1:8765/v1/embeddings/probe \
+  -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" \
   -H 'content-type: application/json' \
   -d '{"dry_run": false}'
 ```
@@ -173,6 +186,7 @@ Read-only query:
 
 ```bash
 curl -X POST http://127.0.0.1:8765/v1/query/run \
+  -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" \
   -H 'content-type: application/json' \
   -d '{"query": "local brain", "limit": 5}'
 ```
@@ -181,6 +195,7 @@ Dry-run lint:
 
 ```bash
 curl -X POST http://127.0.0.1:8765/v1/lint/run \
+  -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" \
   -H 'content-type: application/json' \
   -d '{"dry_run": true}'
 ```
@@ -191,7 +206,7 @@ MCP is the preferred agent-native integration. Run the stdio MCP server from the
 same image when an MCP host needs direct tool access instead of REST:
 
 ```bash
-docker compose -f services/local-brain/docker-compose.example.yml run --rm local-brain fritz-local-brain-mcp
+docker compose --env-file .env -f services/local-brain/docker-compose.example.yml run --rm local-brain fritz-local-brain-mcp
 ```
 
 Available tools mirror the safe service workflows:
@@ -219,8 +234,9 @@ pipx install ./services/local-brain
 ```
 
 The CLI reads `~/.brain/registry.yaml` by default. It uses
-`settings.local_brain_service.base_url` and resolves the bearer token from the
-environment variable named by `settings.local_brain_service.api_token_env`.
+`settings.local_brain_service.base_url` and resolves the bearer token from
+`settings.local_brain_service.api_token`, or from the environment variable named
+by `settings.local_brain_service.api_token_env`.
 Explicit `--base-url`, `--token`, and `--token-env` arguments override registry
 defaults.
 
@@ -228,7 +244,7 @@ The Docker image also includes the same CLI for manual operations inside the
 container:
 
 ```bash
-docker compose -f services/local-brain/docker-compose.example.yml exec local-brain \
+docker compose --env-file .env -f services/local-brain/docker-compose.example.yml exec local-brain \
   fritz-local-brain-cli status
 ```
 

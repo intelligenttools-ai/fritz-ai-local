@@ -116,7 +116,7 @@ def resolve_connection(args: argparse.Namespace) -> Connection:
     allow_remote = getattr(args, "allow_remote", False) or service_config.get("allow_remote", False) is True
     base_url = _validated_base_url(str(raw_base_url), allow_remote)
     token_env = getattr(args, "token_env", None) or service_config.get("api_token_env") or DEFAULT_TOKEN_ENV
-    token = getattr(args, "token", None) or os.environ.get(token_env) or None
+    token = getattr(args, "token", None) or service_config.get("api_token") or os.environ.get(token_env) or None
     return Connection(base_url=base_url, token=token.strip() if isinstance(token, str) and token.strip() else None)
 
 

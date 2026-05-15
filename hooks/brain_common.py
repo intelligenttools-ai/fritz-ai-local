@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import shlex
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -233,8 +234,11 @@ def get_local_brain_api_token_env() -> str:
 
 
 def get_local_brain_api_token() -> str | None:
-    """Return the configured service token from the environment without logging it."""
+    """Return the configured service token without logging it."""
 
+    registry_token = get_local_brain_service_config().get("api_token")
+    if isinstance(registry_token, str) and registry_token.strip():
+        return registry_token.strip()
     token = os.environ.get(get_local_brain_api_token_env())
     if token and token.strip():
         return token.strip()
@@ -243,9 +247,13 @@ def get_local_brain_api_token() -> str | None:
 
 def _local_brain_auth_header() -> str:
     token_env = get_local_brain_api_token_env()
-    if get_local_brain_api_token():
+    token = get_local_brain_api_token()
+    if not token:
+        return ""
+    env_token = os.environ.get(token_env)
+    if isinstance(env_token, str) and env_token.strip() == token:
         return f' -H "authorization: Bearer ${token_env}"'
-    return ""
+    return f" -H {shlex.quote(f'authorization: Bearer {token}')}"
 
 
 def local_brain_service_available(timeout: float = 0.4) -> bool:
@@ -315,9 +323,9 @@ def local_brain_configuration_decision_prompt() -> str:
         "`settings.local_brain_service` is absent from `~/.brain/registry.yaml`, so the optional Dockerized Local Brain service behavior is unconfigured. "
         "Before choosing service or local routing for supported brain workflows, ask the human which behavior they want and then write the chosen setting to the registry.\n\n"
         "Offer these choices:\n"
-        "1. Configure and start the optional Docker Local Brain service now, then set `enabled: true`, `base_url`, `api_token_env`, `allow_remote`, and `suggest_setup`.\n"
-        "2. Keep using the existing local slash-skill workflow and allow future setup suggestions, setting `enabled: false`, `api_token_env: LOCAL_BRAIN_API_TOKEN`, and `suggest_setup: true`.\n"
-        "3. Keep using the existing local slash-skill workflow and stop future setup suggestions, setting `enabled: false`, `api_token_env: LOCAL_BRAIN_API_TOKEN`, and `suggest_setup: false`.\n\n"
+        "1. Configure and start the optional Docker Local Brain service now, then set `enabled: true`, `base_url`, `api_token` or `api_token_env`, `allow_remote`, and `suggest_setup`.\n"
+        "2. Keep using the existing local slash-skill workflow and allow future setup suggestions, setting `enabled: false`, optional `api_token`, `api_token_env: LOCAL_BRAIN_API_TOKEN`, and `suggest_setup: true`.\n"
+        "3. Keep using the existing local slash-skill workflow and stop future setup suggestions, setting `enabled: false`, optional `api_token`, `api_token_env: LOCAL_BRAIN_API_TOKEN`, and `suggest_setup: false`.\n\n"
         "Do not start Docker or set `enabled: true` without explicit human approval. If the human chooses local behavior, continue with the original local workflow after writing the setting."
     )
 

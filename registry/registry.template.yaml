@@ -27,6 +27,10 @@ settings:
   local_brain_service:
     enabled: false
     base_url: http://127.0.0.1:8765
+    # Agents resolve the API token from api_token first, then api_token_env.
+    # Use api_token on trusted local machines when agents should call the
+    # service without manual shell env setup.
+    # api_token: replace-with-random-token
     api_token_env: LOCAL_BRAIN_API_TOKEN
     allow_remote: false
     suggest_setup: true

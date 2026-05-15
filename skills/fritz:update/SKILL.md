@@ -87,21 +87,22 @@ Local Brain service:
      ```yaml
      settings:
        local_brain_service:
-         enabled: true
-         base_url: http://127.0.0.1:8765
-         api_token_env: LOCAL_BRAIN_API_TOKEN
+          enabled: true
+          base_url: http://127.0.0.1:8765
+          api_token: <same random value as API_TOKEN, when trusted local agents should authenticate automatically>
+          api_token_env: LOCAL_BRAIN_API_TOKEN
          allow_remote: false
          suggest_setup: true
      ```
 2. Keep using the existing local slash-skill workflow, but allow future setup
    suggestions.
    - Write `enabled: false`, `base_url: http://127.0.0.1:8765`,
-     `api_token_env: LOCAL_BRAIN_API_TOKEN`, `allow_remote: false`, and
+      `api_token_env: LOCAL_BRAIN_API_TOKEN`, optionally `api_token` for trusted local agent use, `allow_remote: false`, and
      `suggest_setup: true`.
 3. Keep using the existing local slash-skill workflow, and stop future setup
    suggestions.
    - Write `enabled: false`, `base_url: http://127.0.0.1:8765`,
-     `api_token_env: LOCAL_BRAIN_API_TOKEN`, `allow_remote: false`, and
+      `api_token_env: LOCAL_BRAIN_API_TOKEN`, optionally `api_token` for trusted local agent use, `allow_remote: false`, and
      `suggest_setup: false`.
 
 Do not start Docker or set `enabled: true` without explicit human approval. If

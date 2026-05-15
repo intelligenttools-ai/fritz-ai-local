@@ -27,6 +27,46 @@ def test_cli_resolves_base_url_and_token_from_registry(tmp_path, monkeypatch) ->
     assert connection.token == "secret-token"
 
 
+def test_cli_resolves_literal_token_from_registry_when_env_missing(tmp_path, monkeypatch) -> None:
+    registry = tmp_path / "registry.yaml"
+    registry.write_text(
+        "settings:\n"
+        "  local_brain_service:\n"
+        "    enabled: true\n"
+        "    base_url: http://127.0.0.1:9999\n"
+        "    api_token_env: TEST_LOCAL_BRAIN_TOKEN\n"
+        "    api_token: registry-token\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("TEST_LOCAL_BRAIN_TOKEN", raising=False)
+
+    connection = cli.resolve_connection(
+        Namespace(base_url=None, token=None, token_env=None, registry=registry, allow_remote=False)
+    )
+
+    assert connection.base_url == "http://127.0.0.1:9999"
+    assert connection.token == "registry-token"
+
+
+def test_cli_registry_literal_token_overrides_stale_env(tmp_path, monkeypatch) -> None:
+    registry = tmp_path / "registry.yaml"
+    registry.write_text(
+        "settings:\n"
+        "  local_brain_service:\n"
+        "    base_url: http://127.0.0.1:9999\n"
+        "    api_token_env: TEST_LOCAL_BRAIN_TOKEN\n"
+        "    api_token: registry-token\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("TEST_LOCAL_BRAIN_TOKEN", "stale-env-token")
+
+    connection = cli.resolve_connection(
+        Namespace(base_url=None, token=None, token_env=None, registry=registry, allow_remote=False)
+    )
+
+    assert connection.token == "registry-token"
+
+
 def test_cli_explicit_args_override_registry(tmp_path, monkeypatch) -> None:
     registry = tmp_path / "registry.yaml"
     registry.write_text(

@@ -154,6 +154,7 @@ settings:
   # local_brain_service:      # optional Dockerized service, disabled by default
   #   enabled: false
   #   base_url: http://127.0.0.1:8765
+  #   api_token: replace-with-random-token # optional, for trusted local agent use
   #   api_token_env: LOCAL_BRAIN_API_TOKEN
   #   allow_remote: false     # keep false unless intentionally using a trusted remote service
   #   suggest_setup: true      # agents may suggest setup for supported brain workflows
@@ -183,18 +184,20 @@ If the human says yes:
    - `LLM_MODEL=<model-name>`
    - Leave `API_HOST=127.0.0.1` unless the human explicitly asks to expose the service off-host.
    - Set `API_TOKEN` to a unique random value. All `/v1/*` endpoints require it.
-   - Export the same value in the environment named by `api_token_env`, for example `LOCAL_BRAIN_API_TOKEN`.
+   - For trusted local agent use, set `api_token` in `~/.brain/registry.yaml` to the same value so hooks, skills, and the CLI can authenticate without manual shell environment setup.
+   - Alternatively, export the same value in the environment named by `api_token_env`, for example `LOCAL_BRAIN_API_TOKEN`.
 4. Start the service:
    ```bash
-   docker compose -f <repo>/services/local-brain/docker-compose.example.yml up --build -d
-    ```
+   docker compose --env-file <repo>/.env -f <repo>/services/local-brain/docker-compose.example.yml up --build -d
+   ```
 5. Record the rollout decision in `~/.brain/registry.yaml`:
    ```yaml
    settings:
      local_brain_service:
-       enabled: true
-       base_url: http://127.0.0.1:8765
-       api_token_env: LOCAL_BRAIN_API_TOKEN
+        enabled: true
+        base_url: http://127.0.0.1:8765
+        api_token: replace-with-same-random-token-as-API_TOKEN
+        api_token_env: LOCAL_BRAIN_API_TOKEN
        allow_remote: false
        suggest_setup: true
    ```
@@ -203,14 +206,14 @@ If the human says yes:
    curl http://127.0.0.1:8765/health
    curl -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" http://127.0.0.1:8765/v1/status
    curl -X POST http://127.0.0.1:8765/v1/compile/run \
-     -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" \
-     -H 'content-type: application/json' \
-     -d '{"dry_run": true, "max_captures": 1}'
-    ```
+      -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" \
+      -H 'content-type: application/json' \
+      -d '{"dry_run": true, "max_captures": 1}'
+   ```
 
 Optional agent integrations:
-- Prefer MCP for agents when the host supports MCP: run `fritz-local-brain-mcp` from the service package/container and expose the `brain_query`, `brain_compile`, `brain_sync`, `brain_lint`, `brain_embeddings_status`, and `brain_embeddings_probe` tools. MCP tools require the same API token through their `api_token` argument; configure the MCP host to provide it as a secret.
-- For humans, CI, or shell-only agents, install the cross-platform Python CLI with `pipx install <repo>/services/local-brain`. The `fritz-brain` and `fritz-local-brain-cli` commands read `~/.brain/registry.yaml` and the configured token env automatically.
+- Prefer MCP for agents when the host supports MCP: run `fritz-local-brain-mcp` from the service package/container and expose the `brain_query`, `brain_compile`, `brain_sync`, `brain_lint`, `brain_embeddings_status`, and `brain_embeddings_probe` tools. MCP tools require the same API token through their `api_token` argument; agents may resolve it from `settings.local_brain_service.api_token` or from the configured `api_token_env`.
+- For humans, CI, or shell-only agents, install the cross-platform Python CLI with `pipx install <repo>/services/local-brain`. The `fritz-brain` and `fritz-local-brain-cli` commands read `~/.brain/registry.yaml` and resolve the configured token automatically.
 
 Important service safety notes:
 - Manual compile and sync should be dry-run first.
@@ -230,7 +233,7 @@ If `settings.local_brain_service.enabled` is false, agents must use the original
 
 When service mode is disabled and `settings.local_brain_service.suggest_setup` is not `false`, hooks may inject an advisory for supported brain workflows so agents can ask whether the human wants to configure the optional Docker stack. This advisory never enables the service by itself and must not block fallback local execution.
 
-For safety, hooks only probe loopback service URLs by default (`127.0.0.1`, `localhost`, `::1`) and reject credential-bearing URLs, query strings, fragments, and non-root paths. Set `allow_remote: true` only when the human intentionally points agents at a trusted remote Local Brain service. `LOCAL_BRAIN_BASE_URL` is only accepted for loopback overrides; remote service URLs must be written explicitly in the registry. Availability checks use `/v1/status`, not unauthenticated `/health`; if the service uses an API token, expose it to agents through the configured `api_token_env` environment variable.
+For safety, hooks only probe loopback service URLs by default (`127.0.0.1`, `localhost`, `::1`) and reject credential-bearing URLs, query strings, fragments, and non-root paths. Set `allow_remote: true` only when the human intentionally points agents at a trusted remote Local Brain service. `LOCAL_BRAIN_BASE_URL` is only accepted for loopback overrides; remote service URLs must be written explicitly in the registry. Availability checks use `/v1/status`, not unauthenticated `/health`; if the service uses an API token, expose it to agents through `settings.local_brain_service.api_token` or the configured `api_token_env` environment variable.
 
 ## Step 12: Keeping Fritz Local updated
 
