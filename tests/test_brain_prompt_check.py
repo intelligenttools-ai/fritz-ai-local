@@ -109,5 +109,6 @@ def test_service_instructions_use_http_not_host_cli(monkeypatch):
 
     instructions = brain_common.local_brain_service_instructions()
 
+    assert "MCP" in instructions
     assert "curl -fsS" in instructions
     assert "fritz-local-brain-cli" not in instructions

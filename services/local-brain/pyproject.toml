@@ -25,6 +25,7 @@ testpaths = ["tests"]
 [project.scripts]
 fritz-local-brain = "fritz_local_brain.app:main"
 fritz-local-brain-cli = "fritz_local_brain.cli:main"
+fritz-brain = "fritz_local_brain.cli:main"
 fritz-local-brain-mcp = "fritz_local_brain.mcp_server:main"
 
 [build-system]

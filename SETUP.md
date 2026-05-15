@@ -206,7 +206,11 @@ If the human says yes:
      -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" \
      -H 'content-type: application/json' \
      -d '{"dry_run": true, "max_captures": 1}'
-   ```
+    ```
+
+Optional agent integrations:
+- Prefer MCP for agents when the host supports MCP: run `fritz-local-brain-mcp` from the service package/container and expose the `brain_query`, `brain_compile`, `brain_sync`, `brain_lint`, `brain_embeddings_status`, and `brain_embeddings_probe` tools.
+- For humans, CI, or shell-only agents, install the cross-platform Python CLI with `pipx install <repo>/services/local-brain`. The `fritz-brain` and `fritz-local-brain-cli` commands read `~/.brain/registry.yaml` and the configured token env automatically.
 
 Important service safety notes:
 - Manual compile and sync should be dry-run first.

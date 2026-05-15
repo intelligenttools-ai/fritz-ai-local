@@ -8,8 +8,10 @@ from mcp.server.fastmcp import FastMCP
 
 from .compile_workflow import run_compile
 from .config import get_settings
-from .models import CompileRunRequest, QueryRunRequest, SyncRunRequest
-from .operation_locks import compile_lock, sync_lock
+from .embeddings import embedding_status, probe_embedding_dimensions
+from .lint_workflow import run_lint
+from .models import CompileRunRequest, EmbeddingProbeRequest, LintRunRequest, QueryRunRequest, SyncRunRequest
+from .operation_locks import compile_lock, lint_lock, sync_lock
 from .query_workflow import run_query
 from .run_history import recent_runs, record_compile, record_sync
 from .sync_workflow import run_sync
@@ -78,6 +80,31 @@ async def brain_query(query: str, vault: str | None = None, limit: int = 10) -> 
     """Run the same read-only query workflow as POST /v1/query/run."""
 
     result = await run_query(get_settings(), QueryRunRequest(query=query, vault=vault, limit=limit))
+    return result.model_dump(mode="json")
+
+
+@mcp.tool()
+async def brain_lint(dry_run: bool = True, vault: str | None = None) -> dict[str, Any]:
+    """Run the same lint workflow as POST /v1/lint/run."""
+
+    settings = get_settings()
+    async with lint_lock.guard(settings.brain_home):
+        result = await run_lint(settings, LintRunRequest(dry_run=dry_run, vault=vault))
+        return result.model_dump(mode="json")
+
+
+@mcp.tool()
+def brain_embeddings_status() -> dict[str, Any]:
+    """Return the same embedding metadata as GET /v1/embeddings/status."""
+
+    return embedding_status(get_settings()).model_dump(mode="json")
+
+
+@mcp.tool()
+async def brain_embeddings_probe(dry_run: bool = True) -> dict[str, Any]:
+    """Run the same embedding probe as POST /v1/embeddings/probe."""
+
+    result = await probe_embedding_dimensions(get_settings(), EmbeddingProbeRequest(dry_run=dry_run))
     return result.model_dump(mode="json")
 
 

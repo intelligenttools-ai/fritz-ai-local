@@ -18,11 +18,12 @@ vaults, and existing article paths. It cannot write directly.
 When this service is enabled for a Fritz Local installation, agents should treat
 it as the primary execution path for the workflows it provides:
 
-- Compile: use `/v1/compile/run`, `brain_compile`, or `fritz-local-brain-cli compile`.
-- Sync: use `/v1/sync/run`, `brain_sync`, or `fritz-local-brain-cli sync`.
-- Query: use `/v1/query/run`, `brain_query`, or `fritz-local-brain-cli query`.
-- Lint: use `/v1/lint/run` or `fritz-local-brain-cli lint`.
-- Embeddings: use `/v1/embeddings/status` and `/v1/embeddings/probe`.
+- Compile: prefer MCP `brain_compile`, otherwise use `/v1/compile/run`.
+- Sync: prefer MCP `brain_sync`, otherwise use `/v1/sync/run`.
+- Query: prefer MCP `brain_query`, otherwise use `/v1/query/run`.
+- Lint: prefer MCP `brain_lint`, otherwise use `/v1/lint/run`.
+- Embeddings: prefer MCP `brain_embeddings_status` and `brain_embeddings_probe`,
+  otherwise use `/v1/embeddings/status` and `/v1/embeddings/probe`.
 
 Do not duplicate those same operations by also running the equivalent local
 slash-skill workflow in the same session, unless the service is unavailable or
@@ -186,8 +187,8 @@ curl -X POST http://127.0.0.1:8765/v1/lint/run \
 
 ## MCP
 
-Run the stdio MCP server from the same image when an MCP host needs direct tool
-access instead of REST:
+MCP is the preferred agent-native integration. Run the stdio MCP server from the
+same image when an MCP host needs direct tool access instead of REST:
 
 ```bash
 docker compose -f services/local-brain/docker-compose.example.yml run --rm local-brain fritz-local-brain-mcp
@@ -200,10 +201,28 @@ Available tools mirror the safe service workflows:
 - `brain_sync`
 - `brain_recent_runs`
 - `brain_query`
+- `brain_lint`
+- `brain_embeddings_status`
+- `brain_embeddings_probe`
 
 ## CLI
 
-The image also includes a small REST CLI for manual operations:
+The package includes a cross-platform REST CLI for humans, CI, and agents that
+only have shell access. Install the package on Windows, Linux, or macOS with a
+normal Python tool such as `pipx`:
+
+```bash
+pipx install ./services/local-brain
+```
+
+The CLI reads `~/.brain/registry.yaml` by default. It uses
+`settings.local_brain_service.base_url` and resolves the bearer token from the
+environment variable named by `settings.local_brain_service.api_token_env`.
+Explicit `--base-url`, `--token`, and `--token-env` arguments override registry
+defaults.
+
+The Docker image also includes the same CLI for manual operations inside the
+container:
 
 ```bash
 docker compose -f services/local-brain/docker-compose.example.yml exec local-brain \
@@ -212,6 +231,8 @@ docker compose -f services/local-brain/docker-compose.example.yml exec local-bra
 
 Useful commands:
 
+- `fritz-brain status`
+- `fritz-brain query "local brain" --limit 5`
 - `fritz-local-brain-cli status`
 - `fritz-local-brain-cli compile --max-captures 1`
 - `fritz-local-brain-cli sync --vault engineering`

@@ -34,6 +34,8 @@ That's it. The agent reads SETUP.md, creates `~/.brain/`, symlinks hooks and ski
 
 An optional Dockerized Local Brain service lives in [`services/local-brain/`](services/local-brain/). The service starts with safe compile and sync workflows: compile loads `fritz:brain-compile` as Pydantic AI agent instructions and applies only policy-validated knowledge/index/log writes, while sync supports no-op local targets plus guarded git pushes. Enable service-mode routing explicitly in `~/.brain/registry.yaml` with `settings.local_brain_service.enabled: true`; when enabled and reachable, agents use the service as the primary execution path for supported workflows instead of duplicating those same operations with local slash skills. If disabled or unreachable, the original local hook and slash-skill behavior remains the fallback.
 
+Agent integrations should prefer MCP tools (`brain_query`, `brain_compile`, `brain_sync`, `brain_lint`) when an MCP host is available, then HTTP calls to the service. The optional cross-platform Python CLI (`fritz-brain` / `fritz-local-brain-cli`) is for humans, CI, and shell-only agents after the package is installed; hooks and skills must not assume it exists on the host PATH.
+
 Existing installs that do not yet have `settings.local_brain_service` are treated as unconfigured, not disabled. `/fritz:update` and brain hooks surface a decision prompt so the human can choose whether to enable the Docker service, keep local workflows with future setup suggestions, or keep local workflows without suggestions. Agents then write the selected setting to the registry; they do not start Docker or enable service routing without explicit approval.
 
 ## Architecture

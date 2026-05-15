@@ -4,14 +4,31 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib import request
+
+import yaml
+
+
+DEFAULT_BASE_URL = "http://127.0.0.1:8765"
+DEFAULT_TOKEN_ENV = "LOCAL_BRAIN_API_TOKEN"
+
+
+@dataclass(frozen=True)
+class Connection:
+    base_url: str
+    token: str | None
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(prog="fritz-local-brain-cli")
-    parser.add_argument("--base-url", default="http://127.0.0.1:8765")
+    parser.add_argument("--base-url", default=None, help="Override registry service URL")
     parser.add_argument("--token", default=None)
+    parser.add_argument("--token-env", default=None, help="Environment variable containing the API token")
+    parser.add_argument("--registry", type=Path, default=Path.home() / ".brain" / "registry.yaml")
     subcommands = parser.add_subparsers(dest="command", required=True)
 
     subcommands.add_parser("status")
@@ -69,18 +86,46 @@ def _dispatch(args: argparse.Namespace) -> Any:
 
 
 def _request(args: argparse.Namespace, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
+    connection = resolve_connection(args)
     data = None
     headers = {"accept": "application/json"}
     if body is not None:
         clean_body = {key: value for key, value in body.items() if value is not None}
         data = json.dumps(clean_body).encode("utf-8")
         headers["content-type"] = "application/json"
-    if args.token:
-        headers["authorization"] = f"Bearer {args.token}"
+    if connection.token:
+        headers["authorization"] = f"Bearer {connection.token}"
 
-    req = request.Request(f"{args.base_url.rstrip('/')}{path}", data=data, headers=headers, method=method)
+    req = request.Request(f"{connection.base_url.rstrip('/')}{path}", data=data, headers=headers, method=method)
     with request.urlopen(req, timeout=120) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def resolve_connection(args: argparse.Namespace) -> Connection:
+    """Resolve service URL/token from explicit args, env, then registry."""
+
+    service_config = _load_service_config(getattr(args, "registry", None))
+    base_url = (
+        getattr(args, "base_url", None)
+        or os.environ.get("LOCAL_BRAIN_BASE_URL")
+        or service_config.get("base_url")
+        or DEFAULT_BASE_URL
+    )
+    token_env = getattr(args, "token_env", None) or service_config.get("api_token_env") or DEFAULT_TOKEN_ENV
+    token = getattr(args, "token", None) or os.environ.get(token_env) or None
+    return Connection(base_url=str(base_url), token=token.strip() if isinstance(token, str) and token.strip() else None)
+
+
+def _load_service_config(registry_path: Path | None) -> dict[str, Any]:
+    if registry_path is None or not registry_path.exists():
+        return {}
+    try:
+        registry = yaml.safe_load(registry_path.read_text(encoding="utf-8")) or {}
+    except OSError:
+        return {}
+    settings = registry.get("settings", {}) if isinstance(registry, dict) else {}
+    config = settings.get("local_brain_service", {}) if isinstance(settings, dict) else {}
+    return config if isinstance(config, dict) else {}
 
 
 if __name__ == "__main__":
