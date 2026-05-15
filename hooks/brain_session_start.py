@@ -22,6 +22,8 @@ from brain_common import (
     read_hook_input, find_vault_for_cwd, load_manifest, resolve_path,
     load_registry, load_settings, resolve_project_vault,
     get_context_injection_level, get_fritz_version,
+    local_brain_service_available, local_brain_service_instructions,
+    local_brain_service_configured, local_brain_configuration_decision_prompt,
     BRAIN_HOME, FRITZ_REPO,
 )
 
@@ -148,7 +150,14 @@ def main():
 
     # Always inject brain system awareness
     context_parts.append("# Brain System Active\n")
-    context_parts.append("Knowledge base at `~/.brain/`. Use `/fritz:brain-query` to search, `/fritz:brain-compile` to promote captures, `/fritz:brain-ingest` to import sources.\n")
+
+    service_configured = local_brain_service_configured()
+    service_available = local_brain_service_available()
+    if service_available:
+        context_parts.append("Knowledge base at `~/.brain/`. The optional Local Brain service is running, so use it for supported workflows. Use `/fritz:brain-ingest` for imports and setup/update skills for workflows the service does not provide.\n")
+        context_parts.append(local_brain_service_instructions())
+    else:
+        context_parts.append("Knowledge base at `~/.brain/`. Use `/fritz:brain-query` to search, `/fritz:brain-compile` to promote captures, `/fritz:brain-ingest` to import sources.\n")
 
     # List available vaults
     registry = load_registry()
@@ -207,10 +216,20 @@ def main():
             since = data.get("since", "unknown")
             topics = data.get("topics", 0)
             context_parts.append(f"\n## MANDATORY: Background brain compile needed\n")
-            context_parts.append(f"There are **{topics} uncompiled topics** captured since {since}. Before doing anything else, spawn a **background subagent** to run `/fritz:brain-compile`. The subagent MUST:")
-            context_parts.append("1. Run the `/fritz:brain-compile` skill (it promotes raw captures to vault knowledge articles)")
-            context_parts.append("2. Delete `~/.brain/.compile-needed` when done\n")
-            context_parts.append("Use `run_in_background: true` (or platform equivalent) so the user is NOT blocked. Do NOT ask the user for permission — this is an autonomous maintenance task.")
+            if not service_configured:
+                context_parts.append(local_brain_configuration_decision_prompt())
+                context_parts.append(f"There are **{topics} uncompiled topics** captured since {since}. Before choosing the compile path, ask the human to configure `settings.local_brain_service` in `~/.brain/registry.yaml` using the Local Brain Service Decision Needed choices above. Then run the selected service or local compile workflow.")
+                context_parts.append("When the selected compile workflow completes, delete `~/.brain/.compile-needed`.\n")
+            elif service_available:
+                context_parts.append(f"There are **{topics} uncompiled topics** captured since {since}. Before doing anything else, spawn a **background subagent** to run the Local Brain service compile path. The subagent MUST:")
+                context_parts.append("1. Run the service-backed compile command shown in the Local Brain Service Active section above")
+                context_parts.append("2. Delete `~/.brain/.compile-needed` when done\n")
+            else:
+                context_parts.append(f"There are **{topics} uncompiled topics** captured since {since}. Before doing anything else, spawn a **background subagent** to run `/fritz:brain-compile`. The subagent MUST:")
+                context_parts.append("1. Run the `/fritz:brain-compile` skill (it promotes raw captures to vault knowledge articles)")
+                context_parts.append("2. Delete `~/.brain/.compile-needed` when done\n")
+            if service_configured:
+                context_parts.append("Use `run_in_background: true` (or platform equivalent) so the user is NOT blocked. Do NOT ask the user for permission — this is an autonomous maintenance task.")
         except (json.JSONDecodeError, OSError):
             pass
 

@@ -89,7 +89,39 @@ updates.
    flag the vault for the report as "outdated (vN → vM)".
 5. Do not touch any file. This is a detection step only.
 
-### 6. Report
+### 6. Resolve Local Brain service behavior if unconfigured
+
+Read `~/.brain/registry.yaml`. If `settings.local_brain_service` is absent,
+pause and ask the human which behavior they want for the optional Dockerized
+Local Brain service:
+
+1. Configure and start the optional Docker Local Brain service now.
+   - After setup succeeds, write:
+     ```yaml
+     settings:
+       local_brain_service:
+          enabled: true
+          base_url: http://127.0.0.1:8765
+          api_token: <same random value as API_TOKEN, when trusted local agents should authenticate automatically>
+          api_token_env: LOCAL_BRAIN_API_TOKEN
+         allow_remote: false
+         suggest_setup: true
+     ```
+2. Keep using the existing local slash-skill workflow, but allow future setup
+   suggestions.
+   - Write `enabled: false`, `base_url: http://127.0.0.1:8765`,
+      `api_token_env: LOCAL_BRAIN_API_TOKEN`, optionally `api_token` for trusted local agent use, `allow_remote: false`, and
+     `suggest_setup: true`.
+3. Keep using the existing local slash-skill workflow, and stop future setup
+   suggestions.
+   - Write `enabled: false`, `base_url: http://127.0.0.1:8765`,
+      `api_token_env: LOCAL_BRAIN_API_TOKEN`, optionally `api_token` for trusted local agent use, `allow_remote: false`, and
+     `suggest_setup: false`.
+
+Do not start Docker or set `enabled: true` without explicit human approval. If
+the registry setting already exists, do not ask and do not overwrite it.
+
+### 7. Report
 
 Show the user:
 - Version change (e.g., `1.0.0 → 1.1.0`)
@@ -97,6 +129,9 @@ Show the user:
 - Hook symlinks refreshed or missing
 - Removed skills (warnings only)
 - Migrations run and their summaries
+- Local Brain service setting state: report whether `settings.local_brain_service`
+  exists, whether it is enabled, and whether a human decision was recorded during
+  the update.
 - Brain contract drift: list of vaults with outdated or missing `brain.md`,
   along with "Run `/fritz:brain-setup` in those vaults to refresh."
 - Any errors encountered

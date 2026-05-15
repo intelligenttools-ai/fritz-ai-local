@@ -1,0 +1,9 @@
+*
+!services/
+!services/local-brain/
+!services/local-brain/Dockerfile
+!services/local-brain/pyproject.toml
+!services/local-brain/fritz_local_brain/
+!services/local-brain/fritz_local_brain/**
+!skills/
+!skills/**

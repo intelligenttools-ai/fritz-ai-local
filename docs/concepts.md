@@ -43,7 +43,7 @@ Each vault is registered in `~/.brain/registry.yaml` with:
 
 The single source of truth for which vaults exist on this machine. It also
 holds global settings (`context_injection`, `max_injection_chars`,
-`update_check`).
+`update_check`, `local_brain_service`).
 
 Template: [`../registry/registry.template.yaml`](../registry/registry.template.yaml).
 
