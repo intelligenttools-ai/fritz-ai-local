@@ -159,7 +159,7 @@ def search_knowledge_files(vault_path: Path, manifest: dict, keywords: list[str]
         feedback_dir = vault_path / projects[project_name] / "feedback"
         if feedback_dir.exists():
             for f in sorted(feedback_dir.glob("*.md")):
-                if f.name != "index.md":
+                if f.name != "index.md" and _is_regular_markdown_file(f):
                     feedback_results.append(str(f))
 
     if not results and not feedback_results:
@@ -273,7 +273,7 @@ def main():
         if not has_knowledge and not has_captures:
             sys.exit(0)
 
-        if prompt_type == "query" and local_brain_service_available():
+        if should_suggest_local_brain_service(prompt) and local_brain_service_available():
             reminder = (
                 "BRAIN CHECK: Before answering, use the Local Brain service for supported brain workflows.\n\n"
                 f"{local_brain_service_instructions()}\n\n"
@@ -303,7 +303,7 @@ def main():
         sys.exit(0)
 
     # Level: light or full — search and inject file paths
-    if prompt_type == "query" and local_brain_service_available():
+    if should_suggest_local_brain_service(prompt) and local_brain_service_available():
         injection = (
             f"{local_brain_service_instructions()}\n\n"
             "BRAIN CHECK: Use the service-backed query path for this prompt before local file search. "

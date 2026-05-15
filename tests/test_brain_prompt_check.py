@@ -11,6 +11,7 @@ HOOKS = ROOT / "hooks"
 sys.path.insert(0, str(HOOKS))
 
 import brain_prompt_check  # noqa: E402
+import brain_common  # noqa: E402
 
 
 def _run_prompt_hook(monkeypatch, capsys, tmp_path, prompt: str) -> str:
@@ -43,6 +44,13 @@ def test_generic_setup_prompt_does_not_inject_service_query(monkeypatch, capsys,
     assert "service-backed query" not in context
 
 
+def test_generic_query_prompt_does_not_inject_service_query(monkeypatch, capsys, tmp_path):
+    context = _run_prompt_hook(monkeypatch, capsys, tmp_path, "What is the Hermes agent setup?")
+
+    assert "SERVICE QUERY INSTRUCTIONS" not in context
+    assert "service-backed query" not in context
+
+
 def test_brain_setup_prompt_still_injects_service_query(monkeypatch, capsys, tmp_path):
     context = _run_prompt_hook(monkeypatch, capsys, tmp_path, "Set up Local Brain query support")
 
@@ -70,3 +78,36 @@ def test_knowledge_search_skips_symlinked_markdown(tmp_path):
 
     assert str(safe) in context
     assert str(linked) not in context
+
+
+def test_knowledge_search_skips_symlinked_feedback(tmp_path):
+    vault = tmp_path / "vault"
+    knowledge = vault / "knowledge"
+    feedback = vault / "projects" / "demo" / "feedback"
+    knowledge.mkdir(parents=True)
+    feedback.mkdir(parents=True)
+    (knowledge / "safe.md").write_text("# Agent Pattern\n", encoding="utf-8")
+    secret = tmp_path / "secret.md"
+    secret.write_text("# Secret Outside\n", encoding="utf-8")
+    linked = feedback / "linked.md"
+    linked.symlink_to(secret)
+
+    context = brain_prompt_check.search_knowledge_files(
+        vault,
+        {"paths": {"knowledge": "knowledge"}, "projects": {"demo": "projects/demo"}},
+        ["agent"],
+        "demo",
+        4000,
+    )
+
+    assert str(linked) not in context
+
+
+def test_service_instructions_use_http_not_host_cli(monkeypatch):
+    monkeypatch.setattr(brain_common, "get_local_brain_base_url", lambda: "http://127.0.0.1:8765")
+    monkeypatch.setattr(brain_common, "get_local_brain_api_token", lambda: None)
+
+    instructions = brain_common.local_brain_service_instructions()
+
+    assert "curl -fsS" in instructions
+    assert "fritz-local-brain-cli" not in instructions

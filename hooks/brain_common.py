@@ -229,10 +229,11 @@ def get_local_brain_api_token() -> str | None:
     return None
 
 
-def _local_brain_cli_prefix(base_url: str) -> str:
+def _local_brain_auth_header() -> str:
     token_env = get_local_brain_api_token_env()
-    token_arg = f' --token "${token_env}"' if get_local_brain_api_token() else ""
-    return f'fritz-local-brain-cli --base-url {base_url}{token_arg}'
+    if get_local_brain_api_token():
+        return f' -H "authorization: Bearer ${token_env}"'
+    return ""
 
 
 def local_brain_service_available(timeout: float = 0.4) -> bool:
@@ -261,17 +262,18 @@ def local_brain_service_instructions() -> str:
     """Context block that makes service-backed brain workflows the default."""
 
     base_url = get_local_brain_base_url().rstrip("/")
-    cli = _local_brain_cli_prefix(base_url)
+    auth = _local_brain_auth_header()
     return (
         "## Local Brain Service Active\n\n"
         f"The Dockerized Local Brain service is reachable at `{base_url}`. "
         "For supported workflows, use this service layer first instead of duplicating the old local slash-skill workflow.\n\n"
+        "Use HTTP calls from the host; do not assume any Local Brain CLI is installed on the host PATH.\n\n"
         "Supported service-backed workflows:\n"
-        f"- Query: `{cli} query \"<query>\"` or `POST {base_url}/v1/query/run`\n"
-        f"- Compile: `{cli} compile` or `POST {base_url}/v1/compile/run`\n"
-        f"- Sync: `{cli} sync` or `POST {base_url}/v1/sync/run`\n"
-        f"- Lint: `{cli} lint` or `POST {base_url}/v1/lint/run`\n"
-        f"- Embeddings: `GET {base_url}/v1/embeddings/status` and `POST {base_url}/v1/embeddings/probe`\n\n"
+        f"- Query: `curl -fsS -X POST {base_url}/v1/query/run{auth} -H 'content-type: application/json' -d '{{\"query\":\"<query>\"}}'`\n"
+        f"- Compile: `curl -fsS -X POST {base_url}/v1/compile/run{auth} -H 'content-type: application/json' -d '{{\"dry_run\":true}}'`\n"
+        f"- Sync: `curl -fsS -X POST {base_url}/v1/sync/run{auth} -H 'content-type: application/json' -d '{{\"dry_run\":true}}'`\n"
+        f"- Lint: `curl -fsS -X POST {base_url}/v1/lint/run{auth} -H 'content-type: application/json' -d '{{}}'`\n"
+        f"- Embeddings: `curl -fsS {base_url}/v1/embeddings/status{auth}` and `curl -fsS -X POST {base_url}/v1/embeddings/probe{auth} -H 'content-type: application/json' -d '{{\"dry_run\":true}}'`\n\n"
         "Do not also run `/fritz:brain-query`, `/fritz:brain-compile`, `/fritz:brain-sync`, or `/fritz:brain-lint` "
         "for the same work unless the service is unavailable or the human explicitly requests the non-service path. "
         "Use the existing local skills only for workflows the service does not provide, such as setup, ingest, update, and writing the handover document itself."
