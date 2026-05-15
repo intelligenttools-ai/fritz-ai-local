@@ -136,7 +136,7 @@ def test_service_registry_token_overrides_stale_env(monkeypatch):
     assert brain_common.get_local_brain_api_token() == "registry-token"
 
 
-def test_service_instructions_include_registry_token_header(monkeypatch):
+def test_service_instructions_use_registry_token_command_without_leaking_token(monkeypatch):
     monkeypatch.delenv("LOCAL_BRAIN_API_TOKEN", raising=False)
     monkeypatch.setattr(brain_common, "get_local_brain_base_url", lambda: "http://127.0.0.1:8765")
     monkeypatch.setattr(
@@ -147,7 +147,8 @@ def test_service_instructions_include_registry_token_header(monkeypatch):
 
     instructions = brain_common.local_brain_service_instructions()
 
-    assert "authorization: Bearer registry-token" in instructions
+    assert "authorization: Bearer $(python3 -c" in instructions
+    assert "registry-token" not in instructions
 
 
 def test_rejects_shell_metacharacters_in_service_url(monkeypatch):

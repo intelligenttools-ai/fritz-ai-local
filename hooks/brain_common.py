@@ -3,7 +3,6 @@
 import json
 import os
 import re
-import shlex
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -253,7 +252,16 @@ def _local_brain_auth_header() -> str:
     env_token = os.environ.get(token_env)
     if isinstance(env_token, str) and env_token.strip() == token:
         return f' -H "authorization: Bearer ${token_env}"'
-    return f" -H {shlex.quote(f'authorization: Bearer {token}')}"
+    return f' -H "authorization: Bearer {_local_brain_token_command()}"'
+
+
+def _local_brain_token_command() -> str:
+    return (
+        "$(python3 -c 'import os,pathlib,yaml; "
+        "r=yaml.safe_load(pathlib.Path.home().joinpath(\".brain\",\"registry.yaml\").read_text()) or {}; "
+        "c=(r.get(\"settings\") or {}).get(\"local_brain_service\") or {}; "
+        "print((c.get(\"api_token\") or os.environ.get(c.get(\"api_token_env\") or \"LOCAL_BRAIN_API_TOKEN\") or \"\").strip())')"
+    )
 
 
 def local_brain_service_available(timeout: float = 0.4) -> bool:
