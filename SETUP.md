@@ -199,11 +199,91 @@ settings:
   # context_injection: off    # off | light | full — inherited by all projects
   # max_injection_chars: 8000 # cap on injected context size
   # update_check: true        # check for Fritz Local updates on session start
+  # local_brain_service:      # optional Dockerized service, disabled by default
+  #   enabled: false
+  #   base_url: http://127.0.0.1:8765
+  #   api_token: replace-with-random-token # optional, for trusted local agent use
+  #   api_token_env: LOCAL_BRAIN_API_TOKEN
+  #   allow_remote: false     # keep false unless intentionally using a trusted remote service
+  #   suggest_setup: true      # agents may suggest setup for supported brain workflows
 ```
 
 Per-project `.fritz-local.json` overrides global settings.
 
-## Step 11: Keeping Fritz Local updated
+## Step 11: Offer the Dockerized Local Brain service (optional)
+
+After the brain overlay and vault registry are working, ask the human whether they want to set up the optional Dockerized Local Brain service.
+
+Use this exact decision prompt:
+
+> Fritz Local can also run an optional Dockerized Local Brain service for compile, sync, query, lint, embeddings, MCP, and CLI workflows. It is disabled by default and uses dry-run/safety gates by default. Do you want me to configure and start it now?
+
+If the human says no, skip Docker setup but still write `settings.local_brain_service` to `~/.brain/registry.yaml` with `enabled: false`. Ask whether future setup suggestions should remain enabled. Set `suggest_setup: true` if they want future suggestions, or `suggest_setup: false` if they do not. Do not leave the setting absent after asking. Do not start Docker automatically without explicit approval.
+
+If the human says yes:
+
+1. Confirm Docker or a compatible runtime is available.
+2. Copy `<repo>/.env.example` to `<repo>/.env` if it does not already exist.
+3. Edit `<repo>/.env` for the local machine:
+   - `BRAIN_HOME=/data/brain`
+   - `BRAIN_PATH_MAP=<host-notes-root>=/vaults/notes`, matching the path style used in `~/.brain/registry.yaml`
+   - `LLM_PROTOCOL=openai-compatible` or `anthropic-compatible`
+   - `LLM_ENDPOINT=<OpenAI-compatible or Anthropic-compatible endpoint>`
+   - `LLM_MODEL=<model-name>`
+   - Leave `API_HOST=127.0.0.1` unless the human explicitly asks to expose the service off-host.
+   - Set `API_TOKEN` to a unique random value. All `/v1/*` endpoints require it.
+   - For trusted local agent use, set `api_token` in `~/.brain/registry.yaml` to the same value so hooks, skills, and the CLI can authenticate without manual shell environment setup.
+   - Alternatively, export the same value in the environment named by `api_token_env`, for example `LOCAL_BRAIN_API_TOKEN`.
+4. Start the service:
+   ```bash
+   docker compose --env-file <repo>/.env -f <repo>/services/local-brain/docker-compose.example.yml up --build -d
+   ```
+5. Record the rollout decision in `~/.brain/registry.yaml`:
+   ```yaml
+   settings:
+     local_brain_service:
+       enabled: true
+       base_url: http://127.0.0.1:8765
+       api_token: replace-with-same-random-token-as-API_TOKEN
+       api_token_env: LOCAL_BRAIN_API_TOKEN
+       allow_remote: false
+       suggest_setup: true
+   ```
+6. Verify it:
+   ```bash
+   curl http://127.0.0.1:8765/health
+   curl -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" http://127.0.0.1:8765/v1/status
+   curl -X POST http://127.0.0.1:8765/v1/compile/run \
+      -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" \
+      -H 'content-type: application/json' \
+      -d '{"dry_run": true, "max_captures": 1}'
+   ```
+
+Optional agent integrations:
+- Prefer MCP for agents when the host supports MCP: run `fritz-local-brain-mcp` from the service package/container and expose the `brain_query`, `brain_compile`, `brain_sync`, `brain_lint`, `brain_embeddings_status`, and `brain_embeddings_probe` tools. MCP tools require the same API token through their `api_token` argument; agents may resolve it from `settings.local_brain_service.api_token` or from the configured `api_token_env`.
+- For humans, CI, or shell-only agents, install the cross-platform Python CLI with `pipx install <repo>/services/local-brain`. The `fritz-brain` and `fritz-local-brain-cli` commands read `~/.brain/registry.yaml` and resolve the configured token automatically.
+
+Important service safety notes:
+- Manual compile and sync should be dry-run first.
+- First real external sync and large compile batches require explicit approval configuration.
+- The service must not write registry, manifest, schema, identity files, or excluded paths.
+- Full service documentation is in `<repo>/services/local-brain/README.md`.
+
+Agent operating rule when `settings.local_brain_service.enabled: true` and the service health check passes:
+- Use the Dockerized service as the primary execution path for supported workflows: compile, sync, query, lint, embedding status/probe, MCP, and CLI operations.
+- Do not run the equivalent local slash-skill workflow for the same supported operation in the same session unless the service is unavailable or the human explicitly asks for the non-service path.
+- For handover preparation, use service-backed compile and sync where those steps are needed, then write the handover document. Do not duplicate compile/sync by also invoking `/fritz:brain-compile` or `/fritz:brain-sync` directly.
+- Continue to use local hooks and slash skills for workflows the service does not provide, including capture hooks, setup, ingest, update, and writing the handover document itself.
+
+If `settings.local_brain_service` is absent, agents must ask the human which behavior to use and then write the selected setting to `~/.brain/registry.yaml`. Absence means unconfigured, not disabled.
+
+If `settings.local_brain_service.enabled` is false, agents must use the original local hooks and slash-skill behavior even if a process happens to be listening on the default service port.
+
+When service mode is disabled and `settings.local_brain_service.suggest_setup` is not `false`, hooks may inject an advisory for supported brain workflows so agents can ask whether the human wants to configure the optional Docker stack. This advisory never enables the service by itself and must not block fallback local execution.
+
+For safety, hooks only probe loopback service URLs by default (`127.0.0.1`, `localhost`, `::1`) and reject credential-bearing URLs, query strings, fragments, and non-root paths. Set `allow_remote: true` only when the human intentionally points agents at a trusted remote Local Brain service. `LOCAL_BRAIN_BASE_URL` is only accepted for loopback overrides; remote service URLs must be written explicitly in the registry. Availability checks use `/v1/status`, not unauthenticated `/health`; if the service uses an API token, expose it to agents through `settings.local_brain_service.api_token` or the configured `api_token_env` environment variable.
+
+## Step 12: Keeping Fritz Local updated
 
 Fritz Local checks for updates on session start (once per 24 hours). When an update is available, you'll see a notification with the changelog.
 
@@ -213,3 +293,5 @@ git -C ~/.fritz-ai-local pull
 ```
 
 Symlinked hooks and skills update immediately after pull. New skills are automatically symlinked by `/fritz:update`.
+
+Existing installs receive a Local Brain service decision prompt through `/fritz:update` and the hooks when `settings.local_brain_service` is absent. The update path does not enable Docker or change execution behavior by default; it asks the human, writes the selected registry setting, and then follows that setting.
