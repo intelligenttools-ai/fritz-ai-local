@@ -53,6 +53,7 @@ class CompileRunResult(BaseModel):
     finished_at: datetime
     dry_run: bool
     captures_considered: int
+    captures_by_source: dict[str, int] = Field(default_factory=dict)
     proposals: list[ArticleWriteProposal] = Field(default_factory=list)
     applied: list[AppliedArticleWrite] = Field(default_factory=list)
     skipped: list[str] = Field(default_factory=list)
@@ -209,8 +210,18 @@ class StatusResult(BaseModel):
     """Service status without secrets."""
 
     service: str = "local-brain"
+    service_running: bool = True
     scheduler_enabled: bool
+    scheduler_dry_run: bool
+    processing_mode: Literal["dry-run", "apply"]
+    processing_active: bool
+    processing_note: str
     interval_minutes: int
     brain_home: str
     skills_dir: str
     allow_first_external_sync: bool
+    last_successful_compile_at: datetime | None = None
+    pending_captures_by_source: dict[str, int] = Field(default_factory=dict)
+    oldest_pending_capture_path: str | None = None
+    oldest_pending_capture_at: datetime | None = None
+    status_warnings: list[str] = Field(default_factory=list)

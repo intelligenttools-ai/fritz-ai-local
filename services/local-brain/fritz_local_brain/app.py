@@ -19,9 +19,11 @@ async def lifespan(app: FastAPI):
     task: asyncio.Task | None = None
     if settings.scheduler_enabled:
         task = asyncio.create_task(scheduler_loop(settings))
+    app.state.scheduler_task = task
     try:
         yield
     finally:
+        app.state.scheduler_task = None
         if task:
             task.cancel()
 

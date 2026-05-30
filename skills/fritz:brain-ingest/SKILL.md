@@ -46,9 +46,14 @@ agent_last_edit: <agent>
 ---
 ```
 
-### 3. Compile into knowledge article
+### 3. Trigger live processing when enabled
 
-Read the raw source and create a compiled knowledge article:
+After writing the inbox capture, call the configured Fritz Local processing path:
+
+- If `settings.local_brain_service.enabled: true` and `auto_compile_on_ingest` is not `false`, trigger the Local Brain compile path (service first, local fallback) so the capture does not silently pile up.
+- If processing is not active, leave the raw capture in `capture/inbox/` and report that compile is pending/manual.
+
+If live processing is unavailable and manual compile is needed, read the raw source and create a compiled knowledge article:
 
 - Extract key concepts, facts, and insights
 - Structure as a clear, scannable article

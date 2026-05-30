@@ -215,21 +215,26 @@ def main():
             data = _json.loads(compile_needed.read_text())
             since = data.get("since", "unknown")
             topics = data.get("topics", 0)
-            context_parts.append(f"\n## MANDATORY: Background brain compile needed\n")
-            if not service_configured:
-                context_parts.append(local_brain_configuration_decision_prompt())
-                context_parts.append(f"There are **{topics} uncompiled topics** captured since {since}. Before choosing the compile path, ask the human to configure `settings.local_brain_service` in `~/.brain/registry.yaml` using the Local Brain Service Decision Needed choices above. Then run the selected service or local compile workflow.")
-                context_parts.append("When the selected compile workflow completes, delete `~/.brain/.compile-needed`.\n")
-            elif service_available:
-                context_parts.append(f"There are **{topics} uncompiled topics** captured since {since}. Before doing anything else, spawn a **background subagent** to run the Local Brain service compile path. The subagent MUST:")
-                context_parts.append("1. Run the service-backed compile command shown in the Local Brain Service Active section above")
-                context_parts.append("2. Delete `~/.brain/.compile-needed` when done\n")
+            processing_active = data.get("processing_active", True)
+            if processing_active is False:
+                context_parts.append("\n## Brain captures pending — processing not active\n")
+                context_parts.append(f"There are **{topics} uncompiled topics** captured since {since}. Captures are being saved, but live processing is not active in minimal-capture mode. Enable `settings.local_brain_service.enabled` or run `/fritz:brain-compile` manually when you want to promote them.\n")
             else:
-                context_parts.append(f"There are **{topics} uncompiled topics** captured since {since}. Before doing anything else, spawn a **background subagent** to run `/fritz:brain-compile`. The subagent MUST:")
-                context_parts.append("1. Run the `/fritz:brain-compile` skill (it promotes raw captures to vault knowledge articles)")
-                context_parts.append("2. Delete `~/.brain/.compile-needed` when done\n")
-            if service_configured:
-                context_parts.append("Use `run_in_background: true` (or platform equivalent) so the user is NOT blocked. Do NOT ask the user for permission — this is an autonomous maintenance task.")
+                context_parts.append("\n## MANDATORY: Background brain compile needed\n")
+                if not service_configured:
+                    context_parts.append(local_brain_configuration_decision_prompt())
+                    context_parts.append(f"There are **{topics} uncompiled topics** captured since {since}. Before choosing the compile path, ask the human to configure `settings.local_brain_service` in `~/.brain/registry.yaml` using the Local Brain Service Decision Needed choices above. Then run the selected service or local compile workflow.")
+                    context_parts.append("When the selected compile workflow completes, delete `~/.brain/.compile-needed`.\n")
+                elif service_available:
+                    context_parts.append(f"There are **{topics} uncompiled topics** captured since {since}. Before doing anything else, spawn a **background subagent** to run the Local Brain service compile path. The subagent MUST:")
+                    context_parts.append("1. Run the service-backed compile command shown in the Local Brain Service Active section above")
+                    context_parts.append("2. Delete `~/.brain/.compile-needed` when done\n")
+                else:
+                    context_parts.append(f"There are **{topics} uncompiled topics** captured since {since}. Before doing anything else, spawn a **background subagent** to run `/fritz:brain-compile`. The subagent MUST:")
+                    context_parts.append("1. Run the `/fritz:brain-compile` skill (it promotes raw captures to vault knowledge articles)")
+                    context_parts.append("2. Delete `~/.brain/.compile-needed` when done\n")
+                if service_configured:
+                    context_parts.append("Use `run_in_background: true` (or platform equivalent) so the user is NOT blocked. Do NOT ask the user for permission — this is an autonomous maintenance task.")
         except (json.JSONDecodeError, OSError):
             pass
 

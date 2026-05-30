@@ -1,12 +1,15 @@
 """Shared utilities for brain hooks across all agents."""
 
+import asyncio
 import json
 import os
 import re
+import socket
 import sys
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from urllib import request
+from urllib import error, request
 from urllib.parse import urlsplit, urlunsplit
 
 import yaml
@@ -262,6 +265,189 @@ def _local_brain_token_command() -> str:
         "c=(r.get(\"settings\") or {}).get(\"local_brain_service\") or {}; "
         "print((c.get(\"api_token\") or os.environ.get(c.get(\"api_token_env\") or \"LOCAL_BRAIN_API_TOKEN\") or \"\").strip())')"
     )
+
+
+@dataclass(frozen=True)
+class AutoCompileResult:
+    status: str
+    message: str
+
+
+class ServiceCompileErrors(RuntimeError):
+    pass
+
+
+def auto_compile_after_capture(capture_path: Path | None = None) -> AutoCompileResult:
+    """Attempt live compile after a capture is written.
+
+    Full Fritz Local mode should not silently accumulate captures. When service
+    mode is enabled, compile through the service first and fall back to the
+    local in-process compiler. If no processor can run, leave durable markers so
+    the next session can surface the failure.
+    """
+
+    config = get_local_brain_service_config()
+    if not local_brain_service_enabled() or config.get("auto_compile_on_ingest", True) is False:
+        message = "Local Brain processing is not active; capture saved for later compile."
+        _write_compile_needed(capture_path, processing_active=False, reason=message)
+        return AutoCompileResult(status="disabled", message=message)
+
+    try:
+        service_result = _try_service_compile()
+        if service_result is not None:
+            service_status, remaining = service_result
+            if service_status == "compiled":
+                if remaining:
+                    message = f"Compile processed a partial batch; {remaining} captures remain pending."
+                    _write_compile_needed(capture_path, processing_active=True, reason=message)
+                    return AutoCompileResult(status="pending", message=message)
+                _clear_compile_markers()
+                return AutoCompileResult(status="compiled", message="Compile triggered through Local Brain service.")
+            if service_status == "running":
+                message = "Compile already running; capture marked pending for the next compile pass."
+                _write_compile_needed(capture_path, processing_active=True, reason=message)
+                return AutoCompileResult(status="pending", message=message)
+    except ServiceCompileErrors as exc:
+        reason = f"Auto-compile failed: {exc}"
+        _write_compile_failure(reason)
+        _write_compile_needed(capture_path, processing_active=True, reason=reason)
+        return AutoCompileResult(status="failed", message=reason)
+    except Exception as exc:  # noqa: BLE001 - service transport errors should fall back to local compile.
+        service_error = str(exc)
+    else:
+        service_error = "Local Brain service is not reachable."
+
+    try:
+        _run_in_process_compile()
+        remaining = _pending_capture_count()
+        if remaining:
+            message = f"Compile processed a partial batch; {remaining} captures remain pending."
+            _write_compile_needed(capture_path, processing_active=True, reason=message)
+            return AutoCompileResult(status="pending", message=message)
+        _clear_compile_markers()
+        return AutoCompileResult(status="compiled", message="Compile completed through local in-process fallback.")
+    except Exception as exc:  # noqa: BLE001 - marker records provider/import/config failures for operators.
+        if _is_compile_already_running(exc):
+            message = "Compile already running; capture marked pending for the next compile pass."
+            _write_compile_needed(capture_path, processing_active=True, reason=message)
+            return AutoCompileResult(status="pending", message=message)
+        reason = f"Auto-compile failed: {service_error}; fallback failed: {exc}"
+        _write_compile_failure(reason)
+        _write_compile_needed(capture_path, processing_active=True, reason=reason)
+        return AutoCompileResult(status="failed", message=reason)
+
+
+def _is_compile_already_running(exc: Exception) -> bool:
+    return exc.__class__.__name__ == "OperationAlreadyRunning" or "Compile already running" in str(exc)
+
+
+def _try_service_compile(timeout: float = 30.0) -> tuple[str, int | None] | None:
+    base_url = _validated_local_brain_base_url()
+    if base_url is None:
+        return None
+
+    payload = json.dumps({"dry_run": False}).encode("utf-8")
+    headers = {"accept": "application/json", "content-type": "application/json"}
+    token = get_local_brain_api_token()
+    if token:
+        headers["authorization"] = f"Bearer {token}"
+    req = request.Request(f"{base_url}/v1/compile/run", data=payload, headers=headers, method="POST")
+    try:
+        with request.urlopen(req, timeout=timeout) as response:
+            if not 200 <= response.status < 300:
+                return None
+            payload = json.loads(response.read().decode("utf-8") or "{}")
+            errors = payload.get("errors", [])
+            if errors:
+                raise ServiceCompileErrors(f"Local Brain service compile errors: {'; '.join(str(item) for item in errors)}")
+            return ("compiled", _pending_capture_count())
+    except error.HTTPError as exc:
+        if exc.code == 409:
+            return ("running", None)
+        raise
+    except (TimeoutError, socket.timeout):
+        return ("running", None)
+    except error.URLError as exc:
+        if isinstance(exc.reason, (TimeoutError, socket.timeout)):
+            return ("running", None)
+        return None
+
+
+def _run_in_process_compile() -> object:
+    local_brain_src = FRITZ_REPO / "services" / "local-brain"
+    if local_brain_src.exists():
+        sys.path.insert(0, str(local_brain_src))
+
+    from fritz_local_brain.compile_workflow import run_compile
+    from fritz_local_brain.config import Settings
+    from fritz_local_brain.models import CompileRunRequest
+    from fritz_local_brain.operation_locks import compile_lock
+    from fritz_local_brain.run_history import record_compile
+
+    async def _compile() -> object:
+        settings = Settings(LOCAL_BRAIN_HOME=BRAIN_HOME, LOCAL_BRAIN_SKILLS_DIR=FRITZ_REPO / "skills")
+        async with compile_lock.guard(BRAIN_HOME):
+            result = await run_compile(settings, CompileRunRequest(dry_run=False))
+            record_compile(result)
+            return result
+
+    return asyncio.run(_compile())
+
+
+def _pending_capture_count() -> int:
+    local_brain_src = FRITZ_REPO / "services" / "local-brain"
+    if local_brain_src.exists() and str(local_brain_src) not in sys.path:
+        sys.path.insert(0, str(local_brain_src))
+    try:
+        from fritz_local_brain.captures import list_all_captures
+
+        return len(list_all_captures(BRAIN_HOME).paths)
+    except Exception:  # noqa: BLE001 - status marker fallback must never break capture.
+        capture_parent = BRAIN_HOME / "capture"
+        if capture_parent.is_symlink():
+            return 0
+        count = 0
+        for source in ("inbox", "daily", "sessions"):
+            capture_dir = capture_parent / source
+            if capture_dir.is_symlink():
+                continue
+            count += sum(1 for path in capture_dir.glob("*.md") if path.is_file() and not path.is_symlink())
+        return count
+
+
+def _write_compile_needed(capture_path: Path | None, *, processing_active: bool, reason: str) -> None:
+    BRAIN_HOME.mkdir(parents=True, exist_ok=True)
+    marker = BRAIN_HOME / ".compile-needed"
+    topics = 1
+    if marker.exists():
+        try:
+            topics = int((json.loads(marker.read_text(encoding="utf-8")) or {}).get("topics", 0)) + 1
+        except (OSError, json.JSONDecodeError, TypeError, ValueError):
+            topics = 1
+    data = {
+        "since": datetime.now().isoformat(timespec="seconds"),
+        "topics": topics,
+        "capture": str(capture_path) if capture_path else None,
+        "processing_active": processing_active,
+        "reason": reason,
+    }
+    marker.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def _write_compile_failure(reason: str) -> None:
+    BRAIN_HOME.mkdir(parents=True, exist_ok=True)
+    (BRAIN_HOME / ".compile-failed").write_text(
+        json.dumps({"at": datetime.now().isoformat(timespec="seconds"), "reason": reason}, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _clear_compile_markers() -> None:
+    for marker in (BRAIN_HOME / ".compile-failed", BRAIN_HOME / ".compile-needed"):
+        try:
+            marker.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def local_brain_service_available(timeout: float = 0.4) -> bool:
