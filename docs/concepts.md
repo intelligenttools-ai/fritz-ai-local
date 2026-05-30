@@ -122,7 +122,13 @@ capture regardless of where the session happened.
 
 Captures are promoted into knowledge articles by `/fritz:brain-compile`,
 which reads content and routes each item to the correct vault — not by
-where the session ran.
+where the session ran. When `settings.local_brain_service.enabled: true` and
+`auto_compile_on_ingest` is not false, capture hooks trigger a compile attempt
+after saving. Default compile runs cap capture discovery to a safe batch size
+(to avoid repeatedly sending the full historical corpus); configure
+`COMPILE_MAX_CAPTURES=all` only for an intentional full-backlog pass. If no
+processor can run, Fritz Local writes `.compile-needed` and `.compile-failed`
+markers instead of silently piling up captures.
 
 ## Knowledge articles
 

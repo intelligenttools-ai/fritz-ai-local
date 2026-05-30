@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+import asyncio
+
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic_ai.exceptions import ModelAPIError, UsageLimitExceeded
 
 from ..compile_workflow import run_compile
@@ -27,10 +29,18 @@ from ..models import (
 from ..operation_locks import OperationAlreadyRunning, compile_lock, lint_lock, sync_lock
 from ..query_workflow import run_query
 from ..run_history import recent_runs, record_compile, record_sync
+from ..status import build_status
 from ..sync_workflow import run_sync
 from .auth import require_token
 
 router = APIRouter()
+
+
+def _scheduler_task_running(request: Request | None) -> bool | None:
+    if request is None:
+        return None
+    task = getattr(request.app.state, "scheduler_task", None)
+    return isinstance(task, asyncio.Task) and not task.done()
 
 
 @router.get("/health")
@@ -39,15 +49,8 @@ async def health() -> dict[str, str]:
 
 
 @router.get("/v1/status", response_model=StatusResult, dependencies=[Depends(require_token)])
-async def status() -> StatusResult:
-    settings = get_settings()
-    return StatusResult(
-        scheduler_enabled=settings.scheduler_enabled,
-        interval_minutes=settings.interval_minutes,
-        brain_home=str(settings.brain_home),
-        skills_dir=str(settings.skills_dir),
-        allow_first_external_sync=settings.allow_first_external_sync,
-    )
+async def status(request: Request) -> StatusResult:
+    return build_status(get_settings(), scheduler_task_running=_scheduler_task_running(request))
 
 
 @router.post("/v1/compile/run", response_model=CompileRunResult, dependencies=[Depends(require_token)])

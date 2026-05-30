@@ -33,6 +33,10 @@ settings:
     # api_token: replace-with-random-token
     api_token_env: LOCAL_BRAIN_API_TOKEN
     allow_remote: false
+    # When enabled, capture/ingest hooks trigger an apply-mode compile attempt after saving.
+    auto_compile_on_ingest: true
+    # Service scheduler settings live in the service environment (.env):
+    # SCHEDULER_ENABLED=false, SCHEDULER_DRY_RUN=true, AUTOSTART_INSTALLED=false.
     suggest_setup: true
 
 vaults:

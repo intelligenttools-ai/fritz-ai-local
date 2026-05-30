@@ -43,6 +43,7 @@ def validate_article_write(
     manifests: dict[str, dict[str, Any]],
     brain_home: Path,
     allowed_sources: set[Path] | None = None,
+    known_existing_targets: set[Path] | None = None,
 ) -> Path:
     if proposal.vault not in vault_paths:
         raise PolicyError(f"Unknown vault: {proposal.vault}")
@@ -75,9 +76,10 @@ def validate_article_write(
         identity_path = resolve_manifest_path(vault_path, manifest, key)
         if identity_path and target == identity_path.resolve():
             raise PolicyError(f"Target is a manifest identity file: {proposal.relative_path}")
-    if proposal.operation == "update" and not target.exists():
+    target_exists = target in known_existing_targets if known_existing_targets is not None else target.exists()
+    if proposal.operation == "update" and not target_exists:
         raise PolicyError(f"Update target does not exist: {proposal.relative_path}")
-    if proposal.operation == "create" and target.exists():
+    if proposal.operation == "create" and target_exists:
         raise PolicyError(f"Create target already exists: {proposal.relative_path}")
 
     if not proposal.sources:

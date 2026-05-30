@@ -39,6 +39,7 @@ for workflows that the service does not provide.
 ## Safety Defaults
 
 - Scheduler is disabled by default.
+- When the scheduler is explicitly enabled, it stays in dry-run mode by default (`SCHEDULER_DRY_RUN=true`); set `SCHEDULER_DRY_RUN=false` to opt in to apply-mode runs.
 - Manual compile defaults to `dry_run: true`.
 - Agent runs are capped to a small request limit, the context tool may only be
   used once, and capture text is truncated by `CAPTURE_MAX_CHARS` before it
@@ -76,8 +77,15 @@ Important settings:
 - `EMBEDDING_API_KEY`: optional embedding API key.
 - `CAPTURE_MAX_CHARS`: maximum characters read from each capture before model
   input truncation. Defaults to `4000`.
-- `COMPILE_MAX_CAPTURES`: default maximum captures per run when the request does
-  not specify `max_captures`, also used by the scheduler. Defaults to `1`.
+- `SCHEDULER_ENABLED`: starts interval compile runs when the service process is running. Defaults to `false`.
+- `SCHEDULER_DRY_RUN`: controls scheduler mode. Defaults to `true` so explicitly enabled scheduler processing simulates compile runs; set `false` to opt in to applying validated compile proposals.
+- `AUTOSTART_INSTALLED`: set to `true` only after installing service autostart on this machine. `/v1/status` uses this to explain whether processing is daemon-backed or active only while a service/agent trigger runs.
+- `BRAIN_INTERVAL_MINUTES`: interval between scheduler compile attempts. Defaults to `30`.
+- `COMPILE_MAX_CAPTURES`: cap for captures per run when the request does not
+  specify `max_captures`, also used by automatic hook compiles and the
+  scheduler. Defaults to `25` to avoid repeatedly sending the full historical
+  capture corpus; set to `all` only when intentionally compiling the full
+  backlog oldest-first.
 - `ALLOW_FIRST_EXTERNAL_SYNC`: allows the first non-dry-run external sync, such
   as `git push`, for vaults with no previous `SYNC` log. Defaults to `false`.
 - `API_TOKEN`: required bearer token for all `/v1/*` endpoints. Use a unique
@@ -114,13 +122,21 @@ curl -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" \
   http://127.0.0.1:8765/v1/status
 ```
 
+The status payload includes `service_running`, `scheduler_enabled`,
+`scheduler_dry_run`, `processing_mode`, `processing_active`, `processing_note`,
+`last_successful_compile_at`, pending capture counts by source, and the oldest
+pending capture path/timestamp. Use it to verify processing is active: if
+`scheduler_enabled` is false, captures are compiled only when an agent/service
+trigger invokes compile; if `AUTOSTART_INSTALLED=false`, scheduler processing is
+active only while the service process is running.
+
 Dry-run compile:
 
 ```bash
 curl -X POST http://127.0.0.1:8765/v1/compile/run \
   -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" \
   -H 'content-type: application/json' \
-  -d '{"dry_run": true, "max_captures": 1}'
+  -d '{"dry_run": true}'
 ```
 
 Apply compile proposals:
@@ -129,7 +145,7 @@ Apply compile proposals:
 curl -X POST http://127.0.0.1:8765/v1/compile/run \
   -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" \
   -H 'content-type: application/json' \
-  -d '{"dry_run": false, "max_captures": 1}'
+  -d '{"dry_run": false}'
 ```
 
 Dry-run sync:
@@ -242,7 +258,8 @@ Explicit `--base-url`, `--token`, and `--token-env` arguments override registry
 defaults.
 
 The Docker image also includes the same CLI for manual operations inside the
-container:
+container. `fritz-local-brain-cli status` exposes the same processing mode,
+backlog, oldest pending capture, and last compile fields as `/v1/status`:
 
 ```bash
 docker compose --env-file .env -f services/local-brain/docker-compose.example.yml exec local-brain \

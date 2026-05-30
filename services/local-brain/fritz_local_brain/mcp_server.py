@@ -14,6 +14,7 @@ from .models import CompileRunRequest, EmbeddingProbeRequest, LintRunRequest, Qu
 from .operation_locks import compile_lock, lint_lock, sync_lock
 from .query_workflow import run_query
 from .run_history import recent_runs, record_compile, record_sync
+from .status import build_status
 from .sync_workflow import run_sync
 
 
@@ -26,14 +27,7 @@ def brain_status(api_token: str | None = None) -> dict[str, Any]:
 
     settings = get_settings()
     _require_mcp_token(settings, api_token)
-    return {
-        "service": "local-brain",
-        "scheduler_enabled": settings.scheduler_enabled,
-        "interval_minutes": settings.interval_minutes,
-        "brain_home": str(settings.brain_home),
-        "skills_dir": str(settings.skills_dir),
-        "allow_first_external_sync": settings.allow_first_external_sync,
-    }
+    return build_status(settings, service_running=False, scheduler_task_running=False).model_dump(mode="json")
 
 
 @mcp.tool()

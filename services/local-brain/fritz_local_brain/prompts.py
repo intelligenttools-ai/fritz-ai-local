@@ -32,7 +32,11 @@ Expected sequence:
 3. Return the final structured output. Do not call any tool again.
 
 If no useful knowledge article should be created or updated, return no proposals
-and explain why in skipped.
+and explain why in skipped. Each skipped entry must begin with the exact capture
+path it accounts for, followed by a colon and the reason.
+
+Only cite a capture path in proposal sources or skipped when that returned capture
+is intentionally accounted for by the proposal or skip reason.
 
 Final output shape:
 {
@@ -48,7 +52,7 @@ Final output shape:
       "body": "markdown body"
     }
   ],
-  "skipped": ["reason"]
+  "skipped": ["capture path: reason"]
 }
 
 Detailed Fritz skill text follows. Use it for compile policy and article quality,

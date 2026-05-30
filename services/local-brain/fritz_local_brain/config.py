@@ -6,8 +6,11 @@ from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-from pydantic import AliasChoices, Field
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+DEFAULT_COMPILE_MAX_CAPTURES = 25
 
 
 class Settings(BaseSettings):
@@ -24,6 +27,7 @@ class Settings(BaseSettings):
 
     scheduler_enabled: bool = Field(default=False, validation_alias=AliasChoices("LOCAL_BRAIN_SCHEDULER_ENABLED", "SCHEDULER_ENABLED"))
     scheduler_dry_run: bool = Field(default=True, validation_alias=AliasChoices("LOCAL_BRAIN_SCHEDULER_DRY_RUN", "SCHEDULER_DRY_RUN"))
+    local_brain_autostart_installed: bool = Field(default=False, validation_alias=AliasChoices("LOCAL_BRAIN_AUTOSTART_INSTALLED", "AUTOSTART_INSTALLED"))
     interval_minutes: int = Field(default=30, ge=1, validation_alias=AliasChoices("LOCAL_BRAIN_INTERVAL_MINUTES", "BRAIN_INTERVAL_MINUTES"))
 
     llm_protocol: str = Field(default="openai-compatible", validation_alias=AliasChoices("LOCAL_BRAIN_LLM_PROTOCOL", "LLM_PROTOCOL"))
@@ -51,7 +55,16 @@ class Settings(BaseSettings):
     lint_skill_name: str = Field(default="fritz:brain-lint", validation_alias=AliasChoices("LOCAL_BRAIN_LINT_SKILL_NAME", "LINT_SKILL_NAME"))
     allow_first_external_sync: bool = Field(default=False, validation_alias=AliasChoices("LOCAL_BRAIN_ALLOW_FIRST_EXTERNAL_SYNC", "ALLOW_FIRST_EXTERNAL_SYNC"))
     capture_max_chars: int = Field(default=4000, ge=500, validation_alias=AliasChoices("LOCAL_BRAIN_CAPTURE_MAX_CHARS", "CAPTURE_MAX_CHARS"))
-    compile_max_captures: int = Field(default=1, ge=1, validation_alias=AliasChoices("LOCAL_BRAIN_COMPILE_MAX_CAPTURES", "COMPILE_MAX_CAPTURES"))
+    compile_max_captures: int | None = Field(default=DEFAULT_COMPILE_MAX_CAPTURES, ge=1, validation_alias=AliasChoices("LOCAL_BRAIN_COMPILE_MAX_CAPTURES", "COMPILE_MAX_CAPTURES"))
+
+    @field_validator("compile_max_captures", mode="before")
+    @classmethod
+    def empty_compile_max_captures_is_unset(cls, value: object) -> object:
+        if value == "":
+            return DEFAULT_COMPILE_MAX_CAPTURES
+        if isinstance(value, str) and value.strip().lower() in {"all", "unbounded"}:
+            return None
+        return value
 
     def normalized_api_key(self) -> str | None:
         if self.llm_api_key and self.llm_api_key.strip():

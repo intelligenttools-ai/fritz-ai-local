@@ -65,3 +65,14 @@ def record_failure(kind: str, started_at: datetime, finished_at: datetime, dry_r
 def recent_runs(limit: int = 10) -> list[RecentRun]:
     bounded = max(0, min(limit, len(_RUNS)))
     return list(_RUNS)[:bounded]
+
+
+def last_successful_compile_at() -> datetime | None:
+    for run in _RUNS:
+        if run.kind == "compile" and run.status == "ok":
+            return run.finished_at
+    return None
+
+
+def clear_recent_runs_for_tests() -> None:
+    _RUNS.clear()
