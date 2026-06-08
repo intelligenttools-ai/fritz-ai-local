@@ -150,6 +150,23 @@ class EmbeddingProbeResult(BaseModel):
     error: str | None = None
 
 
+class EmbeddingIndexRequest(BaseModel):
+    """Request body for container-owned vector index refresh."""
+
+    force: bool = False
+
+
+class EmbeddingIndexResult(BaseModel):
+    """Result of refreshing the local vector index."""
+
+    enabled: bool
+    indexed: bool = False
+    documents_indexed: int = 0
+    index_path: str | None = None
+    updated_at: datetime | None = None
+    error: str | None = None
+
+
 class QueryRunRequest(BaseModel):
     """Request body for a read-only brain query."""
 

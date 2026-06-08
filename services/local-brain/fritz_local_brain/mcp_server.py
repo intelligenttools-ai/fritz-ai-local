@@ -8,9 +8,9 @@ from mcp.server.fastmcp import FastMCP
 
 from .compile_workflow import run_compile
 from .config import get_settings
-from .embeddings import embedding_status, probe_embedding_dimensions
+from .embeddings import embedding_status, probe_embedding_dimensions, refresh_embedding_index
 from .lint_workflow import run_lint
-from .models import CompileRunRequest, EmbeddingProbeRequest, LintRunRequest, QueryRunRequest, SyncRunRequest
+from .models import CompileRunRequest, EmbeddingIndexRequest, EmbeddingProbeRequest, LintRunRequest, QueryRunRequest, SyncRunRequest
 from .operation_locks import compile_lock, lint_lock, sync_lock
 from .query_workflow import run_query
 from .run_history import recent_runs, record_compile, record_sync
@@ -86,6 +86,21 @@ async def brain_query(query: str, vault: str | None = None, limit: int = 10, api
 
 
 @mcp.tool()
+async def brain_search(query: str, vault: str | None = None, limit: int = 10, api_token: str | None = None) -> dict[str, Any]:
+    """Run service-backed search, including container-managed vector search."""
+
+    settings = get_settings()
+    _require_mcp_token(settings, api_token)
+    result = await run_query(
+        settings,
+        QueryRunRequest(query=query, vault=vault, limit=limit),
+        use_vector=True,
+        ensure_index=True,
+    )
+    return result.model_dump(mode="json")
+
+
+@mcp.tool()
 async def brain_lint(dry_run: bool = True, vault: str | None = None, api_token: str | None = None) -> dict[str, Any]:
     """Run the same lint workflow as POST /v1/lint/run."""
 
@@ -112,6 +127,16 @@ async def brain_embeddings_probe(dry_run: bool = True, api_token: str | None = N
     settings = get_settings()
     _require_mcp_token(settings, api_token)
     result = await probe_embedding_dimensions(settings, EmbeddingProbeRequest(dry_run=dry_run))
+    return result.model_dump(mode="json")
+
+
+@mcp.tool()
+async def brain_embeddings_index(force: bool = False, api_token: str | None = None) -> dict[str, Any]:
+    """Vectorize knowledge and captures inside the Local Brain container."""
+
+    settings = get_settings()
+    _require_mcp_token(settings, api_token)
+    result = await refresh_embedding_index(settings, EmbeddingIndexRequest(force=force))
     return result.model_dump(mode="json")
 
 

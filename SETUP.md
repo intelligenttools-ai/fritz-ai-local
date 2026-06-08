@@ -228,8 +228,9 @@ If the human says yes:
    - `BRAIN_HOME=/data/brain`
    - `BRAIN_PATH_MAP=<host-notes-root>=/vaults/notes`, matching the path style used in `~/.brain/registry.yaml`
    - `LLM_PROTOCOL=openai-compatible` or `anthropic-compatible`
-   - `LLM_ENDPOINT=<OpenAI-compatible or Anthropic-compatible endpoint>`
-   - `LLM_MODEL=<model-name>`
+   - `LLM_ENDPOINT=<OpenAI-compatible or Anthropic-compatible endpoint>`; for the simple local path use host Ollama or another local server exposed as `http://host.docker.internal:11434/v1`
+   - `LLM_MODEL=<model-name>`; a small instruction model in the 2B-active to 4B range or a 7B-9B instruct model is sufficient for normal capture compile/extraction, while stronger API models remain optional for messy captures. Use the exact model tag served by the endpoint.
+   - `EMBEDDING_ENABLED=true`, `EMBEDDING_ENDPOINT=<OpenAI-compatible embedding endpoint>`, and `EMBEDDING_MODEL=<embedding-model>` if semantic search should be available; the default local path is host Ollama `nomic-embed-text:latest`
    - Leave `API_HOST=127.0.0.1` unless the human explicitly asks to expose the service off-host.
    - Set `API_TOKEN` to a unique random value. All `/v1/*` endpoints require it.
    - For trusted local agent use, set `api_token` in `~/.brain/registry.yaml` to the same value so hooks, skills, and the CLI can authenticate without manual shell environment setup.
@@ -257,10 +258,14 @@ If the human says yes:
       -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" \
       -H 'content-type: application/json' \
       -d '{"dry_run": true, "max_captures": 1}'
+   curl -X POST http://127.0.0.1:8765/v1/search/run \
+      -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" \
+      -H 'content-type: application/json' \
+      -d '{"query": "local brain", "limit": 5}'
    ```
 
 Optional agent integrations:
-- Prefer MCP for agents when the host supports MCP: run `fritz-local-brain-mcp` from the service package/container and expose the `brain_query`, `brain_compile`, `brain_sync`, `brain_lint`, `brain_embeddings_status`, and `brain_embeddings_probe` tools. MCP tools require the same API token through their `api_token` argument; agents may resolve it from `settings.local_brain_service.api_token` or from the configured `api_token_env`.
+- Prefer MCP for agents when the host supports MCP: run `fritz-local-brain-mcp` from the service package/container and expose the `brain_search`, `brain_query`, `brain_compile`, `brain_sync`, `brain_lint`, `brain_embeddings_status`, `brain_embeddings_probe`, and `brain_embeddings_index` tools. MCP tools require the same API token through their `api_token` argument; agents may resolve it from `settings.local_brain_service.api_token` or from the configured `api_token_env`.
 - For humans, CI, or shell-only agents, install the cross-platform Python CLI with `pipx install <repo>/services/local-brain`. The `fritz-brain` and `fritz-local-brain-cli` commands read `~/.brain/registry.yaml` and resolve the configured token automatically.
 
 Important service safety notes:
@@ -270,7 +275,7 @@ Important service safety notes:
 - Full service documentation is in `<repo>/services/local-brain/README.md`.
 
 Agent operating rule when `settings.local_brain_service.enabled: true` and the service health check passes:
-- Use the Dockerized service as the primary execution path for supported workflows: compile, sync, query, lint, embedding status/probe, MCP, and CLI operations.
+- Use the Dockerized service as the primary execution path for supported workflows: compile, sync, search/query, lint, embedding status/probe/index, MCP, and CLI operations.
 - Do not run the equivalent local slash-skill workflow for the same supported operation in the same session unless the service is unavailable or the human explicitly asks for the non-service path.
 - For handover preparation, use service-backed compile and sync where those steps are needed, then write the handover document. Do not duplicate compile/sync by also invoking `/fritz:brain-compile` or `/fritz:brain-sync` directly.
 - Continue to use local hooks and slash skills for workflows the service does not provide, including capture hooks, setup, ingest, update, and writing the handover document itself.

@@ -31,15 +31,15 @@ class Settings(BaseSettings):
     interval_minutes: int = Field(default=30, ge=1, validation_alias=AliasChoices("LOCAL_BRAIN_INTERVAL_MINUTES", "BRAIN_INTERVAL_MINUTES"))
 
     llm_protocol: str = Field(default="openai-compatible", validation_alias=AliasChoices("LOCAL_BRAIN_LLM_PROTOCOL", "LLM_PROTOCOL"))
-    llm_base_url: str = Field(default="http://host.docker.internal:1234/v1", validation_alias=AliasChoices("LOCAL_BRAIN_LLM_BASE_URL", "LLM_ENDPOINT", "LLM_BASE_URL"))
-    llm_model: str = Field(default="local-model", validation_alias=AliasChoices("LOCAL_BRAIN_LLM_MODEL", "LLM_MODEL"))
+    llm_base_url: str = Field(default="http://host.docker.internal:11434/v1", validation_alias=AliasChoices("LOCAL_BRAIN_LLM_BASE_URL", "LLM_ENDPOINT", "LLM_BASE_URL"))
+    llm_model: str = Field(default="local-instruct-model", validation_alias=AliasChoices("LOCAL_BRAIN_LLM_MODEL", "LLM_MODEL"))
     llm_api_key: str | None = Field(default=None, validation_alias=AliasChoices("LOCAL_BRAIN_LLM_API_KEY", "LLM_API_KEY"))
     llm_timeout_seconds: float = Field(default=120.0, validation_alias=AliasChoices("LOCAL_BRAIN_LLM_TIMEOUT_SECONDS", "LLM_TIMEOUT_SECONDS"))
 
     embedding_enabled: bool = Field(default=False, validation_alias=AliasChoices("LOCAL_BRAIN_EMBEDDING_ENABLED", "EMBEDDING_ENABLED"))
     embedding_protocol: str = Field(default="openai-compatible", validation_alias=AliasChoices("LOCAL_BRAIN_EMBEDDING_PROTOCOL", "EMBEDDING_PROTOCOL"))
-    embedding_base_url: str = Field(default="http://host.docker.internal:1234/v1", validation_alias=AliasChoices("LOCAL_BRAIN_EMBEDDING_BASE_URL", "EMBEDDING_ENDPOINT", "EMBEDDING_BASE_URL"))
-    embedding_model: str = Field(default="local-embedding-model", validation_alias=AliasChoices("LOCAL_BRAIN_EMBEDDING_MODEL", "EMBEDDING_MODEL"))
+    embedding_base_url: str = Field(default="http://host.docker.internal:11434/v1", validation_alias=AliasChoices("LOCAL_BRAIN_EMBEDDING_BASE_URL", "EMBEDDING_ENDPOINT", "EMBEDDING_BASE_URL"))
+    embedding_model: str = Field(default="nomic-embed-text:latest", validation_alias=AliasChoices("LOCAL_BRAIN_EMBEDDING_MODEL", "EMBEDDING_MODEL"))
     embedding_api_key: str | None = Field(default=None, validation_alias=AliasChoices("LOCAL_BRAIN_EMBEDDING_API_KEY", "EMBEDDING_API_KEY"))
     embedding_timeout_seconds: float = Field(default=60.0, validation_alias=AliasChoices("LOCAL_BRAIN_EMBEDDING_TIMEOUT_SECONDS", "EMBEDDING_TIMEOUT_SECONDS"))
 
