@@ -130,6 +130,36 @@ def test_cli_request_uses_resolved_authorization_header(tmp_path, monkeypatch) -
     }
 
 
+def test_cli_dispatch_search_uses_search_endpoint(monkeypatch) -> None:
+    captured = {}
+
+    def fake_request(args, method, path, body=None):
+        captured.update({"method": method, "path": path, "body": body})
+        return {"ok": True}
+
+    monkeypatch.setattr(cli, "_request", fake_request)
+
+    result = cli._dispatch(Namespace(command="search", query="local brain", vault=None, limit=5))
+
+    assert result == {"ok": True}
+    assert captured == {"method": "POST", "path": "/v1/search/run", "body": {"query": "local brain", "vault": None, "limit": 5}}
+
+
+def test_cli_dispatch_embeddings_index_uses_index_endpoint(monkeypatch) -> None:
+    captured = {}
+
+    def fake_request(args, method, path, body=None):
+        captured.update({"method": method, "path": path, "body": body})
+        return {"indexed": True}
+
+    monkeypatch.setattr(cli, "_request", fake_request)
+
+    result = cli._dispatch(Namespace(command="embeddings-index", force=True))
+
+    assert result == {"indexed": True}
+    assert captured == {"method": "POST", "path": "/v1/embeddings/index/run", "body": {"force": True}}
+
+
 def test_cli_rejects_remote_service_url_without_allow_remote(tmp_path) -> None:
     registry = tmp_path / "registry.yaml"
     registry.write_text(

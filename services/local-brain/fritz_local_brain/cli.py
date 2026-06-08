@@ -53,6 +53,14 @@ def main() -> None:
     query_parser.add_argument("--vault", default=None)
     query_parser.add_argument("--limit", type=int, default=10)
 
+    search_parser = subcommands.add_parser("search")
+    search_parser.add_argument("query")
+    search_parser.add_argument("--vault", default=None)
+    search_parser.add_argument("--limit", type=int, default=10)
+
+    embeddings_index_parser = subcommands.add_parser("embeddings-index")
+    embeddings_index_parser.add_argument("--force", action="store_true")
+
     lint_parser = subcommands.add_parser("lint")
     lint_parser.add_argument("--apply-log", action="store_true")
     lint_parser.add_argument("--vault", default=None)
@@ -82,6 +90,10 @@ def _dispatch(args: argparse.Namespace) -> Any:
         return _request(args, "GET", f"/v1/runs/recent?limit={args.limit}")
     if args.command == "query":
         return _request(args, "POST", "/v1/query/run", {"query": args.query, "vault": args.vault, "limit": args.limit})
+    if args.command == "search":
+        return _request(args, "POST", "/v1/search/run", {"query": args.query, "vault": args.vault, "limit": args.limit})
+    if args.command == "embeddings-index":
+        return _request(args, "POST", "/v1/embeddings/index/run", {"force": args.force})
     if args.command == "lint":
         return _request(args, "POST", "/v1/lint/run", {"dry_run": not args.apply_log, "vault": args.vault})
     raise SystemExit(f"Unsupported command: {args.command}")

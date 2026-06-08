@@ -4,7 +4,15 @@ import os
 
 import pytest
 
-from fritz_local_brain.captures import list_all_captures, list_daily_captures, mark_captures_processed, read_capture
+from fritz_local_brain.captures import (
+    archive_processed_inbox_captures,
+    capture_hash,
+    list_all_captures,
+    list_daily_captures,
+    list_queryable_captures,
+    mark_captures_processed,
+    read_capture,
+)
 
 
 def test_list_daily_captures_skips_symlinks(tmp_path) -> None:
@@ -111,6 +119,44 @@ def test_list_all_captures_skips_processed_captures_until_content_changes(tmp_pa
     capture.write_text("new", encoding="utf-8")
 
     assert list_all_captures(tmp_path).paths == [capture]
+
+
+def test_list_queryable_captures_includes_processed_inbox_files(tmp_path) -> None:
+    capture = tmp_path / "capture" / "inbox" / "fact.md"
+    capture.parent.mkdir(parents=True)
+    capture.write_text("important inbox fact", encoding="utf-8")
+    mark_captures_processed(tmp_path, [capture])
+
+    assert list_all_captures(tmp_path).paths == []
+    result = list_queryable_captures(tmp_path)
+
+    assert result.by_source == {"inbox": 1, "daily": 0, "sessions": 0}
+    assert result.paths == [capture]
+
+
+def test_archive_processed_inbox_captures_moves_to_queryable_archive(tmp_path) -> None:
+    capture = tmp_path / "capture" / "inbox" / "fact.md"
+    capture.parent.mkdir(parents=True)
+    capture.write_text("archived fact", encoding="utf-8")
+
+    archived = archive_processed_inbox_captures(tmp_path, [capture])
+
+    assert not capture.exists()
+    assert len(archived) == 1
+    assert archived[0].match("*/capture/inbox/archive/*/fact.md")
+    assert list_all_captures(tmp_path).paths == []
+    assert list_queryable_captures(tmp_path).paths == archived
+
+
+def test_archive_processed_inbox_captures_accepts_unresolved_expected_hash_key(tmp_path) -> None:
+    capture = tmp_path / "capture" / "inbox" / "fact.md"
+    capture.parent.mkdir(parents=True)
+    capture.write_text("archived fact", encoding="utf-8")
+
+    archived = archive_processed_inbox_captures(tmp_path, [capture], {capture: capture_hash(capture)})
+
+    assert not capture.exists()
+    assert len(archived) == 1
 
 
 def test_read_capture_rejects_symlink(tmp_path) -> None:

@@ -1,19 +1,42 @@
-"""Optional embedding endpoint probing and metadata storage."""
+"""Optional embedding endpoint probing, indexing, and vector search."""
 
 from __future__ import annotations
 
+import hashlib
 import json
+import math
+import os
 from datetime import datetime
 from pathlib import Path
+from typing import Any
+from uuid import uuid4
 
 from openai import AsyncOpenAI
 
+from .captures import list_queryable_captures, read_capture
 from .config import Settings
-from .models import EmbeddingMetadata, EmbeddingProbeRequest, EmbeddingProbeResult, EmbeddingStatusResult
+from .manifests import load_manifest, resolve_manifest_path
+from .models import (
+    EmbeddingIndexRequest,
+    EmbeddingIndexResult,
+    EmbeddingMetadata,
+    EmbeddingProbeRequest,
+    EmbeddingProbeResult,
+    EmbeddingStatusResult,
+    QueryMatch,
+)
+from .operation_locks import OperationAlreadyRunning, embedding_lock
+from .paths import PathMapper
+from .registry import load_registry, registered_vault_paths
+from .security import is_excluded
 
 
 def metadata_path(settings: Settings) -> Path:
     return settings.brain_home / "embeddings" / "metadata.json"
+
+
+def index_path(settings: Settings) -> Path:
+    return settings.brain_home / "embeddings" / "index.json"
 
 
 def load_embedding_metadata(settings: Settings) -> EmbeddingMetadata | None:
@@ -50,18 +73,13 @@ async def probe_embedding_dimensions(settings: Settings, request: EmbeddingProbe
         result.error = "MVP supports EMBEDDING_PROTOCOL=openai-compatible only"
         return result
 
-    client = AsyncOpenAI(
-        base_url=settings.normalized_embedding_base_url(),
-        api_key=settings.normalized_embedding_api_key() or "local-brain-no-key",
-        timeout=settings.embedding_timeout_seconds,
-    )
     try:
-        response = await client.embeddings.create(model=settings.embedding_model, input="dimension probe")
+        embedding = await _embed_text(settings, "dimension probe")
     except Exception as exc:  # noqa: BLE001 - external model clients raise provider-specific errors.
         result.error = str(exc)
         return result
 
-    dimensions = len(response.data[0].embedding)
+    dimensions = len(embedding)
     result.dimensions = dimensions
     if request.dry_run:
         return result
@@ -77,3 +95,284 @@ async def probe_embedding_dimensions(settings: Settings, request: EmbeddingProbe
     path.write_text(json.dumps(metadata.model_dump(mode="json"), indent=2) + "\n", encoding="utf-8")
     result.stored = True
     return result
+
+
+async def refresh_embedding_index(
+    settings: Settings, request: EmbeddingIndexRequest | None = None
+) -> EmbeddingIndexResult:
+    """Vectorize current knowledge and raw captures inside the Local Brain service."""
+
+    try:
+        async with embedding_lock.guard(settings.brain_home):
+            return await _refresh_embedding_index_unlocked(settings, request)
+    except OperationAlreadyRunning as exc:
+        return EmbeddingIndexResult(enabled=settings.embedding_enabled, index_path=str(index_path(settings)), error=str(exc))
+
+
+async def _refresh_embedding_index_unlocked(
+    settings: Settings, request: EmbeddingIndexRequest | None = None
+) -> EmbeddingIndexResult:
+    path = index_path(settings)
+    result = EmbeddingIndexResult(enabled=settings.embedding_enabled, index_path=str(path))
+    if not settings.embedding_enabled:
+        result.error = "Embedding endpoint is disabled; set EMBEDDING_ENABLED=true"
+        return result
+    if settings.embedding_protocol != "openai-compatible":
+        result.error = "MVP supports EMBEDDING_PROTOCOL=openai-compatible only"
+        return result
+    try:
+        documents = _collect_embedding_documents(settings)
+        source_fingerprint = _source_fingerprint(settings, documents)
+        if request and not request.force:
+            try:
+                data = _read_index_data(settings)
+            except (OSError, ValueError, json.JSONDecodeError):
+                data = None
+            if data is not None and _index_data_is_compatible(settings, data, source_fingerprint):
+                result.indexed = True
+                result.documents_indexed = len(data.get("documents", [])) if isinstance(data.get("documents"), list) else 0
+                try:
+                    result.updated_at = datetime.fromisoformat(str(data.get("updated_at")))
+                except (TypeError, ValueError):
+                    result.updated_at = None
+                return result
+
+        entries: list[dict[str, Any]] = []
+        for document in documents:
+            vector = await _embed_text(settings, document["text"])
+            persisted = {key: value for key, value in document.items() if key != "text"}
+            entries.append({**persisted, "embedding": vector})
+
+        updated_at = datetime.now()
+        embedding_dir = path.parent
+        if embedding_dir.is_symlink() or path.is_symlink():
+            raise ValueError(f"Unsafe embedding index path: {path}")
+        embedding_dir.mkdir(parents=True, exist_ok=True)
+        if embedding_dir.is_symlink():
+            raise ValueError(f"Unsafe embedding index directory: {embedding_dir}")
+        embedding_dir.resolve().relative_to(settings.brain_home.resolve())
+        tmp_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+        if tmp_path.is_symlink():
+            raise ValueError(f"Unsafe embedding temp path: {tmp_path}")
+        payload = (
+            json.dumps(
+                {
+                    "model": settings.embedding_model,
+                    "provider_fingerprint": _provider_fingerprint(settings),
+                    "updated_at": updated_at.isoformat(),
+                    "source_fingerprint": source_fingerprint,
+                    "documents": entries,
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+        flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        fd = os.open(tmp_path, flags, 0o600)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                fd = -1
+                handle.write(payload)
+        finally:
+            if fd != -1:
+                os.close(fd)
+        tmp_path.replace(path)
+    except Exception as exc:  # noqa: BLE001 - provider/filesystem errors are returned as structured index errors.
+        result.error = str(exc)
+        return result
+    result.indexed = True
+    result.documents_indexed = len(entries)
+    result.updated_at = updated_at
+    return result
+
+
+async def ensure_embedding_index(settings: Settings) -> EmbeddingIndexResult:
+    """Ensure agents have a container-built vector index before vector search."""
+
+    if _index_is_compatible(settings):
+        return await refresh_embedding_index(settings, EmbeddingIndexRequest(force=False))
+    return await refresh_embedding_index(settings, EmbeddingIndexRequest(force=True))
+
+
+async def search_embedding_index(
+    settings: Settings,
+    query: str,
+    limit: int,
+    allowed_keys: set[tuple[str, str]] | None = None,
+) -> list[QueryMatch]:
+    if limit <= 0 or not settings.embedding_enabled:
+        return []
+    data = _read_index_data(settings)
+    current_documents = _collect_embedding_documents(settings)
+    source_fingerprint = _source_fingerprint(settings, current_documents)
+    if data is None or not _index_data_is_compatible(settings, data, source_fingerprint):
+        return []
+    documents = data.get("documents", [])
+    query_vector = await _embed_text(settings, query)
+
+    scored: list[tuple[float, dict[str, Any]]] = []
+    for document in documents:
+        if not isinstance(document, dict):
+            continue
+        key = (str(document.get("vault", "")), str(document.get("path", "")))
+        if allowed_keys is not None and key not in allowed_keys:
+            continue
+        vector = document.get("embedding")
+        if not isinstance(vector, list):
+            continue
+        if len(vector) != len(query_vector):
+            continue
+        score = _cosine_similarity(query_vector, vector)
+        if not math.isfinite(score) or score <= 0.05:
+            continue
+        scored.append((score, document))
+    scored.sort(key=lambda item: item[0], reverse=True)
+
+    matches: list[QueryMatch] = []
+    for score, document in scored[:limit]:
+        matches.append(
+            QueryMatch(
+                vault=str(document.get("vault", "")),
+                path=str(document.get("path", "")),
+                title=str(document.get("title", "")),
+                snippet=f"[vector score {score:.3f}] {str(document.get('snippet', ''))}",
+            )
+        )
+    return matches
+
+
+def _read_index_data(settings: Settings) -> dict[str, Any] | None:
+    path = index_path(settings)
+    if path.parent.is_symlink() or path.is_symlink() or not path.exists():
+        return None
+    path.resolve().relative_to(settings.brain_home.resolve())
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return data if isinstance(data, dict) else None
+
+
+def _index_data_is_compatible(
+    settings: Settings, data: dict[str, Any], source_fingerprint: str | None = None
+) -> bool:
+    compatible = data.get("model") == settings.embedding_model and data.get("provider_fingerprint") == _provider_fingerprint(settings)
+    if source_fingerprint is not None:
+        compatible = compatible and data.get("source_fingerprint") == source_fingerprint
+    return compatible
+
+
+def _source_fingerprint(settings: Settings, documents: list[dict[str, Any]]) -> str:
+    digest = hashlib.sha256()
+    digest.update(settings.embedding_model.encode("utf-8"))
+    digest.update(_provider_fingerprint(settings).encode("utf-8"))
+    for document in documents:
+        for key in ("vault", "path", "source_mtime_ns", "source_size", "content_hash"):
+            digest.update(str(document.get(key, "")).encode("utf-8"))
+            digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _provider_fingerprint(settings: Settings) -> str:
+    digest = hashlib.sha256()
+    digest.update(settings.embedding_protocol.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(settings.normalized_embedding_base_url().encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(settings.embedding_model.encode("utf-8"))
+    return digest.hexdigest()
+
+
+def _index_is_compatible(settings: Settings) -> bool:
+    try:
+        data = _read_index_data(settings)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+    return data is not None and _index_data_is_compatible(settings, data)
+
+
+async def _embed_text(settings: Settings, text: str) -> list[float]:
+    client = AsyncOpenAI(
+        base_url=settings.normalized_embedding_base_url(),
+        api_key=settings.normalized_embedding_api_key() or "local-brain-no-key",
+        timeout=settings.embedding_timeout_seconds,
+    )
+    response = await client.embeddings.create(model=settings.embedding_model, input=text)
+    return [float(value) for value in response.data[0].embedding]
+
+
+def _collect_embedding_documents(settings: Settings) -> list[dict[str, Any]]:
+    documents: list[dict[str, Any]] = []
+    mapper = PathMapper(settings.path_map)
+    registry = load_registry(settings.brain_home)
+    vault_paths = registered_vault_paths(registry, mapper)
+    for name, vault_path in vault_paths.items():
+        manifest = load_manifest(vault_path)
+        if manifest is None:
+            continue
+        knowledge_root = resolve_manifest_path(vault_path, manifest, "knowledge")
+        if knowledge_root is None or not knowledge_root.exists():
+            continue
+        for path in sorted(knowledge_root.glob("**/*.md")):
+            if not _is_regular_knowledge_file(path, knowledge_root) or is_excluded(path, vault_path, manifest):
+                continue
+            try:
+                stat_result = path.stat()
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            documents.append(_document(name, str(path.relative_to(knowledge_root)), text, stat_result))
+
+    for path in list_queryable_captures(settings.brain_home).paths:
+        try:
+            stat_result = path.stat()
+            text = read_capture(path, settings.capture_max_chars)
+            relpath = str(path.relative_to(settings.brain_home))
+        except (OSError, UnicodeDecodeError, ValueError):
+            continue
+        documents.append(_document("_captures", relpath, text, stat_result))
+    return documents
+
+
+def _is_regular_knowledge_file(path: Path, knowledge_root: Path) -> bool:
+    if path.is_symlink():
+        return False
+    try:
+        path.resolve(strict=True).relative_to(knowledge_root.resolve())
+        path.relative_to(knowledge_root)
+    except (OSError, ValueError):
+        return False
+    return path.is_file()
+
+
+def _document(vault: str, path: str, text: str, stat_result: os.stat_result) -> dict[str, Any]:
+    title = _title_for(path, text)
+    indexed_text = text[:4000]
+    return {
+        "vault": vault,
+        "path": path,
+        "title": title,
+        "snippet": " ".join(text[:320].split()),
+        "source_mtime_ns": stat_result.st_mtime_ns,
+        "source_size": stat_result.st_size,
+        "content_hash": hashlib.sha256(indexed_text.encode("utf-8")).hexdigest(),
+        "text": indexed_text,
+    }
+
+
+def _title_for(path: str, text: str) -> str:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("# "):
+            return stripped.removeprefix("# ").strip()
+    return Path(path).stem.replace("-", " ").title()
+
+
+def _cosine_similarity(left: list[float], right: list[float]) -> float:
+    if not left or not right or len(left) != len(right):
+        return 0.0
+    dot = sum(a * b for a, b in zip(left, right, strict=True))
+    left_norm = math.sqrt(sum(a * a for a in left))
+    right_norm = math.sqrt(sum(b * b for b in right))
+    if left_norm == 0.0 or right_norm == 0.0:
+        return 0.0
+    return dot / (left_norm * right_norm)

@@ -9,11 +9,13 @@ from pydantic_ai.exceptions import ModelAPIError, UsageLimitExceeded
 
 from ..compile_workflow import run_compile
 from ..config import get_settings
-from ..embeddings import embedding_status, probe_embedding_dimensions
+from ..embeddings import embedding_status, probe_embedding_dimensions, refresh_embedding_index
 from ..lint_workflow import run_lint
 from ..models import (
     CompileRunRequest,
     CompileRunResult,
+    EmbeddingIndexRequest,
+    EmbeddingIndexResult,
     EmbeddingProbeRequest,
     EmbeddingProbeResult,
     EmbeddingStatusResult,
@@ -97,9 +99,19 @@ async def embeddings_probe(request: EmbeddingProbeRequest) -> EmbeddingProbeResu
     return await probe_embedding_dimensions(get_settings(), request)
 
 
+@router.post("/v1/embeddings/index/run", response_model=EmbeddingIndexResult, dependencies=[Depends(require_token)])
+async def embeddings_index_run(request: EmbeddingIndexRequest) -> EmbeddingIndexResult:
+    return await refresh_embedding_index(get_settings(), request)
+
+
 @router.post("/v1/query/run", response_model=QueryRunResult, dependencies=[Depends(require_token)])
 async def query_run(request: QueryRunRequest) -> QueryRunResult:
     return await run_query(get_settings(), request)
+
+
+@router.post("/v1/search/run", response_model=QueryRunResult, dependencies=[Depends(require_token)])
+async def search_run(request: QueryRunRequest) -> QueryRunResult:
+    return await run_query(get_settings(), request, use_vector=True, ensure_index=True)
 
 
 @router.post("/v1/lint/run", response_model=LintRunResult, dependencies=[Depends(require_token)])

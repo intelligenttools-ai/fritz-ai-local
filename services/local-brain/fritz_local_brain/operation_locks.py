@@ -53,3 +53,4 @@ class OperationLock:
 compile_lock = OperationLock("compile", "Compile already running")
 sync_lock = OperationLock("sync", "Sync already running")
 lint_lock = OperationLock("lint", "Lint already running")
+embedding_lock = OperationLock("embeddings", "Embedding index refresh already running")

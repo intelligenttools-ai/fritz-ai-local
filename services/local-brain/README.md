@@ -20,10 +20,11 @@ it as the primary execution path for the workflows it provides:
 
 - Compile: prefer MCP `brain_compile`, otherwise use `/v1/compile/run`.
 - Sync: prefer MCP `brain_sync`, otherwise use `/v1/sync/run`.
-- Query: prefer MCP `brain_query`, otherwise use `/v1/query/run`.
+- Search: prefer MCP `brain_search`, otherwise use `/v1/search/run`.
+- Query compatibility: MCP `brain_query` and `/v1/query/run` perform exact read-only vault/capture lookup without building the vector index.
 - Lint: prefer MCP `brain_lint`, otherwise use `/v1/lint/run`.
-- Embeddings: prefer MCP `brain_embeddings_status` and `brain_embeddings_probe`,
-  otherwise use `/v1/embeddings/status` and `/v1/embeddings/probe`.
+- Embeddings: prefer MCP `brain_embeddings_status`, `brain_embeddings_probe`, and `brain_embeddings_index`,
+  otherwise use `/v1/embeddings/status`, `/v1/embeddings/probe`, and `/v1/embeddings/index/run`.
 
 Do not duplicate those same operations by also running the equivalent local
 slash-skill workflow in the same session, unless the service is unavailable or
@@ -67,13 +68,14 @@ Important settings:
   Registry paths using `~/Notes/...` are mapped through this host root inside
   the container.
 - `LLM_PROTOCOL`: `openai-compatible` or `anthropic-compatible`.
-- `LLM_ENDPOINT`: protocol-compatible local or remote endpoint.
+- `LLM_ENDPOINT`: protocol-compatible local or remote endpoint. The simple local path is an OpenAI-compatible host model server such as Ollama at `http://host.docker.internal:11434/v1`.
+- `LLM_MODEL`: instruction model used for semantic capture compile/extraction. A small local instruction model in the 2B-active to 4B range can be sufficient for normal capture extraction when exposed by your local server; use a stronger 7B-9B or API model for messier captures. Set this to the exact model tag your endpoint serves.
 - `LLM_API_KEY`: optional. Leave empty for endpoints that do not
   require a key.
-- `EMBEDDING_ENABLED`: enables embedding endpoint probes. Defaults to `false`.
+- `EMBEDDING_ENABLED`: explicitly enables container-owned vector indexing and semantic search. Defaults to `false` because indexed text is sent to the configured embedding provider.
 - `EMBEDDING_ENDPOINT`: OpenAI-compatible embedding endpoint, configured
-  independently from `LLM_ENDPOINT`.
-- `EMBEDDING_MODEL`: embedding model name used for dimension probes.
+  independently from `LLM_ENDPOINT`. Defaults to host Ollama at `http://host.docker.internal:11434/v1`.
+- `EMBEDDING_MODEL`: embedding model name used for vector indexing and dimension probes. Defaults to `nomic-embed-text:latest`.
 - `EMBEDDING_API_KEY`: optional embedding API key.
 - `CAPTURE_MAX_CHARS`: maximum characters read from each capture before model
   input truncation. Defaults to `4000`.
@@ -190,7 +192,7 @@ curl -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" \
   http://127.0.0.1:8765/v1/embeddings/status
 ```
 
-Probe embedding dimensions after setting `EMBEDDING_ENABLED=true`:
+Probe embedding dimensions:
 
 ```bash
 curl -X POST http://127.0.0.1:8765/v1/embeddings/probe \
@@ -199,7 +201,27 @@ curl -X POST http://127.0.0.1:8765/v1/embeddings/probe \
   -d '{"dry_run": false}'
 ```
 
-Read-only query:
+Build or refresh the container-owned vector index:
+
+```bash
+curl -X POST http://127.0.0.1:8765/v1/embeddings/index/run \
+  -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"force": true}'
+```
+
+Agent search endpoint. This searches compiled vault knowledge, raw captures,
+and the container-built vector index; if embeddings are enabled and the index is
+missing, the service builds it before vector search:
+
+```bash
+curl -X POST http://127.0.0.1:8765/v1/search/run \
+  -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"query": "local brain", "limit": 5}'
+```
+
+Read-only query remains available for exact vault/capture lookup without vector-index writes:
 
 ```bash
 curl -X POST http://127.0.0.1:8765/v1/query/run \
@@ -233,9 +255,11 @@ Available tools mirror the safe service workflows:
 - `brain_sync`
 - `brain_recent_runs`
 - `brain_query`
+- `brain_search`
 - `brain_lint`
 - `brain_embeddings_status`
 - `brain_embeddings_probe`
+- `brain_embeddings_index`
 
 MCP tools require the same API token as `/v1/*` endpoints. Pass the token via
 the `api_token` tool argument using the secret configured by your MCP host.
@@ -269,12 +293,15 @@ docker compose --env-file .env -f services/local-brain/docker-compose.example.ym
 Useful commands:
 
 - `fritz-brain status`
+- `fritz-brain search "local brain" --limit 5`
 - `fritz-brain query "local brain" --limit 5`
 - `fritz-local-brain-cli status`
 - `fritz-local-brain-cli compile --max-captures 1`
 - `fritz-local-brain-cli sync --vault engineering`
 - `fritz-local-brain-cli recent-runs --limit 5`
+- `fritz-local-brain-cli search "local brain" --limit 5`
 - `fritz-local-brain-cli query "local brain" --limit 5`
+- `fritz-local-brain-cli embeddings-index --force`
 - `fritz-local-brain-cli lint`
 
 ## Roadmap

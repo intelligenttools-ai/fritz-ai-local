@@ -9,7 +9,7 @@ from uuid import uuid4
 from pydantic_ai.usage import UsageLimits
 
 from .agents.compile_agent import CompileDeps, build_compile_agent
-from .captures import capture_hash, list_all_captures, mark_captures_processed
+from .captures import archive_processed_inbox_captures, capture_hash, list_all_captures, mark_captures_processed
 from .config import Settings
 from .indexes import update_directory_index
 from .knowledge import apply_article_write
@@ -66,6 +66,7 @@ async def run_compile(settings: Settings, request: CompileRunRequest) -> Compile
     skill_text = load_skill(settings.skills_dir, settings.compile_skill_name)
     all_proposals = []
     all_skipped: list[str] = []
+    nonfatal_warnings: list[str] = []
     simulated_article_paths: dict[str, set[str]] = {name: set() for name in manifests}
     batch_size = settings.compile_max_captures or len(capture_paths) or 1
 
@@ -161,7 +162,15 @@ Available vaults:
 
     if not request.dry_run and not errors:
         processed_capture_paths.update(_skipped_capture_paths(settings.brain_home, allowed_sources, all_skipped))
-        mark_captures_processed(settings.brain_home, sorted(processed_capture_paths), capture_hashes)
+        sorted_processed_paths = sorted(processed_capture_paths)
+        mark_captures_processed(settings.brain_home, sorted_processed_paths, capture_hashes)
+        try:
+            archive_processed_inbox_captures(settings.brain_home, sorted_processed_paths, capture_hashes)
+        except Exception as exc:  # noqa: BLE001 - inbox archive cleanup must not fail applied compile work.
+            nonfatal_warnings.append(f"Processed capture archive cleanup failed after compile apply: {exc}")
+
+    for warning in nonfatal_warnings:
+        append_global_log(settings.brain_home, "EMBEDDINGS", warning, request.dry_run)
 
     append_global_log(
         settings.brain_home,

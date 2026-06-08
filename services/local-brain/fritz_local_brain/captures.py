@@ -5,7 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import stat
+from datetime import datetime
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -64,6 +66,105 @@ def list_daily_captures(brain_home: Path, max_captures: int | None = None) -> li
     return _list_captures_in_dir(capture_dir, max_captures)
 
 
+def list_queryable_captures(brain_home: Path, max_captures: int | None = None) -> CaptureDiscovery:
+    """List safe raw captures for read-only query, including already-processed files.
+
+    Query must surface facts that are still only present in capture/inbox. Unlike
+    compile discovery this intentionally does not consult processed.json; a
+    processed capture may still be the only place a client can find a recent
+    fact if compile skipped or has not produced a matching article yet.
+    """
+
+    capture_parent = brain_home / "capture"
+    empty_counts = {source: 0 for source in CAPTURE_SOURCES}
+    if capture_parent.is_symlink():
+        return CaptureDiscovery(paths=[], by_source=empty_counts)
+
+    discovered: list[tuple[Path, str, float]] = []
+    seen_resolved: set[Path] = set()
+    for source in CAPTURE_SOURCES:
+        capture_dir = capture_parent / source
+        if capture_dir.is_symlink():
+            continue
+        capture_root = capture_dir.resolve()
+        patterns = ("*.md", "archive/**/*.md") if source == "inbox" else ("*.md",)
+        for pattern in patterns:
+            for path in capture_dir.glob(pattern):
+                if not _is_safe_capture(path, capture_root):
+                    continue
+                resolved = path.resolve()
+                if resolved in seen_resolved:
+                    continue
+                try:
+                    mtime = path.stat().st_mtime
+                except OSError:
+                    continue
+                seen_resolved.add(resolved)
+                discovered.append((path, source, mtime))
+
+    source_order = {source: index for index, source in enumerate(CAPTURE_SOURCES)}
+    discovered.sort(key=lambda item: (source_order[item[1]], -item[2]))
+    if max_captures is not None:
+        discovered = discovered[:max_captures]
+
+    counts = {source: 0 for source in CAPTURE_SOURCES}
+    for _, source, _ in discovered:
+        counts[source] += 1
+    return CaptureDiscovery(paths=[path for path, _, _ in discovered], by_source=counts)
+
+
+def archive_processed_inbox_captures(brain_home: Path, paths: list[Path], expected_hashes: dict[Path, str] | None = None) -> list[Path]:
+    """Move processed inbox captures into capture/inbox/archive/YYYY-MM-DD/."""
+
+    archived: list[Path] = []
+    capture_parent = brain_home / "capture"
+    inbox_path = capture_parent / "inbox"
+    if capture_parent.is_symlink() or inbox_path.is_symlink() or not inbox_path.is_dir():
+        return archived
+    inbox_root = inbox_path.resolve()
+    for path in paths:
+        try:
+            resolved = path.resolve(strict=True)
+            relative = resolved.relative_to(inbox_root)
+        except (OSError, ValueError):
+            continue
+        if path.is_symlink() or not path.is_file() or "archive" in relative.parts:
+            continue
+        current_hash = capture_hash(path)
+        if expected_hashes is not None and expected_hashes.get(resolved, expected_hashes.get(path)) != current_hash:
+            continue
+        archive_root = inbox_root / "archive"
+        if archive_root.exists() and archive_root.is_symlink():
+            continue
+        archive_dir = archive_root / datetime.now().strftime("%Y-%m-%d")
+        try:
+            archive_dir.mkdir(parents=True, exist_ok=True)
+            archive_dir.resolve().relative_to(inbox_root)
+        except (OSError, ValueError):
+            continue
+        if archive_root.is_symlink() or archive_dir.is_symlink():
+            continue
+        target = archive_dir / path.name
+        if target.exists():
+            stem = target.stem
+            suffix = target.suffix
+            for index in range(1, 1000):
+                candidate = archive_dir / f"{stem}-{index}{suffix}"
+                if not candidate.exists():
+                    target = candidate
+                    break
+            else:
+                continue
+        try:
+            shutil.move(str(path), str(target))
+        except OSError:
+            continue
+        archived.append(target)
+    if archived:
+        mark_captures_processed(brain_home, archived)
+    return archived
+
+
 def mark_captures_processed(brain_home: Path, paths: list[Path], expected_hashes: dict[Path, str] | None = None) -> None:
     if not paths:
         return
@@ -88,10 +189,16 @@ def mark_captures_processed(brain_home: Path, paths: list[Path], expected_hashes
 
 
 def read_capture(path: Path, max_chars: int = 12000) -> str:
-    text = _read_regular_file_no_symlink(path)
+    text = read_capture_raw(path)
     if len(text) > max_chars:
         text = text[:max_chars] + "\n\n[... truncated ...]"
     return UNTRUSTED_PREFIX + text
+
+
+def read_capture_raw(path: Path) -> str:
+    """Read a safe capture file without LLM warning text or truncation."""
+
+    return _read_regular_file_no_symlink(path)
 
 
 def _read_regular_file_no_symlink(path: Path) -> str:

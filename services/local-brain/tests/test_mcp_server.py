@@ -11,9 +11,11 @@ def test_mcp_exposes_all_service_workflow_tools() -> None:
     assert callable(mcp_server.brain_sync)
     assert callable(mcp_server.brain_recent_runs)
     assert callable(mcp_server.brain_query)
+    assert callable(mcp_server.brain_search)
     assert callable(mcp_server.brain_lint)
     assert callable(mcp_server.brain_embeddings_status)
     assert callable(mcp_server.brain_embeddings_probe)
+    assert callable(mcp_server.brain_embeddings_index)
 
 
 class _Settings:

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from ..captures import list_queryable_captures, read_capture_raw
 from ..manifests import resolve_manifest_path
 from ..models import QueryMatch
 from ..security import is_excluded
@@ -46,6 +47,34 @@ class BrainQueryAgent:
                 QueryMatch(
                     vault=vault,
                     path=str(path.relative_to(knowledge_root)),
+                    title=_title_for(path, text),
+                    snippet=_snippet(text, position),
+                )
+            )
+        return matches
+
+    def search_captures(self, brain_home: Path, query: str, remaining: int) -> list[QueryMatch]:
+        """Search raw capture files so inbox-only facts are visible to clients."""
+
+        if remaining <= 0:
+            return []
+
+        needle = query.casefold()
+        matches: list[QueryMatch] = []
+        for path in list_queryable_captures(brain_home).paths:
+            if len(matches) >= remaining:
+                break
+            try:
+                text = read_capture_raw(path)
+            except (OSError, UnicodeDecodeError, ValueError):
+                continue
+            position = text.casefold().find(needle)
+            if position < 0:
+                continue
+            matches.append(
+                QueryMatch(
+                    vault="_captures",
+                    path=str(path.relative_to(brain_home)),
                     title=_title_for(path, text),
                     snippet=_snippet(text, position),
                 )
