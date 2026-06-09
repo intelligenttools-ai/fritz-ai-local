@@ -27,3 +27,5 @@ def test_default_model_endpoints_use_simple_local_openai_compatible_path(tmp_pat
     assert settings.embedding_enabled is False
     assert settings.normalized_embedding_base_url() == "http://host.docker.internal:11434/v1"
     assert settings.embedding_model == "nomic-embed-text:latest"
+    assert settings.embedding_refresh_after_compile is True
+    assert settings.embedding_refresh_debounce_seconds == 300.0

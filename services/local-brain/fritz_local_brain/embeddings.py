@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import math
 import os
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -15,6 +17,7 @@ from openai import AsyncOpenAI
 
 from .captures import list_queryable_captures, read_capture
 from .config import Settings
+from .logs import append_global_log
 from .manifests import load_manifest, resolve_manifest_path
 from .models import (
     EmbeddingIndexRequest,
@@ -33,6 +36,11 @@ from .security import is_excluded
 
 def metadata_path(settings: Settings) -> Path:
     return settings.brain_home / "embeddings" / "metadata.json"
+
+
+_background_refresh_task: asyncio.Task[None] | None = None
+_background_refresh_pending = False
+_last_background_refresh_started_at: float | None = None
 
 
 def index_path(settings: Settings) -> Path:
@@ -95,6 +103,92 @@ async def probe_embedding_dimensions(settings: Settings, request: EmbeddingProbe
     path.write_text(json.dumps(metadata.model_dump(mode="json"), indent=2) + "\n", encoding="utf-8")
     result.stored = True
     return result
+
+
+def schedule_embedding_refresh_after_compile_result(settings: Settings, result: Any, *, reason: str = "compile") -> str | None:
+    """Schedule vector refresh after a successful non-dry-run compile result."""
+
+    if getattr(result, "dry_run", True) or getattr(result, "errors", None):
+        return None
+    if not (getattr(result, "applied", None) or getattr(result, "skipped", None)):
+        return None
+    return schedule_embedding_refresh_after_compile(settings, reason=reason)
+
+
+def schedule_embedding_refresh_after_compile(settings: Settings, *, reason: str = "compile") -> str | None:
+    """Schedule debounced vector refresh from the ingest/compile processing path."""
+
+    global _background_refresh_pending, _background_refresh_task, _last_background_refresh_started_at
+    if not settings.embedding_enabled or not settings.embedding_refresh_after_compile:
+        return None
+    if _background_refresh_task is not None and not _background_refresh_task.done():
+        _background_refresh_pending = True
+        return "queued"
+    now = time.monotonic()
+    elapsed = None if _last_background_refresh_started_at is None else now - _last_background_refresh_started_at
+    if elapsed is not None and elapsed < settings.embedding_refresh_debounce_seconds:
+        delay = settings.embedding_refresh_debounce_seconds - elapsed
+        _background_refresh_task = asyncio.create_task(_delayed_background_refresh_embedding_index(settings, reason, delay))
+        _background_refresh_task.add_done_callback(_consume_background_refresh_exception(settings))
+        return "scheduled-delayed"
+    _background_refresh_task = asyncio.create_task(_background_refresh_embedding_index_loop(settings, reason))
+    _background_refresh_task.add_done_callback(_consume_background_refresh_exception(settings))
+    return "scheduled"
+
+
+def _consume_background_refresh_exception(settings: Settings):
+    def _consume(task: asyncio.Task[None]) -> None:
+        try:
+            task.result()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:  # noqa: BLE001 - last-resort visibility for unobserved background task failures.
+            append_global_log(settings.brain_home, "EMBEDDINGS", f"Background embedding refresh task failed unexpectedly: {exc}", False)
+
+    return _consume
+
+
+async def _delayed_background_refresh_embedding_index(settings: Settings, reason: str, delay: float) -> None:
+    global _background_refresh_pending
+    await asyncio.sleep(delay)
+    _background_refresh_pending = False
+    await _background_refresh_embedding_index_loop(settings, reason)
+
+
+async def _background_refresh_embedding_index_loop(settings: Settings, reason: str) -> None:
+    global _background_refresh_pending, _last_background_refresh_started_at
+    try:
+        while True:
+            await _wait_for_refresh_debounce(settings)
+            _last_background_refresh_started_at = time.monotonic()
+            _background_refresh_pending = False
+            await _background_refresh_embedding_index_once(settings, reason)
+            if not _background_refresh_pending:
+                return
+    except Exception as exc:  # noqa: BLE001 - background maintenance must not fail silently.
+        append_global_log(settings.brain_home, "EMBEDDINGS", f"Background embedding refresh after {reason} crashed: {exc}", False)
+
+
+async def _wait_for_refresh_debounce(settings: Settings) -> None:
+    if _last_background_refresh_started_at is None:
+        return
+    elapsed = time.monotonic() - _last_background_refresh_started_at
+    remaining = settings.embedding_refresh_debounce_seconds - elapsed
+    if remaining > 0:
+        await asyncio.sleep(remaining)
+
+
+async def _background_refresh_embedding_index_once(settings: Settings, reason: str) -> None:
+    result = await refresh_embedding_index(settings, EmbeddingIndexRequest(force=False))
+    if result.error:
+        append_global_log(settings.brain_home, "EMBEDDINGS", f"Background embedding refresh after {reason} failed: {result.error}", False)
+    elif result.indexed:
+        append_global_log(
+            settings.brain_home,
+            "EMBEDDINGS",
+            f"Background embedding refresh after {reason} indexed {result.documents_indexed} documents",
+            False,
+        )
 
 
 async def refresh_embedding_index(
@@ -194,6 +288,26 @@ async def ensure_embedding_index(settings: Settings) -> EmbeddingIndexResult:
     if _index_is_compatible(settings):
         return await refresh_embedding_index(settings, EmbeddingIndexRequest(force=False))
     return await refresh_embedding_index(settings, EmbeddingIndexRequest(force=True))
+
+
+def embedding_index_unavailable_reason(settings: Settings) -> str | None:
+    """Return why vector search should be skipped without refreshing inline."""
+
+    if not settings.embedding_enabled:
+        return "Embedding endpoint is disabled; set EMBEDDING_ENABLED=true"
+    if settings.embedding_protocol != "openai-compatible":
+        return "MVP supports EMBEDDING_PROTOCOL=openai-compatible only"
+    try:
+        data = _read_index_data(settings)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        return f"Embedding index is unreadable; waiting for compile/ingest refresh: {exc}"
+    if data is None:
+        return "Embedding index is missing; waiting for compile/ingest refresh"
+    current_documents = _collect_embedding_documents(settings)
+    source_fingerprint = _source_fingerprint(settings, current_documents)
+    if not _index_data_is_compatible(settings, data, source_fingerprint):
+        return "Embedding index is stale; waiting for compile/ingest refresh"
+    return None
 
 
 async def search_embedding_index(

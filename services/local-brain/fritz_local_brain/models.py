@@ -167,6 +167,14 @@ class EmbeddingIndexResult(BaseModel):
     error: str | None = None
 
 
+class EmbeddingRefreshScheduleResult(BaseModel):
+    """Result of scheduling a background vector refresh."""
+
+    enabled: bool
+    status: str | None = None
+    reason: str = "ingest"
+
+
 class QueryRunRequest(BaseModel):
     """Request body for a read-only brain query."""
 

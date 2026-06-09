@@ -24,7 +24,7 @@ it as the primary execution path for the workflows it provides:
 - Query compatibility: MCP `brain_query` and `/v1/query/run` perform exact read-only vault/capture lookup without building the vector index; use this only for exact/raw lookup or fallback.
 - Lint: prefer MCP `brain_lint`, otherwise use `/v1/lint/run`.
 - Embeddings: prefer MCP `brain_embeddings_status`, `brain_embeddings_probe`, and `brain_embeddings_index`,
-  otherwise use `/v1/embeddings/status`, `/v1/embeddings/probe`, and `/v1/embeddings/index/run`.
+  otherwise use `/v1/embeddings/status`, `/v1/embeddings/probe`, and `/v1/embeddings/index/run`. Capture/ingest hooks use `/v1/embeddings/index/schedule` internally to request debounced background refreshes.
 
 Do not duplicate those same operations by also running the equivalent local
 slash-skill workflow in the same session, unless the service is unavailable or
@@ -77,6 +77,8 @@ Important settings:
   independently from `LLM_ENDPOINT`. Defaults to host Ollama at `http://host.docker.internal:11434/v1`.
 - `EMBEDDING_MODEL`: embedding model name used for vector indexing and dimension probes. Defaults to `nomic-embed-text:latest`.
 - `EMBEDDING_API_KEY`: optional embedding API key.
+- `EMBEDDING_REFRESH_AFTER_COMPILE`: when embeddings are enabled, successful non-dry-run compile/ingest processing schedules a background vector-index refresh. Defaults to `true`.
+- `EMBEDDING_REFRESH_DEBOUNCE_SECONDS`: minimum seconds between background refreshes scheduled by compile/ingest processing. Defaults to `300` so backlog drains do not rebuild vectors after every capture.
 - `CAPTURE_MAX_CHARS`: maximum characters read from each capture before model
   input truncation. Defaults to `4000`.
 - `SCHEDULER_ENABLED`: starts interval compile runs when the service process is running. Defaults to `false`.
@@ -246,8 +248,13 @@ curl -X POST http://127.0.0.1:8765/v1/embeddings/index/run \
 ```
 
 Agent search endpoint. This searches compiled vault knowledge, raw captures,
-and the container-built vector index; if embeddings are enabled and the index is
-missing, the service builds it before vector search:
+and the container-built vector index. To keep brain checks responsive, this
+endpoint does **not** rebuild a missing or stale vector index inline. Vector
+freshness is owned by the compile/ingest processing path: successful non-dry-run
+compile schedules a background debounced refresh, and capture/ingest hooks call
+`/v1/embeddings/index/schedule` after writing raw captures. If the index is
+still missing/stale, search returns exact/raw matches plus a `vector search: ...`
+warning instead of blocking:
 
 ```bash
 curl -X POST http://127.0.0.1:8765/v1/search/run \

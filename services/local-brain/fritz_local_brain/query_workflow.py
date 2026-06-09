@@ -9,7 +9,7 @@ from uuid import uuid4
 from .agents.query_agent import BrainQueryAgent
 from .captures import list_queryable_captures
 from .config import Settings
-from .embeddings import ensure_embedding_index, search_embedding_index
+from .embeddings import embedding_index_unavailable_reason, ensure_embedding_index, search_embedding_index
 from .manifests import load_manifest, resolve_manifest_path
 from .models import QueryRunRequest, QueryRunResult
 from .paths import PathMapper
@@ -66,6 +66,11 @@ async def run_query(
                 embedding_result = await ensure_embedding_index(settings)
                 if embedding_result.error:
                     skipped.append(f"vector search: {embedding_result.error}")
+                    vector_search_available = False
+            else:
+                unavailable_reason = embedding_index_unavailable_reason(settings)
+                if unavailable_reason:
+                    skipped.append(f"vector search: {unavailable_reason}")
                     vector_search_available = False
             seen = {(match.vault, match.path) for match in matches}
             allowed_vector_paths = _allowed_vector_paths(settings, vault_paths, capture_vault_name)

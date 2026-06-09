@@ -42,6 +42,8 @@ class Settings(BaseSettings):
     embedding_model: str = Field(default="nomic-embed-text:latest", validation_alias=AliasChoices("LOCAL_BRAIN_EMBEDDING_MODEL", "EMBEDDING_MODEL"))
     embedding_api_key: str | None = Field(default=None, validation_alias=AliasChoices("LOCAL_BRAIN_EMBEDDING_API_KEY", "EMBEDDING_API_KEY"))
     embedding_timeout_seconds: float = Field(default=60.0, validation_alias=AliasChoices("LOCAL_BRAIN_EMBEDDING_TIMEOUT_SECONDS", "EMBEDDING_TIMEOUT_SECONDS"))
+    embedding_refresh_after_compile: bool = Field(default=True, validation_alias=AliasChoices("LOCAL_BRAIN_EMBEDDING_REFRESH_AFTER_COMPILE", "EMBEDDING_REFRESH_AFTER_COMPILE"))
+    embedding_refresh_debounce_seconds: float = Field(default=300.0, ge=0.0, validation_alias=AliasChoices("LOCAL_BRAIN_EMBEDDING_REFRESH_DEBOUNCE_SECONDS", "EMBEDDING_REFRESH_DEBOUNCE_SECONDS"))
 
     api_host: str = Field(default="127.0.0.1", validation_alias=AliasChoices("LOCAL_BRAIN_API_HOST", "API_HOST"))
     api_port: int = Field(default=8765, validation_alias=AliasChoices("LOCAL_BRAIN_API_PORT", "API_PORT"))
