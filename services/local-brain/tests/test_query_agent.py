@@ -114,6 +114,33 @@ def test_query_workflow_uses_vector_index_when_exact_search_misses(tmp_path, mon
     assert result.matches[0].snippet.startswith("[vector score")
 
 
+def test_query_workflow_does_not_refresh_embedding_index_for_interactive_search(tmp_path, monkeypatch) -> None:
+    brain_home = tmp_path / "brain"
+    skill_path = tmp_path / "skills" / "fritz:brain-query" / "SKILL.md"
+    brain_home.mkdir(parents=True)
+    skill_path.parent.mkdir(parents=True)
+    (brain_home / "registry.yaml").write_text("vaults: {}\n", encoding="utf-8")
+    skill_path.write_text("# Query Skill\n", encoding="utf-8")
+
+    async def fail_ensure(settings):
+        raise AssertionError("interactive search must not refresh embedding index inline")
+
+    import fritz_local_brain.query_workflow as query_workflow
+
+    monkeypatch.setattr(query_workflow, "ensure_embedding_index", fail_ensure)
+    settings = Settings(
+        LOCAL_BRAIN_HOME=brain_home,
+        LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills",
+        LOCAL_BRAIN_EMBEDDING_ENABLED=True,
+    )
+
+    result = asyncio.run(run_query(settings, QueryRunRequest(query="disk pressure"), use_vector=True, ensure_index=False))
+
+    assert result.errors == []
+    assert result.matches == []
+    assert result.skipped == ["vector search: Embedding index is missing; waiting for compile/ingest refresh"]
+
+
 def test_query_workflow_skips_vector_search_when_index_refresh_fails(tmp_path, monkeypatch) -> None:
     brain_home = tmp_path / "brain"
     skill_path = tmp_path / "skills" / "fritz:brain-query" / "SKILL.md"
@@ -146,6 +173,160 @@ def test_query_workflow_skips_vector_search_when_index_refresh_fails(tmp_path, m
     assert result.errors == []
     assert result.matches == []
     assert result.skipped == ["vector search: busy"]
+
+
+def test_first_embedding_refresh_after_compile_is_not_debounced(tmp_path, monkeypatch) -> None:
+    settings = Settings(
+        LOCAL_BRAIN_HOME=tmp_path,
+        LOCAL_BRAIN_EMBEDDING_ENABLED=True,
+        LOCAL_BRAIN_EMBEDDING_REFRESH_DEBOUNCE_SECONDS=300,
+    )
+    calls = []
+
+    async def fake_background_once(settings, reason):
+        calls.append(reason)
+
+    monkeypatch.setattr(embeddings, "_background_refresh_pending", False)
+    monkeypatch.setattr(embeddings, "_background_refresh_task", None)
+    monkeypatch.setattr(embeddings, "_last_background_refresh_started_at", None)
+    monkeypatch.setattr(embeddings, "_background_refresh_embedding_index_once", fake_background_once)
+    monkeypatch.setattr(embeddings.time, "monotonic", lambda: 1000.0)
+
+    async def run_schedule():
+        status = embeddings.schedule_embedding_refresh_after_compile(settings, reason="compile")
+        await embeddings._background_refresh_task
+        return status
+
+    assert asyncio.run(run_schedule()) == "scheduled"
+    assert calls == ["compile"]
+
+
+def test_embedding_refresh_after_compile_is_debounced(tmp_path, monkeypatch) -> None:
+    settings = Settings(
+        LOCAL_BRAIN_HOME=tmp_path,
+        LOCAL_BRAIN_EMBEDDING_ENABLED=True,
+        LOCAL_BRAIN_EMBEDDING_REFRESH_DEBOUNCE_SECONDS=0,
+    )
+    calls = []
+
+    async def fake_background_once(settings, reason):
+        calls.append(reason)
+
+    monkeypatch.setattr(embeddings, "_background_refresh_pending", False)
+    monkeypatch.setattr(embeddings, "_background_refresh_task", None)
+    monkeypatch.setattr(embeddings, "_last_background_refresh_started_at", 0.0)
+    monkeypatch.setattr(embeddings, "_background_refresh_embedding_index_once", fake_background_once)
+    monkeypatch.setattr(embeddings.time, "monotonic", lambda: 1000.0)
+
+    async def run_schedule():
+        first = embeddings.schedule_embedding_refresh_after_compile(settings, reason="compile")
+        second = embeddings.schedule_embedding_refresh_after_compile(settings, reason="compile")
+        await embeddings._background_refresh_task
+        return first, second
+
+    assert asyncio.run(run_schedule()) == ("scheduled", "queued")
+    assert calls == ["compile"]
+
+
+def test_embedding_refresh_after_compile_schedules_delayed_refresh_inside_debounce_window(tmp_path, monkeypatch) -> None:
+    settings = Settings(
+        LOCAL_BRAIN_HOME=tmp_path,
+        LOCAL_BRAIN_EMBEDDING_ENABLED=True,
+        LOCAL_BRAIN_EMBEDDING_REFRESH_DEBOUNCE_SECONDS=300,
+    )
+
+    calls = []
+
+    class DoneTask:
+        def done(self) -> bool:
+            return True
+
+    async def fake_delayed(settings, reason, delay):
+        calls.append((reason, delay))
+
+    monkeypatch.setattr(embeddings, "_background_refresh_pending", False)
+    monkeypatch.setattr(embeddings, "_background_refresh_task", DoneTask())
+    monkeypatch.setattr(embeddings, "_last_background_refresh_started_at", 900.0)
+    monkeypatch.setattr(embeddings.time, "monotonic", lambda: 1000.0)
+    monkeypatch.setattr(embeddings, "_delayed_background_refresh_embedding_index", fake_delayed)
+
+    async def run_schedule():
+        status = embeddings.schedule_embedding_refresh_after_compile(settings, reason="compile")
+        await embeddings._background_refresh_task
+        return status
+
+    assert asyncio.run(run_schedule()) == "scheduled-delayed"
+    assert calls == [("compile", 200.0)]
+
+
+def test_background_embedding_refresh_waits_before_queued_second_pass(tmp_path, monkeypatch) -> None:
+    settings = Settings(
+        LOCAL_BRAIN_HOME=tmp_path,
+        LOCAL_BRAIN_EMBEDDING_ENABLED=True,
+        LOCAL_BRAIN_EMBEDDING_REFRESH_DEBOUNCE_SECONDS=300,
+    )
+    calls = []
+
+    async def fake_wait(settings):
+        calls.append(("wait", settings.embedding_refresh_debounce_seconds))
+
+    async def fake_background_once(settings, reason):
+        calls.append(("refresh", reason))
+        if len([call for call in calls if call[0] == "refresh"]) == 1:
+            monkeypatch.setattr(embeddings, "_background_refresh_pending", True)
+
+    monkeypatch.setattr(embeddings, "_background_refresh_pending", False)
+    monkeypatch.setattr(embeddings, "_last_background_refresh_started_at", 0.0)
+    monkeypatch.setattr(embeddings, "_wait_for_refresh_debounce", fake_wait)
+    monkeypatch.setattr(embeddings, "_background_refresh_embedding_index_once", fake_background_once)
+
+    asyncio.run(embeddings._background_refresh_embedding_index_loop(settings, "compile"))
+
+    assert calls == [
+        ("wait", 300.0),
+        ("refresh", "compile"),
+        ("wait", 300.0),
+        ("refresh", "compile"),
+    ]
+
+
+def test_background_embedding_refresh_logs_unexpected_crash(tmp_path, monkeypatch) -> None:
+    settings = Settings(LOCAL_BRAIN_HOME=tmp_path, LOCAL_BRAIN_EMBEDDING_ENABLED=True)
+    logs = []
+
+    async def crash(settings, reason):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(embeddings, "_background_refresh_pending", False)
+    monkeypatch.setattr(embeddings, "_last_background_refresh_started_at", 0.0)
+    monkeypatch.setattr(embeddings, "_background_refresh_embedding_index_once", crash)
+    monkeypatch.setattr(embeddings, "append_global_log", lambda brain_home, op, summary, dry_run: logs.append((op, summary, dry_run)))
+
+    asyncio.run(embeddings._background_refresh_embedding_index_loop(settings, "compile"))
+
+    assert logs == [("EMBEDDINGS", "Background embedding refresh after compile crashed: boom", False)]
+
+
+def test_delayed_embedding_refresh_runs_once_for_single_debounced_request(tmp_path, monkeypatch) -> None:
+    settings = Settings(LOCAL_BRAIN_HOME=tmp_path, LOCAL_BRAIN_EMBEDDING_ENABLED=True)
+    calls = []
+
+    async def fake_sleep(delay):
+        calls.append(("sleep", delay))
+
+    async def fake_background_once(settings, reason):
+        calls.append(("refresh", reason))
+
+    monkeypatch.setattr(embeddings, "_background_refresh_pending", True)
+    monkeypatch.setattr(embeddings, "_last_background_refresh_started_at", 0.0)
+    monkeypatch.setattr(embeddings.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(embeddings, "_background_refresh_embedding_index_once", fake_background_once)
+    monkeypatch.setattr(embeddings.time, "monotonic", lambda: 1234.0)
+
+    asyncio.run(embeddings._delayed_background_refresh_embedding_index(settings, "compile", 42.0))
+
+    assert calls == [("sleep", 42.0), ("refresh", "compile")]
+    assert embeddings._background_refresh_pending is False
 
 
 def test_embedding_search_rejects_stale_source_fingerprint(tmp_path, monkeypatch) -> None:

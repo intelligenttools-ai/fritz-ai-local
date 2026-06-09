@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from fritz_local_brain import mcp_server
@@ -40,6 +41,20 @@ def test_mcp_status_requires_configured_api_token(monkeypatch) -> None:
         raise AssertionError("MCP status should reject missing token")
 
     assert mcp_server.brain_status(api_token="secret")["service"] == "local-brain"
+
+
+def test_mcp_search_does_not_refresh_index_inline(monkeypatch) -> None:
+    calls = []
+
+    async def fake_run_query(settings, request, *, use_vector=False, ensure_index=False):
+        calls.append((use_vector, ensure_index))
+        return type("Result", (), {"model_dump": lambda self, mode="json": {"ok": True}})()
+
+    monkeypatch.setattr(mcp_server, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(mcp_server, "run_query", fake_run_query)
+
+    assert asyncio.run(mcp_server.brain_search("needle", api_token="secret")) == {"ok": True}
+    assert calls == [(True, False)]
 
 
 def test_mcp_status_does_not_claim_http_scheduler_is_running(monkeypatch, tmp_path) -> None:

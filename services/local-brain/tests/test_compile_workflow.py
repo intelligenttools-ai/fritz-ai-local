@@ -497,6 +497,7 @@ def test_compile_apply_rejects_unrelated_hallucinated_single_capture_source(
     assert capture_path.exists()
 
 
+
 def test_compile_apply_marks_successful_captures_processed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     brain_home = tmp_path / "brain"
     vault_path = tmp_path / "vault"

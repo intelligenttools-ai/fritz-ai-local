@@ -8,7 +8,7 @@ from mcp.server.fastmcp import FastMCP
 
 from .compile_workflow import run_compile
 from .config import get_settings
-from .embeddings import embedding_status, probe_embedding_dimensions, refresh_embedding_index
+from .embeddings import embedding_status, probe_embedding_dimensions, refresh_embedding_index, schedule_embedding_refresh_after_compile_result
 from .lint_workflow import run_lint
 from .models import CompileRunRequest, EmbeddingIndexRequest, EmbeddingProbeRequest, LintRunRequest, QueryRunRequest, SyncRunRequest
 from .operation_locks import compile_lock, lint_lock, sync_lock
@@ -47,6 +47,7 @@ async def brain_compile(
             CompileRunRequest(dry_run=dry_run, max_captures=max_captures, approval_token=approval_token),
         )
         record_compile(result)
+        schedule_embedding_refresh_after_compile_result(settings, result, reason="mcp compile")
         return result.model_dump(mode="json")
 
 
@@ -95,7 +96,7 @@ async def brain_search(query: str, vault: str | None = None, limit: int = 10, ap
         settings,
         QueryRunRequest(query=query, vault=vault, limit=limit),
         use_vector=True,
-        ensure_index=True,
+        ensure_index=False,
     )
     return result.model_dump(mode="json")
 

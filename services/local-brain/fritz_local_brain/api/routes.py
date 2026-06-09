@@ -9,7 +9,13 @@ from pydantic_ai.exceptions import ModelAPIError, UsageLimitExceeded
 
 from ..compile_workflow import run_compile
 from ..config import get_settings
-from ..embeddings import embedding_status, probe_embedding_dimensions, refresh_embedding_index
+from ..embeddings import (
+    embedding_status,
+    probe_embedding_dimensions,
+    refresh_embedding_index,
+    schedule_embedding_refresh_after_compile,
+    schedule_embedding_refresh_after_compile_result,
+)
 from ..lint_workflow import run_lint
 from ..models import (
     CompileRunRequest,
@@ -18,6 +24,7 @@ from ..models import (
     EmbeddingIndexResult,
     EmbeddingProbeRequest,
     EmbeddingProbeResult,
+    EmbeddingRefreshScheduleResult,
     EmbeddingStatusResult,
     LintRunRequest,
     LintRunResult,
@@ -63,6 +70,7 @@ async def compile_run(request: CompileRunRequest) -> CompileRunResult:
             try:
                 result = await run_compile(settings, request)
                 record_compile(result)
+                schedule_embedding_refresh_after_compile_result(settings, result, reason="compile")
                 return result
             except UsageLimitExceeded as exc:
                 raise HTTPException(status_code=502, detail=f"Compile agent exceeded run limits: {exc}") from exc
@@ -104,6 +112,13 @@ async def embeddings_index_run(request: EmbeddingIndexRequest) -> EmbeddingIndex
     return await refresh_embedding_index(get_settings(), request)
 
 
+@router.post("/v1/embeddings/index/schedule", response_model=EmbeddingRefreshScheduleResult, dependencies=[Depends(require_token)])
+async def embeddings_index_schedule() -> EmbeddingRefreshScheduleResult:
+    settings = get_settings()
+    status = schedule_embedding_refresh_after_compile(settings, reason="ingest")
+    return EmbeddingRefreshScheduleResult(enabled=settings.embedding_enabled, status=status, reason="ingest")
+
+
 @router.post("/v1/query/run", response_model=QueryRunResult, dependencies=[Depends(require_token)])
 async def query_run(request: QueryRunRequest) -> QueryRunResult:
     return await run_query(get_settings(), request)
@@ -111,7 +126,7 @@ async def query_run(request: QueryRunRequest) -> QueryRunResult:
 
 @router.post("/v1/search/run", response_model=QueryRunResult, dependencies=[Depends(require_token)])
 async def search_run(request: QueryRunRequest) -> QueryRunResult:
-    return await run_query(get_settings(), request, use_vector=True, ensure_index=True)
+    return await run_query(get_settings(), request, use_vector=True, ensure_index=False)
 
 
 @router.post("/v1/lint/run", response_model=LintRunResult, dependencies=[Depends(require_token)])

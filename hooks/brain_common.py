@@ -296,6 +296,8 @@ def auto_compile_after_capture(capture_path: Path | None = None) -> AutoCompileR
         service_result = _try_service_compile()
         if service_result is not None:
             service_status, remaining = service_result
+            if service_status == "running":
+                _try_service_embedding_refresh_schedule()
             if service_status == "compiled":
                 if remaining:
                     message = f"Compile processed a partial batch; {remaining} captures remain pending."
@@ -373,6 +375,33 @@ def _try_service_compile(timeout: float = 30.0) -> tuple[str, int | None] | None
         return None
 
 
+def _try_service_embedding_refresh_schedule(timeout: float = 2.0) -> None:
+    base_url = _validated_local_brain_base_url()
+    if base_url is None:
+        return
+
+    headers = {"accept": "application/json"}
+    token = get_local_brain_api_token()
+    if token:
+        headers["authorization"] = f"Bearer {token}"
+    req = request.Request(f"{base_url}/v1/embeddings/index/schedule", data=b"{}", headers=headers, method="POST")
+    try:
+        with request.urlopen(req, timeout=timeout):
+            return
+    except Exception:
+        return
+
+
+def _should_refresh_embeddings_after_in_process_compile(settings, result: object) -> bool:
+    if not getattr(settings, "embedding_enabled", False):
+        return False
+    if not getattr(settings, "embedding_refresh_after_compile", True):
+        return False
+    if getattr(result, "errors", None):
+        return False
+    return bool(getattr(result, "applied", None) or getattr(result, "skipped", None))
+
+
 def _run_in_process_compile() -> object:
     local_brain_src = FRITZ_REPO / "services" / "local-brain"
     if local_brain_src.exists():
@@ -380,7 +409,8 @@ def _run_in_process_compile() -> object:
 
     from fritz_local_brain.compile_workflow import run_compile
     from fritz_local_brain.config import Settings
-    from fritz_local_brain.models import CompileRunRequest
+    from fritz_local_brain.embeddings import refresh_embedding_index
+    from fritz_local_brain.models import CompileRunRequest, EmbeddingIndexRequest
     from fritz_local_brain.operation_locks import compile_lock
     from fritz_local_brain.run_history import record_compile
 
@@ -389,6 +419,8 @@ def _run_in_process_compile() -> object:
         async with compile_lock.guard(BRAIN_HOME):
             result = await run_compile(settings, CompileRunRequest(dry_run=False))
             record_compile(result)
+            if _should_refresh_embeddings_after_in_process_compile(settings, result):
+                await refresh_embedding_index(settings, EmbeddingIndexRequest(force=False))
             return result
 
     return asyncio.run(_compile())

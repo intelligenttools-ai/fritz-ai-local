@@ -207,6 +207,7 @@ def test_auto_compile_posts_to_service_when_enabled(monkeypatch, tmp_path):
     result = brain_common.auto_compile_after_capture(tmp_path / "capture" / "daily" / "today.md")
 
     assert result.status == "compiled"
+    assert len(calls) == 1
     assert calls[0][0] == "http://127.0.0.1:8765/v1/compile/run"
     assert calls[0][1] == "POST"
     assert json.loads(calls[0][2].decode("utf-8")) == {"dry_run": False}
@@ -215,8 +216,25 @@ def test_auto_compile_posts_to_service_when_enabled(monkeypatch, tmp_path):
 
 
 def test_auto_compile_service_timeout_marks_pending_without_fallback(monkeypatch, tmp_path):
+    calls = []
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return b'{"status":"scheduled"}'
+
     def fake_urlopen(req, timeout):
-        raise socket.timeout("compile still running")
+        calls.append(req.full_url)
+        if req.full_url.endswith("/v1/compile/run"):
+            raise socket.timeout("compile still running")
+        return Response()
 
     monkeypatch.setattr(brain_common, "BRAIN_HOME", tmp_path)
     monkeypatch.setattr(brain_common, "local_brain_service_enabled", lambda: True)
@@ -229,9 +247,37 @@ def test_auto_compile_service_timeout_marks_pending_without_fallback(monkeypatch
     result = brain_common.auto_compile_after_capture(tmp_path / "capture" / "daily" / "today.md")
 
     assert result.status == "pending"
+    assert calls == [
+        "http://127.0.0.1:8765/v1/compile/run",
+        "http://127.0.0.1:8765/v1/embeddings/index/schedule",
+    ]
     marker = json.loads((tmp_path / ".compile-needed").read_text(encoding="utf-8"))
     assert marker["processing_active"] is True
     assert "already running" in marker["reason"]
+
+
+def test_in_process_embedding_refresh_gate_attempts_non_forced_refresh_for_successful_compile():
+    class Settings:
+        embedding_enabled = True
+        embedding_refresh_after_compile = True
+
+    class Result:
+        errors = []
+        applied = [object()]
+        skipped = []
+
+    assert brain_common._should_refresh_embeddings_after_in_process_compile(Settings(), Result()) is True
+
+    class Disabled(Settings):
+        embedding_refresh_after_compile = False
+
+    assert brain_common._should_refresh_embeddings_after_in_process_compile(Disabled(), Result()) is False
+
+    class Empty(Result):
+        applied = []
+        skipped = []
+
+    assert brain_common._should_refresh_embeddings_after_in_process_compile(Settings(), Empty()) is False
 
 
 def test_auto_compile_urllib_wrapped_timeout_marks_pending_without_fallback(monkeypatch, tmp_path):
