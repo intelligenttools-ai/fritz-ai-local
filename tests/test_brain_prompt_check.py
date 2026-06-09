@@ -139,6 +139,18 @@ def test_service_registry_token_overrides_stale_env(monkeypatch):
     assert brain_common.get_local_brain_api_token() == "registry-token"
 
 
+def test_service_instructions_prefer_semantic_search_for_brain_check(monkeypatch):
+    monkeypatch.setattr(brain_common, "get_local_brain_base_url", lambda: "http://127.0.0.1:8765")
+    monkeypatch.setattr(brain_common, "get_local_brain_api_token", lambda: None)
+
+    instructions = brain_common.local_brain_service_instructions()
+
+    assert "brain_search" in instructions
+    assert "/v1/search/run" in instructions
+    assert "Exact query compatibility only" in instructions
+    assert instructions.index("/v1/search/run") < instructions.index("/v1/query/run")
+
+
 def test_service_instructions_use_registry_token_command_without_leaking_token(monkeypatch):
     monkeypatch.delenv("LOCAL_BRAIN_API_TOKEN", raising=False)
     monkeypatch.setattr(brain_common, "get_local_brain_base_url", lambda: "http://127.0.0.1:8765")
