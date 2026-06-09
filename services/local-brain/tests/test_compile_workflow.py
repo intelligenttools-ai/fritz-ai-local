@@ -372,6 +372,131 @@ def test_compile_apply_leaves_changed_capture_pending(tmp_path: Path, monkeypatc
     assert second.captures_considered == 1
 
 
+def test_compile_apply_rejects_missing_source_even_for_single_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    brain_home = tmp_path / "brain"
+    vault_path = tmp_path / "vault"
+    capture_path = brain_home / "capture" / "inbox" / "fact.md"
+    skill_path = tmp_path / "skills" / "fritz:brain-compile" / "SKILL.md"
+
+    capture_path.parent.mkdir(parents=True)
+    capture_path.write_text("# Capture\n\nUseful fact.\n", encoding="utf-8")
+    (vault_path / ".brain").mkdir(parents=True)
+    (vault_path / "knowledge").mkdir()
+    (vault_path / ".brain" / "manifest.yaml").write_text("paths:\n  knowledge: knowledge\nexclude: []\n", encoding="utf-8")
+    brain_home.mkdir(exist_ok=True)
+    (brain_home / "registry.yaml").write_text(f"vaults:\n  test:\n    path: {vault_path}\n", encoding="utf-8")
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Compile Skill\n", encoding="utf-8")
+
+    proposal = ArticleWriteProposal(
+        vault="test",
+        relative_path="facts/useful.md",
+        operation="create",
+        title="Useful Fact",
+        summary="Useful fact.",
+        sources=[],
+        body="Useful body.",
+    )
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: FakeCompileAgent(proposal))
+
+    result = asyncio.run(
+        compile_workflow.run_compile(
+            Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills"),
+            CompileRunRequest(dry_run=False, max_captures=1),
+        )
+    )
+
+    assert result.applied == []
+    assert result.errors == ["test/facts/useful.md: Knowledge article proposal must include at least one capture source"]
+    assert capture_path.exists()
+
+
+def test_compile_apply_repairs_single_capture_source_mangled_by_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    brain_home = tmp_path / "brain"
+    vault_path = tmp_path / "vault"
+    capture_path = brain_home / "capture" / "inbox" / "2026-06-02-real-long-capture-name.md"
+    skill_path = tmp_path / "skills" / "fritz:brain-compile" / "SKILL.md"
+
+    capture_path.parent.mkdir(parents=True)
+    capture_path.write_text("# Capture\n\nUseful fact.\n", encoding="utf-8")
+    (vault_path / ".brain").mkdir(parents=True)
+    (vault_path / "knowledge").mkdir()
+    (vault_path / ".brain" / "manifest.yaml").write_text("paths:\n  knowledge: knowledge\nexclude: []\n", encoding="utf-8")
+    brain_home.mkdir(exist_ok=True)
+    (brain_home / "registry.yaml").write_text(f"vaults:\n  test:\n    path: {vault_path}\n", encoding="utf-8")
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Compile Skill\n", encoding="utf-8")
+
+    proposal = ArticleWriteProposal(
+        vault="test",
+        relative_path="facts/useful.md",
+        operation="create",
+        title="Useful Fact",
+        summary="Useful fact.",
+        sources=[str(brain_home / "capture" / "inbox" / "2026-06-02-real-long-capture.md")],
+        frontmatter={"sources": ["wrong"]},
+        body="Useful body.",
+    )
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: FakeCompileAgent(proposal))
+
+    result = asyncio.run(
+        compile_workflow.run_compile(
+            Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills"),
+            CompileRunRequest(dry_run=False, max_captures=1),
+        )
+    )
+
+    assert result.errors == []
+    assert len(result.applied) == 1
+    assert result.proposals[0].sources == [str(capture_path.resolve())]
+    assert not capture_path.exists()
+
+
+def test_compile_apply_rejects_unrelated_hallucinated_single_capture_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    brain_home = tmp_path / "brain"
+    vault_path = tmp_path / "vault"
+    capture_path = brain_home / "capture" / "inbox" / "actual-capture.md"
+    skill_path = tmp_path / "skills" / "fritz:brain-compile" / "SKILL.md"
+
+    capture_path.parent.mkdir(parents=True)
+    capture_path.write_text("# Capture\n\nUseful fact.\n", encoding="utf-8")
+    (vault_path / ".brain").mkdir(parents=True)
+    (vault_path / "knowledge").mkdir()
+    (vault_path / ".brain" / "manifest.yaml").write_text("paths:\n  knowledge: knowledge\nexclude: []\n", encoding="utf-8")
+    brain_home.mkdir(exist_ok=True)
+    (brain_home / "registry.yaml").write_text(f"vaults:\n  test:\n    path: {vault_path}\n", encoding="utf-8")
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Compile Skill\n", encoding="utf-8")
+
+    proposal = ArticleWriteProposal(
+        vault="test",
+        relative_path="facts/useful.md",
+        operation="create",
+        title="Useful Fact",
+        summary="Useful fact.",
+        sources=[str(brain_home / "capture" / "inbox" / "totally-unrelated.md")],
+        body="Useful body.",
+    )
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: FakeCompileAgent(proposal))
+
+    result = asyncio.run(
+        compile_workflow.run_compile(
+            Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills"),
+            CompileRunRequest(dry_run=False, max_captures=1),
+        )
+    )
+
+    assert result.applied == []
+    assert result.errors == [f"test/facts/useful.md: Source does not exist: {proposal.sources[0]}"]
+    assert capture_path.exists()
+
+
 def test_compile_apply_marks_successful_captures_processed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     brain_home = tmp_path / "brain"
     vault_path = tmp_path / "vault"

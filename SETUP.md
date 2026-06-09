@@ -235,10 +235,18 @@ If the human says yes:
    - Set `API_TOKEN` to a unique random value. All `/v1/*` endpoints require it.
    - For trusted local agent use, set `api_token` in `~/.brain/registry.yaml` to the same value so hooks, skills, and the CLI can authenticate without manual shell environment setup.
    - Alternatively, export the same value in the environment named by `api_token_env`, for example `LOCAL_BRAIN_API_TOKEN`.
-4. Start the service:
+4. Start the service through the reusable repository script:
    ```bash
-   docker compose --env-file <repo>/.env -f <repo>/services/local-brain/docker-compose.example.yml up --build -d
+   cd <repo>
+   python3 scripts/local-brain-service.py start --build
    ```
+   If the human wants daemon-backed processing, install autostart for the current OS user:
+   ```bash
+   python3 scripts/local-brain-service.py install-autostart --enable-scheduler --apply
+   ```
+   The script writes a macOS LaunchAgent, Linux systemd user unit, or Windows
+   Task Scheduler logon task and sets `AUTOSTART_INSTALLED=true`. Use
+   `uninstall-autostart` to remove it.
 5. Record the rollout decision in `~/.brain/registry.yaml`:
    ```yaml
    settings:
@@ -275,7 +283,7 @@ Important service safety notes:
 - Full service documentation is in `<repo>/services/local-brain/README.md`.
 
 Agent operating rule when `settings.local_brain_service.enabled: true` and the service health check passes:
-- Use the Dockerized service as the primary execution path for supported workflows: compile, sync, search/query, lint, embedding status/probe/index, MCP, and CLI operations.
+- Use the Dockerized service as the primary execution path for supported workflows: compile, sync, search/query, lint, embedding status/probe/index, MCP, and CLI operations. For brain checks and normal knowledge lookup, use semantic search first (`brain_search` or `/v1/search/run`); use exact query (`brain_query` or `/v1/query/run`) only as compatibility/fallback or when exact/raw lookup is explicitly needed.
 - Do not run the equivalent local slash-skill workflow for the same supported operation in the same session unless the service is unavailable or the human explicitly asks for the non-service path.
 - For handover preparation, use service-backed compile and sync where those steps are needed, then write the handover document. Do not duplicate compile/sync by also invoking `/fritz:brain-compile` or `/fritz:brain-sync` directly.
 - Continue to use local hooks and slash skills for workflows the service does not provide, including capture hooks, setup, ingest, update, and writing the handover document itself.

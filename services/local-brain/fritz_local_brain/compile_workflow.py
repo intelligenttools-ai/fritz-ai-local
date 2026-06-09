@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from difflib import SequenceMatcher
 from pathlib import Path
 from uuid import uuid4
 
@@ -15,7 +16,7 @@ from .indexes import update_directory_index
 from .knowledge import apply_article_write
 from .logs import append_global_log
 from .manifests import load_manifest, resolve_manifest_path
-from .models import AppliedArticleWrite, CompileRunRequest, CompileRunResult
+from .models import AppliedArticleWrite, ArticleWriteProposal, CompileRunRequest, CompileRunResult
 from .paths import PathMapper
 from .registry import load_registry, registered_vault_paths
 from .security import PolicyError, validate_article_write
@@ -42,6 +43,59 @@ def _skipped_capture_paths(brain_home: Path, allowed_sources: set[Path], skipped
         if source_path in allowed_sources:
             accounted.add(source_path)
     return accounted
+
+
+def _repair_single_capture_sources(
+    brain_home: Path,
+    batch_paths: list[Path],
+    allowed_sources: set[Path],
+    proposal: ArticleWriteProposal,
+) -> tuple[ArticleWriteProposal, str | None]:
+    """Repair model-mangled source names when a batch contained one capture.
+
+    The model occasionally rewrites long capture file names while still clearly
+    producing an article from the only capture it was given. For one-capture
+    batches, replacing missing/empty source paths with that exact batch path is
+    safer than blocking the drain forever; multi-capture batches still require
+    exact source attribution.
+    """
+    if len(batch_paths) != 1:
+        return proposal, None
+    capture_root = (brain_home / "capture").resolve()
+    if not proposal.sources:
+        return proposal, None
+    actual_path = batch_paths[0].resolve()
+    resolved_sources: list[Path] = []
+    for source in proposal.sources:
+        try:
+            source_path = _resolve_capture_source(brain_home, source)
+        except (OSError, RuntimeError, ValueError):
+            return proposal, None
+        if not source_path.is_relative_to(capture_root):
+            return proposal, None
+        resolved_sources.append(source_path)
+    if resolved_sources and all(source_path in allowed_sources and source_path.exists() for source_path in resolved_sources):
+        return proposal, None
+    if not all(_looks_like_mangled_single_capture_source(source_path, actual_path) for source_path in resolved_sources):
+        return proposal, None
+    repaired_source = str(actual_path)
+    frontmatter = dict(proposal.frontmatter)
+    if "sources" in frontmatter:
+        frontmatter["sources"] = [repaired_source]
+    return proposal.model_copy(update={"sources": [repaired_source], "frontmatter": frontmatter}), (
+        f"Repaired compile proposal source path for single-capture batch: {proposal.relative_path}"
+    )
+
+
+def _looks_like_mangled_single_capture_source(source_path: Path, actual_path: Path) -> bool:
+    if source_path.exists():
+        return False
+    if source_path.parent != actual_path.parent:
+        return False
+    if source_path.suffix != actual_path.suffix or actual_path.suffix != ".md":
+        return False
+    similarity = SequenceMatcher(None, source_path.stem, actual_path.stem).ratio()
+    return similarity >= 0.78
 
 
 async def run_compile(settings: Settings, request: CompileRunRequest) -> CompileRunResult:
@@ -104,9 +158,17 @@ Available vaults:
 
         result = await agent.run(prompt, deps=deps, usage_limits=UsageLimits(request_limit=3))
         output = result.output
-        all_proposals.extend(output.proposals)
-        all_skipped.extend(output.skipped)
+        repaired_proposals = []
         for proposal in output.proposals:
+            repaired_proposal, repair_warning = _repair_single_capture_sources(
+                settings.brain_home, batch_paths, allowed_sources, proposal
+            )
+            repaired_proposals.append(repaired_proposal)
+            if repair_warning:
+                nonfatal_warnings.append(repair_warning)
+        all_proposals.extend(repaired_proposals)
+        all_skipped.extend(output.skipped)
+        for proposal in repaired_proposals:
             simulated_article_paths.setdefault(proposal.vault, set()).add(proposal.relative_path)
 
     proposals_to_apply = list(all_proposals)
@@ -170,7 +232,7 @@ Available vaults:
             nonfatal_warnings.append(f"Processed capture archive cleanup failed after compile apply: {exc}")
 
     for warning in nonfatal_warnings:
-        append_global_log(settings.brain_home, "EMBEDDINGS", warning, request.dry_run)
+        append_global_log(settings.brain_home, "COMPILE", warning, request.dry_run)
 
     append_global_log(
         settings.brain_home,

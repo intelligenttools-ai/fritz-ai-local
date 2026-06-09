@@ -20,8 +20,8 @@ it as the primary execution path for the workflows it provides:
 
 - Compile: prefer MCP `brain_compile`, otherwise use `/v1/compile/run`.
 - Sync: prefer MCP `brain_sync`, otherwise use `/v1/sync/run`.
-- Search: prefer MCP `brain_search`, otherwise use `/v1/search/run`.
-- Query compatibility: MCP `brain_query` and `/v1/query/run` perform exact read-only vault/capture lookup without building the vector index.
+- Search: prefer MCP `brain_search`, otherwise use `/v1/search/run`. This is the default for agent brain checks and uses the container-managed vector index when embeddings are enabled.
+- Query compatibility: MCP `brain_query` and `/v1/query/run` perform exact read-only vault/capture lookup without building the vector index; use this only for exact/raw lookup or fallback.
 - Lint: prefer MCP `brain_lint`, otherwise use `/v1/lint/run`.
 - Embeddings: prefer MCP `brain_embeddings_status`, `brain_embeddings_probe`, and `brain_embeddings_index`,
   otherwise use `/v1/embeddings/status`, `/v1/embeddings/probe`, and `/v1/embeddings/index/run`.
@@ -101,6 +101,41 @@ Important settings:
   compile requires `approval_token`. Defaults to `10`.
 
 ## Run
+
+Agent- and instance-friendly service management is provided by the repository
+script:
+
+```bash
+python3 scripts/local-brain-service.py start --build
+python3 scripts/local-brain-service.py status
+```
+
+Install daemon autostart for the current OS user:
+
+```bash
+python3 scripts/local-brain-service.py install-autostart --enable-scheduler --apply
+```
+
+This writes a macOS LaunchAgent, Linux systemd user unit, or Windows Task
+Scheduler logon task, sets `AUTOSTART_INSTALLED=true`, and leaves the same
+Docker Compose service path in use for every agent. Remove it with:
+
+```bash
+python3 scripts/local-brain-service.py uninstall-autostart
+```
+
+On Windows, run the same commands with `python` if `python3` is not installed.
+The Windows autostart task runs at user logon and calls this same repository
+script, so agents do not need a separate host-specific entry point.
+
+Embedding search is managed separately from compile runs:
+
+```bash
+python3 scripts/local-brain-service.py enable-embeddings
+python3 scripts/local-brain-service.py disable-embeddings
+```
+
+The underlying Compose command remains:
 
 ```bash
 docker compose --env-file .env -f services/local-brain/docker-compose.example.yml up --build
