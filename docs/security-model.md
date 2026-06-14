@@ -11,7 +11,7 @@ Any agent can read any non-excluded file in any vault.
 ### Tier 1 — Capture
 
 Any agent can:
-- Write to `~/.brain/capture/daily/` and `~/.brain/capture/sessions/`
+- Write to `~/.brain/capture/inbox/`, `~/.brain/capture/daily/`, and `~/.brain/capture/auto/`
 - Append to `~/.brain/log.md`
 - Append to vault `.brain/log.md`
 

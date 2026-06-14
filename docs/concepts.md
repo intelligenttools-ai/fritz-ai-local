@@ -5,24 +5,52 @@ and states what it does, where it lives, and who writes it.
 
 ## Brain home — `~/.brain/`
 
-The machine-local root of the brain. Every vault on this machine shares
-one brain home. Created by [`SETUP.md`](../SETUP.md) during install.
+The machine-local root of the brain — the agent-agnostic store that every
+binding reads from and writes to. Every vault on this machine shares one brain
+home. Resolved from `BRAIN_HOME` (default `~/.brain`); created by
+[`SETUP.md`](../SETUP.md) / `scripts/install.py install` during setup.
 
 Layout:
 
 ```
 ~/.brain/
-├── registry.yaml          # Vault registry (see below)
+├── registry.yaml          # Vault registry + central settings (see below)
 ├── capture/
-│   ├── daily/             # One file per day, appended by the capture hook
-│   └── sessions/          # One file per session (full transcript excerpt)
+│   ├── inbox/             # Explicit saves (C3) + auto-captured facts (C4)
+│   ├── daily/             # Automatic per-session rollups (C5), one file per day
+│   └── auto/              # .seen content-hash dedup markers for auto-capture
 ├── handovers/             # Structured handover documents (global scope)
-├── hooks/                 # Symlinks to hook scripts from the repo
+├── hooks/                 # Symlinks to the canonical repo hooks
 ├── templates/             # Symlinks to shared templates
 ├── tools/                 # Agent-installed tools (e.g. youtube-transcript)
-├── log.md                 # Human-readable operations log
+├── log.md                 # Human-readable audit/operations log
 └── .migrations-run        # List of migrations already executed
 ```
+
+The brain home is **location-independent** from the repo: durable data lives
+here regardless of where the Fritz repository is cloned (resolved via
+`FRITZ_REPO_PATH` or each file's own location). No fixed clone path is required.
+
+## Binding
+
+A **binding** wires one agent runtime into the shared brain. It lives under
+`bindings/<runtime>/` and contains no duplicated logic — only the mapping from
+the runtime's native lifecycle onto the canonical events of the
+[integration contract](integration-contract.md), plus committed symlinks back to
+the canonical repo hooks. Fritz ships four first-class bindings — **Claude Code**
+(plugin), **pi** (native extension, the role model), **Codex** (plugin), and
+**Hermes** (gateway YAML hook merge). A new runtime adds its own binding from
+[`../bindings/_template/`](../bindings/_template/README.md).
+
+## Capability bar
+
+The nine capabilities a binding must satisfy to be **Fritz-complete**: context
+injection (C1), the BRAIN CHECK guardrail (C2), explicit save (C3), auto-capture
+(C4), session capture (C5), mode detection (C6), bootstrap/health (C7), skills
+with runtime-correct names (C8), and centralized config + per-project override
+(C9). The full contract is [`capability-spec.md`](capability-spec.md). Hermes is
+the one exception: as a non-coding gateway it has no skills mechanism, so C8 is
+**N/A** for it.
 
 ## Vault
 
@@ -112,13 +140,21 @@ and do **not** write into other agents' root files.
 
 ## Captures
 
-Captures are the raw inbox. They are dumb — every session writes a
-capture regardless of where the session happened.
+Captures are the raw input to the brain. The capture step is deliberately dumb —
+every session writes a capture regardless of where the session ran. There are
+three capture targets under `~/.brain/capture/`:
 
-- **Daily** (`~/.brain/capture/daily/YYYY-MM-DD.md`) — short, appended by
-  the capture hook on session end or pre-compact.
-- **Sessions** (`~/.brain/capture/sessions/`) — fuller session excerpts
-  when a longer record is warranted.
+- **inbox** (`~/.brain/capture/inbox/`) — the **explicit/durable** store. Both
+  `brain_save_fact` (C3, explicit save) and auto-capture (C4) write one
+  YAML-frontmatter fact file here.
+- **daily** (`~/.brain/capture/daily/YYYY-MM-DD.md`) — the **automatic**
+  per-session rollup, written by the capture hook (C5) on session end or
+  pre-compact.
+- **auto** (`~/.brain/capture/auto/`) — `.seen` content-hash **dedup markers**
+  (not facts) that make auto-capture idempotent: the same transcript is never
+  auto-captured twice.
+
+Every write is also appended to `~/.brain/log.md`, the human-readable audit log.
 
 Captures are promoted into knowledge articles by `/fritz:brain-compile`,
 which reads content and routes each item to the correct vault — not by
@@ -154,9 +190,9 @@ project to a vault. Fields:
 }
 ```
 
-When the agent works in a directory that has a `.fritz-local.json`,
-captures and context injection are scoped to that vault/project. Safe to
-commit — no secrets.
+When the agent works in a directory that has a `.fritz-local.json` (walked up
+from `cwd`), captures and context injection are scoped to that vault/project.
+Safe to commit — no secrets.
 
 `context_injection` controls how much brain content the hooks push into
 the agent's context at session start:
@@ -165,4 +201,6 @@ the agent's context at session start:
 - `light` — hook injects matching file paths from knowledge directories
 - `full` — `light` plus agent spawns a subagent to read and synthesize
 
-Per-project settings override global settings in the registry.
+Settings resolve through one path with precedence **project
+(`.fritz-local.json`) > central (`registry.yaml` `settings:`) > defaults**. See
+[configuration.md](configuration.md) for the full model.

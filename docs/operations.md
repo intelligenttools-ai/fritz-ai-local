@@ -19,17 +19,19 @@ each installed agent's skill directory, refreshes managed hook symlinks,
 runs pending migrations, scans vaults for brain-contract drift, and prints a
 report.
 
-If you prefer manual control, run `git pull` in your clone. `~/.fritz-ai-local`
-is only the conventional location — Fritz resolves its repo root dynamically
-(via `FRITZ_REPO_PATH` or the symlinked hook location), so the clone can live
-anywhere. Substitute your actual clone path:
+If you prefer manual control, run `git pull` in your clone. Fritz resolves its
+repo root dynamically (via `FRITZ_REPO_PATH` or each hook/binding file's own
+location), so the clone can live **anywhere** — there is no required path.
+`~/.fritz-ai-local` is only an optional example; substitute your actual clone
+path:
 
 ```
-git -C ~/.fritz-ai-local pull
+git -C <repo> pull        # e.g. git -C ~/.fritz-ai-local pull
 ```
 
-Symlinked hooks and skills update immediately. Run `/fritz:update`
-afterwards to pick up new skills/hooks and run migrations.
+Symlinked hooks update immediately. Re-run
+`python3 scripts/install.py install --agent <claude|codex|pi>` (or
+`/fritz:update`) afterwards to pick up new skills and run migrations.
 
 ## Brain contract drift
 
@@ -129,8 +131,11 @@ capture → compile pipeline that runs earlier in handover.
 
 ### Captures are not being written
 
-- Verify hooks are registered in the agent's config (see
-  [`../SETUP.md`](../SETUP.md) Step 3).
+- Verify the binding is installed for your platform (the Claude/Codex plugin is
+  enabled, the pi extension is loaded, or the Hermes YAML block is merged) — see
+  the per-platform walkthroughs in [`../SETUP.md`](../SETUP.md).
+- Run `python3 scripts/install.py status` to confirm the brain layout and hook
+  symlinks are healthy, and `smoke-test` to exercise a hook.
 - Check `~/.brain/log.md` for errors from previous runs.
 - Confirm the transcript adapter for your agent is implemented
   (`adapters/<agent>.py`). Stubs return empty captures.
@@ -139,15 +144,21 @@ capture → compile pipeline that runs earlier in handover.
 
 ### A skill is not found
 
-- `ls ~/.claude/skills/` (or `~/.codex/skills/`, `~/.gemini/skills/`) —
-  the `fritz:*` directories should be symlinks into
-  `~/.fritz-ai-local/skills/`.
-- Run `/fritz:update` to re-sync symlinks.
+- The per-platform skill variants are generated from the canonical `skills/`
+  directory and installed by `scripts/install.py install --agent <agent>` (and,
+  for the directory-source plugins, committed under the binding). Claude/Codex
+  keep `fritz:*`; pi uses `fritz-*`.
+- `ls ~/.claude/skills/` (or `~/.codex/skills/`, `~/.agents/skills/` for pi) —
+  the `fritz:*` / `fritz-*` skill directories should be present.
+- Re-run `python3 scripts/install.py install --agent <agent>` or `/fritz:update`
+  to (re)install them. Hermes has no skills mechanism, so no skills are expected
+  there.
 
 ### `/fritz:update` says "not a git repo"
 
-`~/.fritz-ai-local/` was installed by copy rather than clone. Re-install
-with a clone, or accept that updates must be applied manually.
+The repo was installed by copy rather than clone. Re-install with a clone (it can
+live anywhere — `FRITZ_REPO_PATH` resolves it), or accept that updates must be
+applied manually.
 
 ### Brain contract drift keeps reappearing
 
