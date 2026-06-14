@@ -119,7 +119,25 @@ def today_str() -> str:
 
 
 FRITZ_LOCAL_FILENAME = ".fritz-local.json"
-FRITZ_REPO = Path.home() / ".fritz-ai-local"
+
+
+def _resolve_fritz_repo() -> Path:
+    """Resolve the Fritz repo root, independent of clone location.
+
+    Order of precedence:
+    1. FRITZ_REPO_PATH environment variable (if set).
+    2. The repo root derived from this file's own location.
+       Path(__file__).resolve() follows symlinks, so when hooks are symlinked
+       into ~/.brain/hooks/ this still points back to the real repo. The repo
+       root is the parent of the hooks/ directory.
+    """
+    env_path = os.environ.get("FRITZ_REPO_PATH")
+    if env_path and env_path.strip():
+        return Path(env_path).expanduser().resolve()
+    return Path(__file__).resolve().parents[1]
+
+
+FRITZ_REPO = _resolve_fritz_repo()
 
 
 def load_fritz_local(cwd: str) -> dict | None:

@@ -23,6 +23,20 @@ import sys
 from pathlib import Path
 
 
+def _resolve_repo_root() -> Path:
+    """Resolve the Fritz repo root, independent of clone location.
+
+    Honors FRITZ_REPO_PATH if set, else derives the root from this file's
+    location. Path(__file__).resolve() follows symlinks, so a hook symlinked
+    into ~/.brain/hooks/ still resolves back to the real repo root (the parent
+    of the hooks/ directory).
+    """
+    env_path = os.environ.get("FRITZ_REPO_PATH")
+    if env_path and env_path.strip():
+        return Path(env_path).expanduser().resolve()
+    return Path(__file__).resolve().parents[1]
+
+
 def generate_hyphenated(repo_skills: Path, skills_dir: Path, dry_run: bool = False) -> list[str]:
     """Generate hyphenated copies of all fritz:* skills.
 
@@ -32,13 +46,17 @@ def generate_hyphenated(repo_skills: Path, skills_dir: Path, dry_run: bool = Fal
       - SKILL.md frontmatter: `name:` field uses hyphens
       - Slash commands inside text: `/fritz:*` → `/fritz-*`
 
+    The repo_skills argument is ignored; the source skills directory is resolved
+    from FRITZ_REPO_PATH or this file's location. The parameter is retained for
+    backward-compatible call signatures.
+
     Returns a list of created file paths (or dry-run descriptions).
     """
-    # Resolve the repo path explicitly — __file__ resolves through symlinks,
-    # so we can't rely on parent traversal. Use the canonical path.
-    import os
-    repo_path = os.environ.get("FRITZ_REPO_PATH", str(Path.home() / ".fritz-ai-local"))
-    repo_skills = Path(repo_path).resolve() / "skills"
+    # Resolve the repo path independent of clone location. FRITZ_REPO_PATH wins
+    # if set; otherwise derive the repo root from this file's own location.
+    # Path(__file__).resolve() follows symlinks, so this works even when the
+    # hook is symlinked into ~/.brain/hooks/ — it resolves back to the real repo.
+    repo_skills = _resolve_repo_root() / "skills"
 
     if not repo_skills.is_dir():
         print(f"Error: skill source directory not found: {repo_skills}", file=sys.stderr)
@@ -104,8 +122,9 @@ def main():
         print(f"Error: skills directory not found: {skills_dir}", file=sys.stderr)
         sys.exit(1)
 
-    repo_skills = Path.home() / ".fritz-ai-local"
-    created = generate_hyphenated(repo_skills, skills_dir, dry_run)
+    # repo_skills is resolved inside generate_hyphenated() from FRITZ_REPO_PATH
+    # or this file's location; the argument is kept for signature stability.
+    created = generate_hyphenated(None, skills_dir, dry_run)
 
     if created:
         print(f"{'[DRY RUN] ' if dry_run else ''}Created {len(created)} hyphenated skill(s):")

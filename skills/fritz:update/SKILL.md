@@ -19,22 +19,36 @@ Activate when:
 
 ## Workflow
 
+### 0. Resolve the repo location
+
+Fritz can be cloned anywhere; do not assume `~/.fritz-ai-local`. Resolve the
+real repo root first and use it for every command below (shown as `<REPO>`):
+
+```
+python3 -c "import pathlib,os; print(os.environ.get('FRITZ_REPO_PATH') or pathlib.Path('$HOME/.brain/hooks/brain_common.py').resolve().parents[1])"
+```
+
+This follows the `~/.brain/hooks/` symlinks back to the actual clone. If
+`~/.brain/hooks/brain_common.py` is missing, fall back to wherever the managed
+hooks were symlinked from, or ask the human for the clone path. On Windows,
+substitute `%USERPROFILE%` for `$HOME`.
+
 ### 1. Pull latest
 
 Run:
 ```
-git -C ~/.fritz-ai-local pull
+git -C <REPO> pull
 ```
 
-On Windows use `%USERPROFILE%\.fritz-ai-local`. If the pull fails (dirty tree, merge conflict), report the error and stop.
+If the pull fails (dirty tree, merge conflict), report the error and stop.
 
 ### 2. Read version change
 
-Read `~/.fritz-ai-local/VERSION` for the new version. Compare with the version shown in the update notification (if any). Report the version bump.
+Read `<REPO>/VERSION` for the new version. Compare with the version shown in the update notification (if any). Report the version bump.
 
 ### 3. Symlink new skills and managed hooks
 
-List all directories in `~/.fritz-ai-local/skills/`. For each `fritz:*` skill directory, check if a symlink exists in the agent's skill directory:
+List all directories in `<REPO>/skills/`. For each `fritz:*` skill directory, check if a symlink exists in the agent's skill directory:
 - Claude Code: `~/.claude/skills/`
 - Codex CLI: `~/.codex/skills/`
 - Gemini CLI: `~/.gemini/skills/`
@@ -43,7 +57,7 @@ If a skill directory exists in the repo but has no symlink, create the symlink.
 
 If a skill directory was removed from the repo but a symlink still exists, **warn the user** but do NOT delete the symlink. The human decides.
 
-Then refresh managed hook symlinks from `~/.fritz-ai-local/hooks/` into
+Then refresh managed hook symlinks from `<REPO>/hooks/` into
 `~/.brain/hooks/` for all Python hook files required by the current agent.
 At minimum keep these common hooks current:
 - `brain_capture.py`
@@ -58,7 +72,7 @@ For Hermes Agent, also symlink:
 
 ### 4. Run pending migrations
 
-Check `~/.fritz-ai-local/migrations/` for numbered Python scripts (e.g., `001-add-settings.py`). Check `~/.brain/.migrations-run` for which migrations have already been executed. Run any new migrations in order.
+Check `<REPO>/migrations/` for numbered Python scripts (e.g., `001-add-settings.py`). Check `~/.brain/.migrations-run` for which migrations have already been executed. Run any new migrations in order.
 
 Each migration script:
 - Receives no arguments
@@ -78,7 +92,7 @@ This step is a passive scan — read-only. No writes, no prompts, no per-vault
 updates.
 
 1. Read the current version declared in
-   `~/.fritz-ai-local/skills/fritz:brain-setup/SKILL.md` by locating the line
+   `<REPO>/skills/fritz:brain-setup/SKILL.md` by locating the line
    `The current brain contract version is \`N\``. If it cannot be parsed,
    skip this step silently.
 2. Read `~/.brain/registry.yaml` and iterate over its `vaults:` entries.
@@ -139,6 +153,6 @@ Show the user:
 ## Important
 
 - Execute immediately when invoked. No second confirmation.
-- If `~/.fritz-ai-local` is not a git repo, report the error and suggest re-cloning.
+- If `<REPO>` is not a git repo, report the error and suggest re-cloning.
 - On Windows, use `%USERPROFILE%` for `~` and `mklink` for symlinks.
 - Log the update operation to `~/.brain/log.md`.

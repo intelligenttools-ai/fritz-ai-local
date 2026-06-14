@@ -87,7 +87,7 @@ def check_for_updates(context_parts: list[str]):
                 context_parts.append(f"- {commit}")
             if len(commits) > 10:
                 context_parts.append(f"- ... and {len(commits) - 10} more")
-            context_parts.append("\nRun `/fritz:update` to upgrade, or: `git -C ~/.fritz-ai-local pull`\n")
+            context_parts.append(f"\nRun `/fritz:update` to upgrade, or: `git -C {FRITZ_REPO} pull`\n")
 
     except (subprocess.TimeoutExpired, OSError):
         # Network/auth failure — don't cache, allow retry next session
