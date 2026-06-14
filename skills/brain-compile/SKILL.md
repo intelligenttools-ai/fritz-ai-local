@@ -1,12 +1,12 @@
 ---
-name: fritz:brain-compile
+name: brain-compile
 description: >
   Promote raw captures into compiled knowledge articles. Reads from the global
   capture directory (~/.brain/capture/) and routes knowledge to the correct vault
   based on content, not working directory. Creates per-project structure on-the-fly
   when routing to a new project. Maintains per-directory index files.
   Use when the user asks to compile, flush, or promote brain captures, process
-  daily logs into knowledge, update the knowledge base, or run /fritz:brain-compile.
+  daily logs into knowledge, update the knowledge base, or run /brain-compile.
 ---
 
 # Brain Compile
@@ -21,7 +21,7 @@ Activate when the user asks to:
 - Compile, flush, or promote brain captures
 - Process daily logs into knowledge
 - Update the knowledge base from recent sessions
-- Run `/fritz:brain-compile`
+- Run `/brain-compile`
 
 ## Architecture
 

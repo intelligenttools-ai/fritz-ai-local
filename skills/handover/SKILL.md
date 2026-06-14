@@ -1,5 +1,5 @@
 ---
-name: fritz:handover
+name: handover
 description: >
   Create a structured handover document for continuing work in a fresh agent session.
   Preserves knowledge before handing over: compiles pending captures, ingests session
@@ -37,7 +37,7 @@ Before writing the handover document, preserve all knowledge from this session.
 
 First read `~/.brain/registry.yaml`. If `settings.local_brain_service` is absent, ask the human which behavior they want, then write the selected setting before choosing the handover preservation path. The choices are: enable and configure the Docker service, keep local workflows with future setup suggestions, or keep local workflows without suggestions.
 
-After the setting exists, check `settings.local_brain_service.enabled`. It must be boolean `true`; strings such as `"true"` or `"false"` do not enable service routing. If enabled, check whether the configured service is reachable with `GET <base_url>/v1/status`, using the token from `settings.local_brain_service.api_token` or from the configured `api_token_env` environment variable. Only use loopback URLs unless `settings.local_brain_service.allow_remote: true` is explicitly configured. Reject service URLs with credentials, query strings, fragments, or non-root paths. If enabled and reachable, use it for supported preservation steps: prefer the registered MCP tools `brain_compile` and `brain_sync` when available and authorized, otherwise use `POST <base_url>/v1/compile/run` and `POST <base_url>/v1/sync/run` from the host. Do not assume a Local Brain CLI is installed on PATH. Do not duplicate those same preservation steps with `/fritz:brain-compile` or `/fritz:brain-sync` in the same handover unless the service is unavailable or the human explicitly requests the non-service path.
+After the setting exists, check `settings.local_brain_service.enabled`. It must be boolean `true`; strings such as `"true"` or `"false"` do not enable service routing. If enabled, check whether the configured service is reachable with `GET <base_url>/v1/status`, using the token from `settings.local_brain_service.api_token` or from the configured `api_token_env` environment variable. Only use loopback URLs unless `settings.local_brain_service.allow_remote: true` is explicitly configured. Reject service URLs with credentials, query strings, fragments, or non-root paths. If enabled and reachable, use it for supported preservation steps: prefer the registered MCP tools `brain_compile` and `brain_sync` when available and authorized, otherwise use `POST <base_url>/v1/compile/run` and `POST <base_url>/v1/sync/run` from the host. Do not assume a Local Brain CLI is installed on PATH. Do not duplicate those same preservation steps with `/brain-compile` or `/brain-sync` in the same handover unless the service is unavailable or the human explicitly requests the non-service path.
 
 If the service is disabled or not reachable, use the existing local skill workflow below. The Docker service is optional and absence of the service is not an error. The service does not write the handover document; this skill still writes the handover after preservation completes.
 

@@ -31,7 +31,7 @@ def test_query_agent_skips_symlinked_knowledge_file(tmp_path) -> None:
 
 def test_query_workflow_searches_capture_inbox_when_fact_is_not_compiled(tmp_path) -> None:
     brain_home = tmp_path / "brain"
-    skill_path = tmp_path / "skills" / "fritz:brain-query" / "SKILL.md"
+    skill_path = tmp_path / "skills" / "brain-query" / "SKILL.md"
     capture = brain_home / "capture" / "inbox" / "fact.md"
     brain_home.mkdir(parents=True)
     capture.parent.mkdir(parents=True)
@@ -54,7 +54,7 @@ def test_query_workflow_searches_capture_inbox_when_fact_is_not_compiled(tmp_pat
 
 def test_query_workflow_searches_full_raw_capture_without_llm_preamble(tmp_path) -> None:
     brain_home = tmp_path / "brain"
-    skill_path = tmp_path / "skills" / "fritz:brain-query" / "SKILL.md"
+    skill_path = tmp_path / "skills" / "brain-query" / "SKILL.md"
     capture = brain_home / "capture" / "inbox" / "long.md"
     brain_home.mkdir(parents=True)
     capture.parent.mkdir(parents=True)
@@ -87,7 +87,7 @@ def test_query_workflow_searches_full_raw_capture_without_llm_preamble(tmp_path)
 
 def test_query_workflow_uses_vector_index_when_exact_search_misses(tmp_path, monkeypatch) -> None:
     brain_home = tmp_path / "brain"
-    skill_path = tmp_path / "skills" / "fritz:brain-query" / "SKILL.md"
+    skill_path = tmp_path / "skills" / "brain-query" / "SKILL.md"
     capture = brain_home / "capture" / "inbox" / "fact.md"
     brain_home.mkdir(parents=True)
     capture.parent.mkdir(parents=True)
@@ -116,7 +116,7 @@ def test_query_workflow_uses_vector_index_when_exact_search_misses(tmp_path, mon
 
 def test_query_workflow_does_not_refresh_embedding_index_for_interactive_search(tmp_path, monkeypatch) -> None:
     brain_home = tmp_path / "brain"
-    skill_path = tmp_path / "skills" / "fritz:brain-query" / "SKILL.md"
+    skill_path = tmp_path / "skills" / "brain-query" / "SKILL.md"
     brain_home.mkdir(parents=True)
     skill_path.parent.mkdir(parents=True)
     (brain_home / "registry.yaml").write_text("vaults: {}\n", encoding="utf-8")
@@ -143,7 +143,7 @@ def test_query_workflow_does_not_refresh_embedding_index_for_interactive_search(
 
 def test_query_workflow_skips_vector_search_when_index_refresh_fails(tmp_path, monkeypatch) -> None:
     brain_home = tmp_path / "brain"
-    skill_path = tmp_path / "skills" / "fritz:brain-query" / "SKILL.md"
+    skill_path = tmp_path / "skills" / "brain-query" / "SKILL.md"
     capture = brain_home / "capture" / "inbox" / "fact.md"
     brain_home.mkdir(parents=True)
     capture.parent.mkdir(parents=True)
@@ -353,7 +353,7 @@ def test_embedding_search_rejects_stale_source_fingerprint(tmp_path, monkeypatch
 def test_query_workflow_rejects_reserved_capture_vault_name(tmp_path) -> None:
     brain_home = tmp_path / "brain"
     vault_path = tmp_path / "vault"
-    skill_path = tmp_path / "skills" / "fritz:brain-query" / "SKILL.md"
+    skill_path = tmp_path / "skills" / "brain-query" / "SKILL.md"
     brain_home.mkdir(parents=True)
     (vault_path / ".brain").mkdir(parents=True)
     (vault_path / "knowledge").mkdir()

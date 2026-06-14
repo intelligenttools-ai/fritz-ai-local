@@ -1,9 +1,9 @@
 ---
-name: fritz:update
+name: update
 description: >
   Update Fritz Local to the latest version. Pulls from git, symlinks new skills
   and managed hooks, runs pending migrations, and reports changes. Use when the
-  session-start hook reports an update is available, or run /fritz:update manually.
+  session-start hook reports an update is available, or run /update manually.
 ---
 
 # Update
@@ -15,7 +15,7 @@ Update the local Fritz Local installation to the latest version.
 Activate when:
 - The session-start hook reports a Fritz Local update is available
 - The user asks to update or upgrade Fritz Local
-- Run `/fritz:update`
+- Run `/update`
 
 ## Workflow
 
@@ -48,7 +48,7 @@ Read `<REPO>/VERSION` for the new version. Compare with the version shown in the
 
 ### 3. Symlink new skills and managed hooks
 
-List all directories in `<REPO>/skills/`. For each `fritz:*` skill directory, check if a symlink exists in the agent's skill directory:
+List all directories in `<REPO>/skills/`. For each skill directory (any subdir containing a `SKILL.md`), check if a symlink exists in the agent's skill directory:
 - Claude Code: `~/.claude/skills/`
 - Codex CLI: `~/.codex/skills/`
 - Gemini CLI: `~/.gemini/skills/`
@@ -84,7 +84,7 @@ After running, append the migration number to `~/.brain/.migrations-run`.
 
 ### 5. Scan vaults for brain contract drift
 
-The brain contract declared in `fritz:brain-setup` carries a
+The brain contract declared in `brain-setup` carries a
 `brain_contract_version`. When the skill ships a new version, existing vaults
 keep their older `brain.md` until the human re-runs setup there.
 
@@ -92,7 +92,7 @@ This step is a passive scan — read-only. No writes, no prompts, no per-vault
 updates.
 
 1. Read the current version declared in
-   `<REPO>/skills/fritz:brain-setup/SKILL.md` by locating the line
+   `<REPO>/skills/brain-setup/SKILL.md` by locating the line
    `The current brain contract version is \`N\``. If it cannot be parsed,
    skip this step silently.
 2. Read `~/.brain/registry.yaml` and iterate over its `vaults:` entries.
@@ -147,7 +147,7 @@ Show the user:
   exists, whether it is enabled, and whether a human decision was recorded during
   the update.
 - Brain contract drift: list of vaults with outdated or missing `brain.md`,
-  along with "Run `/fritz:brain-setup` in those vaults to refresh."
+  along with "Run `/brain-setup` in those vaults to refresh."
 - Any errors encountered
 
 ## Important

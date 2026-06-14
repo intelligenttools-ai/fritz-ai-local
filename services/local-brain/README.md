@@ -3,10 +3,10 @@
 Optional Dockerized service-mode add-on for Fritz Local.
 
 The MVP starts with conservative compile and sync workflows. Compile loads
-`skills/fritz:brain-compile/SKILL.md` as the compile agent's task instructions,
+`skills/brain-compile/SKILL.md` as the compile agent's task instructions,
 wraps all captures as untrusted data, asks a Pydantic AI agent for structured
 article write proposals, and applies only proposals that pass Python path and
-policy validation. Sync loads `skills/fritz:brain-sync/SKILL.md` as policy
+policy validation. Sync loads `skills/brain-sync/SKILL.md` as policy
 context, but execution is deterministic and limited to `none`, `local`, and
 guarded `git` targets.
 
