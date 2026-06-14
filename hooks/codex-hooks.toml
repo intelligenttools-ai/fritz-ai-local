@@ -1,19 +1,32 @@
-# Fritz-ai-local Brain Hooks for Codex CLI
-# Add these entries to ~/.codex/config.toml
+# Fritz-ai-local Brain Hooks for Codex CLI — STATUS: legacy format DISPROVEN
+# =============================================================================
+# WARNING: the `[[hooks]] event=/command=` format previously documented in this
+# file is NOT a valid Codex config schema. Verified locally against
+# codex-cli 0.139.0: placing
 #
-# Hook equivalents:
-#   SessionStart     = Claude Code:SessionStart, Gemini:SessionStart
-#   UserPromptSubmit = Claude Code:UserPromptSubmit, Gemini:BeforeAgent
-#   Stop             = Claude Code:Stop, Gemini:SessionEnd
-
-[[hooks]]
-event = "SessionStart"
-command = "python3 ~/.brain/hooks/brain_session_start.py"
-
-[[hooks]]
-event = "UserPromptSubmit"
-command = "python3 ~/.brain/hooks/brain_prompt_check.py"
-
-[[hooks]]
-event = "Stop"
-command = "python3 ~/.brain/hooks/brain_capture.py"
+#     [[hooks]]
+#     event = "Stop"
+#     command = "..."
+#
+# into ~/.codex/config.toml makes `codex doctor` report "config could not be
+# loaded / failed to load Codex config" (a TYPE error against the real, typed
+# `hooks` key — not an ignored unknown key). DO NOT add the old format to a live
+# config; it breaks config loading entirely.
+#
+# The real Codex hook config schema (`hooks` key) is typed but its exact accepted
+# shape is not exposed by the local CLI / plugin-creator refs / openai-docs skill;
+# the Codex docs anchor is `config-advanced#hooks`. See the maintained, annotated
+# candidate + the VERIFIED `notify` fallback in:
+#
+#     bindings/codex/hooks/config-hooks.toml.example
+#
+# and the canonical->Codex event map + per-capability status in:
+#
+#     bindings/codex/README.md
+#
+# Canonical event mapping (target — wiring is REQUIRES-IN-CODEX-VERIFICATION):
+#   SessionStart     -> python3 ~/.brain/hooks/brain_session_start.py
+#   UserPromptSubmit -> python3 ~/.brain/hooks/brain_prompt_check.py
+#   Stop / turn-end  -> python3 ~/.brain/hooks/brain_capture.py
+#                       then python3 ~/.brain/hooks/brain_autocapture_hook.py
+# =============================================================================
