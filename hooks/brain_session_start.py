@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from brain_common import (
     read_hook_input, find_vault_for_cwd, load_manifest, resolve_path,
-    load_registry, load_settings, resolve_project_vault,
+    load_registry, get_setting, resolve_project_vault,
     get_context_injection_level, get_fritz_version,
     local_brain_service_available, local_brain_service_instructions,
     local_brain_service_configured, local_brain_configuration_decision_prompt,
@@ -30,8 +30,11 @@ from brain_common import (
 
 def check_for_updates(context_parts: list[str]):
     """Check if a Fritz Local update is available. Max once per 24h."""
-    settings = load_settings()
-    if not settings.get("update_check", True):
+    # Resolve through the shared config path. update_check is a global
+    # maintenance toggle; this call site has no project layer, so resolution
+    # is central settings -> default True. Routing it through get_setting keeps
+    # all overridable config on a single resolver.
+    if not get_setting("update_check", True):
         return
 
     check_file = BRAIN_HOME / ".update-check"
