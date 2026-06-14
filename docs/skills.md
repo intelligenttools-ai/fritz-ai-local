@@ -1,7 +1,13 @@
 # Skills
 
-Fritz Local ships eight `fritz:*` skills. Each is a markdown instruction
-file under `skills/` that agents invoke as a slash-command or skill call.
+Fritz Local ships eight skills. The **canonical source** is `skills/` with plain
+`fritz:*` names — this is the single source of truth. Per-platform variants are
+produced by the generator (`hooks/setup_hyphenated_skills.generate_variants`) and
+installed by `scripts/install.py install --agent <agent>`: Claude and Codex keep
+the `fritz:` prefix, pi rewrites it to `fritz-` (its runtime rejects colons).
+Variants are never hand-edited — change the source and regenerate. Hermes is a
+non-coding gateway with no skills mechanism, so it installs none (its explicit
+save is the `brain_save_fact` CLI instead).
 
 This page summarises purpose and lifecycle position. Full skill text lives
 in each skill's own `SKILL.md`.
@@ -121,8 +127,10 @@ reports brain-contract drift.
 
 Self-update Fritz Local.
 
-Runs `git pull` in `~/.fritz-ai-local/`, symlinks any new skills into
-each agent's skill directory, executes pending migrations, and reports.
+Runs `git pull` in the repo clone (resolved via `FRITZ_REPO_PATH` or the
+hook/binding file location — the clone can live anywhere), installs any new skill
+variants into each agent's skill directory, executes pending migrations, and
+reports.
 Also scans registered vaults for brain-contract drift (`brain.md`
 `brain_contract_version` older than the skill's current version) and
 lists vaults needing a `/fritz:brain-setup` refresh. Read-only on vaults —

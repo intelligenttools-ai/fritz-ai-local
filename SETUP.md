@@ -1,310 +1,337 @@
-# Fritz Local — Agent Setup Instructions
+# Fritz Local — Setup
 
-You are an AI agent setting up Fritz Local, an agent-agnostic brain overlay system. Follow these steps exactly. All steps are performed by YOU (the agent), not the human.
+This guide installs Fritz Local — the agent-agnostic brain — and wires one of
+the four first-class platforms (Claude Code, pi, Codex, Hermes) into it. Each
+platform has its own walkthrough below; pick yours.
 
-## Paths
+The authoritative per-platform reference is each binding's own README under
+`bindings/`. This guide is the consolidated walkthrough; the binding READMEs go
+deeper.
 
-This repo should be cloned to a canonical location:
+## Location independence — no required clone path
 
-| OS | Repo path | Brain home |
-|----|-----------|------------|
-| macOS/Linux | `~/.fritz-ai-local/` | `~/.brain/` |
-| Windows | `%USERPROFILE%\.fritz-ai-local\` | `%USERPROFILE%\.brain\` |
+The repository can live **anywhere** on disk. There is no required location.
 
-Throughout this document, `<repo>` means the repo path and `~` means the user's home directory. On Windows, use `%USERPROFILE%` for `~`, use `mklink` instead of `ln -sf`, and use `python` instead of `python3`.
+- **Durable data** lives under `~/.brain` (override with the `BRAIN_HOME`
+  environment variable).
+- **The repo** is resolved dynamically: `FRITZ_REPO_PATH` if set, otherwise from
+  each hook/binding file's own location.
+
+Throughout this guide `<repo>` means *wherever you cloned Fritz*. A common
+optional example is `~/.fritz-ai-local`, but any path works equally well —
+substitute your actual clone path. Do not treat `~/.fritz-ai-local` as required.
 
 ## Prerequisites
 
-Ensure Python 3.10+ is available. Install `pyyaml` if not present:
-```
-pip install pyyaml
-```
+- Python 3.10+
+- `pyyaml` (`pip install pyyaml`)
 
-## Step 1: Create the brain directory
+Clone the repo wherever you like, e.g.:
 
-Create `~/.brain/` with these subdirectories:
-```
-~/.brain/
-├── capture/
-│   ├── daily/
-│   └── sessions/
-├── hooks/
-├── tools/
-├── templates/
-└── log.md          (create with header: "# Brain Operations Log")
-```
-
-## Step 2: Symlink hooks and skills
-
-Symlink each `.py` file from `<repo>/hooks/` to `~/.brain/hooks/`:
-```
-~/.brain/hooks/brain_capture.py        → <repo>/hooks/brain_capture.py
-~/.brain/hooks/brain_session_start.py  → <repo>/hooks/brain_session_start.py
-~/.brain/hooks/brain_prompt_check.py   → <repo>/hooks/brain_prompt_check.py
-~/.brain/hooks/brain_common.py         → <repo>/hooks/brain_common.py
-~/.brain/hooks/brain_security.py       → <repo>/hooks/brain_security.py
-```
-
-If the agent runtime uses Fritz wrapper hooks, symlink those too. Hermes Agent
-requires both wrappers:
-```
-~/.brain/hooks/hermes_brain_context.py  → <repo>/hooks/hermes_brain_context.py
-~/.brain/hooks/hermes_brain_capture.py  → <repo>/hooks/hermes_brain_capture.py
-```
-
-On Windows, use `mklink` (requires admin) or copy the files instead.
-
-Symlink each `fritz:*` skill directory from `<repo>/skills/` to your agent's skills directory:
-- Claude Code: `~/.claude/skills/`
-- Codex CLI: `~/.codex/skills/`
-- Gemini CLI: `~/.gemini/skills/`
-- Other agents: wherever skills are registered
-
-All skills are prefixed with `fritz:` to avoid conflicts with other skill providers.
-
-Copy `<repo>/templates/schema.template.md` to `~/.brain/templates/`.
-
-### Dual-variant strategy (agents that cannot handle colons)
-
-The repo uses `fritz:*` (colon) in directory names and SKILL.md frontmatter. This is the
-single source of truth — changing it would break every existing installation.
-
-Agents whose runtime requires skill names to match the parent directory name and only
-accept `lowercase a-z, 0-9, hyphens` (no colons) must create **local hyphenated copies**
-during setup. The repo stays unchanged.
-
-For each skill in `<repo>/skills/`, create a local copy with:
-- **Directory name**: replace `:` with `-` (e.g., `fritz-brain-query/`)
-- **SKILL.md frontmatter**: change `name: fritz:brain-query` to `name: fritz-brain-query`
-- **Slash commands inside SKILL.md text**: change `/fritz:brain-*` to `/fritz-brain-*`
-
-The local copy is a standalone file — not a symlink. It contains the full SKILL.md content
-with hyphenated names throughout, so slash commands inside the skill text also resolve
-correctly.
-
-Example for pi-agent (where `~/.agents/skills/` is the skills directory):
 ```bash
-for skill_dir in <repo>/skills/fritz:*; do
-  skill_name=$(basename "$skill_dir")
-  hyphen_name="${skill_name//:/-}"
-  target="$HOME/.agents/skills/$hyphen_name"
-  mkdir -p "$target"
-  sed 's/name: fritz:/name: fritz-/' "$skill_dir/SKILL.md" \
-    | sed 's|/fritz:brain-|/fritz-brain-|g; s|/fritz:update|/fritz-update|g' \
-    > "$target/SKILL.md"
-done
+git clone https://git.intelligenttools.ai/intelligenttools-ai/fritz-ai-local.git
+cd fritz-ai-local
 ```
 
-Agents that support colons (Claude Code, Gemini CLI, etc.) skip this step entirely and
-use the colon-named symlinks directly.
+## Shared bootstrap — `scripts/install.py`
 
-## Step 3: Register hooks in your agent config
+Every platform except Hermes shares one installer. It creates the `~/.brain`
+layout, symlinks the canonical Python hooks into `~/.brain/hooks/`, and installs
+the per-platform skill variants.
 
-You know your own config format. Register these hooks:
+```bash
+# Bootstrap the brain and wire a plugin/extension platform:
+python3 scripts/install.py install --agent claude     # or: codex | pi
+python3 scripts/install.py install --agent codex
+python3 scripts/install.py install --agent pi
 
-| Event | Script | Purpose |
-|-------|--------|---------|
-| Session start | `python3 ~/.brain/hooks/brain_session_start.py` | Inject brain context |
-| User prompt / before agent | `python3 ~/.brain/hooks/brain_prompt_check.py` | Brain-first enforcement |
-| Pre-compact / pre-compress | `python3 ~/.brain/hooks/brain_capture.py` | Capture before context loss |
-| Session end / stop | `python3 ~/.brain/hooks/brain_capture.py` | Capture on exit |
+# Read-only health snapshot:
+python3 scripts/install.py status
 
-Reference hook configurations for each agent are in `<repo>/hooks/`:
-- Claude Code: `claude-code-hooks.json` → merge into `~/.claude/settings.json` under `hooks`
-- Pi (`pi-coding-agent`): copy or symlink `pi-extension.ts` to `~/.pi/agent/extensions/fritz-brain.ts`, then run `/reload`
-- Codex CLI: `codex-hooks.toml` → append to `~/.codex/config.toml`
-- Gemini CLI: `gemini-hooks.json` → merge into `~/.gemini/settings.json` under `hooks`
-- Hermes Agent: `hermes-hooks.yaml` → merge into the active Hermes `config.yaml` profile under `hooks`. Ensure `HERMES_HOME` points at the active profile directory when running Hermes under a non-default profile such as `~/.hermes-dev` or `~/.hermes-infra`.
+# Run a key hook against a synthetic event and assert PASS:
+python3 scripts/install.py smoke-test
 
-Use absolute paths (resolve `~` to the actual home directory). For other agents, use your native hook registration mechanism.
-
-## Step 4: Add brain instructions to your global instruction file
-
-Add this to your global instruction file (CLAUDE.md, AGENTS.md, GEMINI.md, HERMES.md — whichever you read):
-
-```markdown
-## Brain System
-
-Fritz Local brain overlay is active. Before answering questions about prior decisions, patterns, or domain knowledge:
-1. Check `~/.brain/capture/daily/` for recent session captures
-2. Search vault knowledge directories (paths in `~/.brain/registry.yaml`)
-3. Use `/fritz:brain-query` to search across all vaults
-
-Available fritz skills: `/fritz:brain-query`, `/fritz:brain-compile`, `/fritz:brain-ingest`, `/fritz:brain-lint`, `/fritz:brain-sync`, `/fritz:brain-setup`, `/fritz:handover`
+# Preview what install would do without writing anything:
+python3 scripts/install.py install --agent claude --dry-run
 ```
 
-## Step 5: Create the vault registry
+`--agent` accepts **`claude`, `codex`, or `pi`**. **Hermes is not an `--agent`**:
+it is a non-coding gateway with no skills, so `install --agent hermes` is
+deliberately rejected. Hermes is bootstrapped by the YAML profile merge described
+in its section below (the hook symlinks it needs are installed by *any*
+`install.py install` run, since the Hermes wrappers are in the shared
+`REQUIRED_HOOKS` list).
 
-Copy `<repo>/registry/registry.template.yaml` to `~/.brain/registry.yaml`. Then ask the human which directories are their knowledge vaults and update the registry with the correct paths, domains, and sync settings.
+---
 
-If the human wants one vault to be active for future source projects that do
-not yet have `.fritz-local.json`, set `default_vault: <vault-name>` in the
-registry. This is useful for agent profiles dedicated to one domain, such as a
-development agent whose default vault is `~/Notes/development`.
+## Platform: Claude Code
 
-## Step 6: Set up each vault
+Claude Code is wired through a **self-registering plugin** loaded from a local
+`directory` marketplace source (`bindings/claude/`). Enabling the plugin
+registers all hooks and skills — there are **no manual `~/.claude/settings.json`
+hook edits**.
 
-For each vault in the registry, run `/fritz:brain-setup` (or follow the fritz:brain-setup skill instructions). This explores the vault's directory structure and generates the manifest, schema, instruction files, and index.
+1. Bootstrap the brain and install the Claude skill variants:
 
-## Step 7: Write your own transcript adapter (if needed)
+   ```bash
+   python3 scripts/install.py install --agent claude
+   ```
 
-Check `<repo>/adapters/` for your agent type. If it's a stub, implement it — you know your own transcript format better than anyone. The interface is in `<repo>/adapters/base.py`:
+2. Inside Claude Code, add the local marketplace and enable the plugin:
 
-```python
-class TranscriptAdapter:
-    def parse(self, transcript_path: Path, max_messages: int = 200) -> CaptureEntry:
-        ...
+   ```
+   /plugin marketplace add <repo>/bindings/claude
+   /plugin install fritz-brain@fritz-local
+   ```
+
+   Enabling the plugin registers the `SessionStart`, `UserPromptSubmit`,
+   `PreCompact`, and `Stop` hooks via the plugin's own `hooks/hooks.json`
+   (which references the hooks through `${CLAUDE_PLUGIN_ROOT}`). **Do not edit
+   `~/.claude/settings.json` hooks by hand** — the plugin does it.
+
+3. Verify:
+
+   ```bash
+   python3 scripts/install.py smoke-test
+   ```
+
+Full detail: [`bindings/claude/README.md`](bindings/claude/README.md). The
+plugin satisfies the full nine-capability bar.
+
+---
+
+## Platform: pi (`pi-coding-agent`)
+
+pi is wired through a **native extension** (`bindings/pi/index.ts`) written
+against the `@earendil-works` pi SDK
+(`@earendil-works/pi-coding-agent`). It registers the `brain_save_fact` tool,
+the `/fritz` command, and the session/agent lifecycle hooks.
+
+1. Bootstrap the brain and install the pi skill variants:
+
+   ```bash
+   python3 scripts/install.py install --agent pi
+   ```
+
+   (Equivalently, from inside a pi session: `/fritz init`.)
+
+2. Install the extension into pi's extensions directory so pi loads it, e.g.:
+
+   ```bash
+   mkdir -p ~/.pi/agent/extensions/fritz-brain
+   cp bindings/pi/index.ts ~/.pi/agent/extensions/fritz-brain/index.ts
+   ```
+
+   The binding resolves the Fritz repo independently (`FRITZ_REPO_PATH` or
+   `import.meta.url`), so it does not need to live inside the repo.
+
+3. Bootstrap and verify from inside a pi session:
+
+   ```
+   /fritz
+   /fritz smoke-test
+   ```
+
+`/fritz` exposes `status`, `init`, `repair-hooks`, and `smoke-test`. Full
+detail: [`bindings/pi/README.md`](bindings/pi/README.md). pi is the role-model
+binding — it defines the nine-capability bar.
+
+---
+
+## Platform: Codex
+
+Codex is wired through a **plugin** (`bindings/codex/`). The plugin/skills half
+is verified against `codex-cli 0.139.0`; the hook half (session/turn lifecycle)
+is the documented open capability and is marked
+**REQUIRES-IN-CODEX-VERIFICATION** in the binding README — do not assume the
+hooks are live until confirmed inside a real Codex session.
+
+1. Bootstrap the brain and install the Codex skill variants:
+
+   ```bash
+   python3 scripts/install.py install --agent codex
+   ```
+
+2. Register and install the plugin from the local marketplace:
+
+   ```bash
+   codex plugin marketplace add <repo>/bindings/codex
+   codex plugin add fritz-brain@fritz-local
+   codex plugin list
+   ```
+
+3. **Hooks (open capability).** Codex has a real hook subsystem, but its config
+   schema is not introspectable from the local CLI. The candidate wiring and the
+   verified `notify` turn-end fallback are annotated in
+   [`bindings/codex/hooks/config-hooks.toml.example`](bindings/codex/hooks/config-hooks.toml.example).
+   Add the candidate block to `~/.codex/config.toml`, run `codex doctor`, and if
+   the config loads, verify capture/guardrail/context inside a real Codex
+   session. Do not overstate the hooks as working until this passes.
+
+Full detail, the per-capability verified/open table, and the manual in-Codex
+acceptance test: [`bindings/codex/README.md`](bindings/codex/README.md).
+
+---
+
+## Platform: Hermes
+
+Hermes is a **non-coding gateway agent**. It has no plugin or skills mechanism,
+so its binding is **shell-hook only**: a YAML block merged into the Hermes
+profile `config.yaml` plus three committed wrapper scripts. There is no
+`--agent hermes` skills install.
+
+1. Install the brain hooks (any `--agent` works; this symlinks the canonical
+   wrappers, including the Hermes ones, into `~/.brain/hooks/`):
+
+   ```bash
+   python3 scripts/install.py install --agent claude
+   ```
+
+   (The `--agent` only affects the skills install, which Hermes does not use.)
+
+2. **Merge the YAML hook block** from
+   [`bindings/hermes/hermes-hooks.yaml`](bindings/hermes/hermes-hooks.yaml) into
+   the Hermes profile `config.yaml` — usually `~/.hermes/config.yaml`, or a
+   profile-specific config such as `~/.hermes-infra/config.yaml`:
+
+   ```yaml
+   hooks_auto_accept: true
+   hooks:
+     pre_llm_call:
+       - command: "python3 ~/.brain/hooks/hermes_brain_context.py"
+         timeout: 15
+     on_session_finalize:
+       - command: "python3 ~/.brain/hooks/hermes_brain_capture.py"
+         timeout: 30
+       - command: "python3 ~/.brain/hooks/hermes_brain_autocapture.py"
+         timeout: 30
+   ```
+
+   `hooks_auto_accept: true` lets non-interactive gateway sessions load these
+   managed local hooks without a trust prompt.
+
+3. **Honor `HERMES_HOME`.** The finalize wrappers resolve the transcript from
+   `$HERMES_HOME/sessions` (falling back to `~/.hermes/sessions`). For a
+   non-default profile root, point `HERMES_HOME` at it:
+
+   ```bash
+   export HERMES_HOME=~/.hermes-infra
+   ```
+
+4. **Restart** Hermes / the gateway so it picks up the merged config.
+
+Because Hermes has no skill runtime, the explicit-save capability is the
+`brain_save_fact.py` CLI directly:
+
+```bash
+echo '{"title":"Gateway deploy note","body":"Restart via systemctl.","tags":["FritzBrain"]}' \
+  | python3 ~/.brain/hooks/brain_save_fact.py --json
 ```
 
-Register it in `<repo>/adapters/registry.py`. Consider opening a PR to contribute it back.
+Full detail, the canonical→Hermes event map, and the manual acceptance test:
+[`bindings/hermes/README.md`](bindings/hermes/README.md). Hermes meets C1–C6 and
+C9; **C8 (skills) is N/A** — a gateway has nothing to install skills into.
 
-## Step 8: Verify
+---
 
-1. Start a new session — you should see brain context injected
-2. Ask a question — you should see a "BRAIN CHECK" reminder
-3. End the session — a capture should appear in `~/.brain/capture/daily/`
+## Capture layout
 
-## Step 9: Configure per-project bindings (optional)
+After install, durable artifacts land under `~/.brain/capture/`:
 
-For each source code project that should be linked to a brain vault, create a `.fritz-local.json` file in the project root:
+| Path | Role |
+|------|------|
+| `capture/inbox/` | **Explicit** saves and auto-captured durable facts |
+| `capture/daily/` | **Automatic** per-session rollups, one file per day |
+| `capture/auto/` | `.seen` content-hash **dedup markers** for auto-capture |
+| `log.md` | Human-readable **audit** log |
+
+## Configuration
+
+Configuration follows one resolution path — **project (`.fritz-local.json`) >
+central (`registry.yaml` `settings:`) > defaults**. See
+[`docs/configuration.md`](docs/configuration.md) for the full reference.
+
+Central defaults live under `settings:` in `~/.brain/registry.yaml` (seeded from
+`registry/registry.template.yaml`):
+
+```yaml
+settings:
+  context_injection: off       # off | light | full
+  max_injection_chars: 8000
+  update_check: true
+  # local_brain_service:       # optional Dockerized service, disabled by default
+  #   enabled: false
+```
+
+A per-project `.fritz-local.json` (walked up from the working directory) overrides
+central settings for that project. Safe to commit — no secrets:
 
 ```json
 {
-  "vault": "<vault-name>",
-  "project": "<project-name>",
-  "brain_home": "~/.brain",
+  "vault": "engineering",
+  "project": "my-service",
   "context_injection": "off"
 }
 ```
 
-Fields:
-- `vault`: name of the vault in `~/.brain/registry.yaml`
-- `project`: project directory name within the vault
-- `brain_home`: path to brain directory (default `~/.brain`)
-- `context_injection`: `off` (default) | `light` | `full`
+## Adopting a non-first-class runtime
 
-This file is safe to commit to version control — it contains no secrets.
+To wire a runtime that is **not** one of the four first-class platforms, build a
+conformant binding from the kit:
 
-Context injection levels:
-- `off`: advisory "BRAIN CHECK" reminder only (no token cost)
-- `light`: hook searches knowledge dirs, injects matching file paths (low token cost)
-- `full`: light + agent must spawn subagent to read/synthesize (higher token cost)
+1. Read [`docs/integration-contract.md`](docs/integration-contract.md) — the
+   canonical events, the hook JSON protocol, the adapter interface, the config
+   model, the skill-naming rule, and the nine-item capability checklist.
+2. Copy [`bindings/_template/`](bindings/_template/README.md) to
+   `bindings/<runtime>/` and hand the self-contained brief
+   [`bindings/_template/INITIAL_PROMPT.md`](bindings/_template/INITIAL_PROMPT.md)
+   to an agent loop.
+3. Satisfy all nine capabilities and verify with
+   `python3 scripts/install.py install/smoke-test --agent <runtime>` against a
+   temp `BRAIN_HOME`.
 
-## Step 10: Configure global settings (optional)
+## Optional: Dockerized Local Brain service
 
-Add a `settings` block to `~/.brain/registry.yaml` for global defaults:
+After the brain and a platform binding are working, you can optionally enable the
+Dockerized Local Brain service for compile, semantic search, sync, lint, and
+embeddings. It is disabled by default and enabled explicitly in
+`~/.brain/registry.yaml`:
 
 ```yaml
 settings:
-  # context_injection: off    # off | light | full — inherited by all projects
-  # max_injection_chars: 8000 # cap on injected context size
-  # update_check: true        # check for Fritz Local updates on session start
-  # local_brain_service:      # optional Dockerized service, disabled by default
-  #   enabled: false
-  #   base_url: http://127.0.0.1:8765
-  #   api_token: replace-with-random-token # optional, for trusted local agent use
-  #   api_token_env: LOCAL_BRAIN_API_TOKEN
-  #   allow_remote: false     # keep false unless intentionally using a trusted remote service
-  #   suggest_setup: true      # agents may suggest setup for supported brain workflows
+  local_brain_service:
+    enabled: true
+    base_url: http://127.0.0.1:8765
+    api_token: replace-with-a-unique-random-token
+    api_token_env: LOCAL_BRAIN_API_TOKEN
+    allow_remote: false
 ```
 
-Per-project `.fritz-local.json` overrides global settings.
+Start it through the repository script and verify:
 
-## Step 11: Offer the Dockerized Local Brain service (optional)
-
-After the brain overlay and vault registry are working, ask the human whether they want to set up the optional Dockerized Local Brain service.
-
-Use this exact decision prompt:
-
-> Fritz Local can also run an optional Dockerized Local Brain service for compile, sync, query, lint, embeddings, MCP, and CLI workflows. It is disabled by default and uses dry-run/safety gates by default. Do you want me to configure and start it now?
-
-If the human says no, skip Docker setup but still write `settings.local_brain_service` to `~/.brain/registry.yaml` with `enabled: false`. Ask whether future setup suggestions should remain enabled. Set `suggest_setup: true` if they want future suggestions, or `suggest_setup: false` if they do not. Do not leave the setting absent after asking. Do not start Docker automatically without explicit approval.
-
-If the human says yes:
-
-1. Confirm Docker or a compatible runtime is available.
-2. Copy `<repo>/.env.example` to `<repo>/.env` if it does not already exist.
-3. Edit `<repo>/.env` for the local machine:
-   - `BRAIN_HOME=/data/brain`
-   - `BRAIN_PATH_MAP=<host-notes-root>=/vaults/notes`, matching the path style used in `~/.brain/registry.yaml`
-   - `LLM_PROTOCOL=openai-compatible` or `anthropic-compatible`
-   - `LLM_ENDPOINT=<OpenAI-compatible or Anthropic-compatible endpoint>`; for the simple local path use host Ollama or another local server exposed as `http://host.docker.internal:11434/v1`
-   - `LLM_MODEL=<model-name>`; a small instruction model in the 2B-active to 4B range or a 7B-9B instruct model is sufficient for normal capture compile/extraction, while stronger API models remain optional for messy captures. Use the exact model tag served by the endpoint.
-   - `EMBEDDING_ENABLED=true`, `EMBEDDING_ENDPOINT=<OpenAI-compatible embedding endpoint>`, and `EMBEDDING_MODEL=<embedding-model>` if semantic search should be available; the default local path is host Ollama `nomic-embed-text:latest`
-   - Leave `API_HOST=127.0.0.1` unless the human explicitly asks to expose the service off-host.
-   - Set `API_TOKEN` to a unique random value. All `/v1/*` endpoints require it.
-   - For trusted local agent use, set `api_token` in `~/.brain/registry.yaml` to the same value so hooks, skills, and the CLI can authenticate without manual shell environment setup.
-   - Alternatively, export the same value in the environment named by `api_token_env`, for example `LOCAL_BRAIN_API_TOKEN`.
-4. Start the service through the reusable repository script:
-   ```bash
-   cd <repo>
-   python3 scripts/local-brain-service.py start --build
-   ```
-   If the human wants daemon-backed processing, install autostart for the current OS user:
-   ```bash
-   python3 scripts/local-brain-service.py install-autostart --enable-scheduler --apply
-   ```
-   The script writes a macOS LaunchAgent, Linux systemd user unit, or Windows
-   Task Scheduler logon task and sets `AUTOSTART_INSTALLED=true`. Use
-   `uninstall-autostart` to remove it.
-5. Record the rollout decision in `~/.brain/registry.yaml`:
-   ```yaml
-   settings:
-     local_brain_service:
-       enabled: true
-       base_url: http://127.0.0.1:8765
-       api_token: replace-with-same-random-token-as-API_TOKEN
-       api_token_env: LOCAL_BRAIN_API_TOKEN
-       allow_remote: false
-       suggest_setup: true
-   ```
-6. Verify it:
-   ```bash
-   curl http://127.0.0.1:8765/health
-   curl -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" http://127.0.0.1:8765/v1/status
-   curl -X POST http://127.0.0.1:8765/v1/compile/run \
-      -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" \
-      -H 'content-type: application/json' \
-      -d '{"dry_run": true, "max_captures": 1}'
-   curl -X POST http://127.0.0.1:8765/v1/search/run \
-      -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" \
-      -H 'content-type: application/json' \
-      -d '{"query": "local brain", "limit": 5}'
-   ```
-
-Optional agent integrations:
-- Prefer MCP for agents when the host supports MCP: run `fritz-local-brain-mcp` from the service package/container and expose the `brain_search`, `brain_query`, `brain_compile`, `brain_sync`, `brain_lint`, `brain_embeddings_status`, `brain_embeddings_probe`, and `brain_embeddings_index` tools. MCP tools require the same API token through their `api_token` argument; agents may resolve it from `settings.local_brain_service.api_token` or from the configured `api_token_env`.
-- For humans, CI, or shell-only agents, install the cross-platform Python CLI with `pipx install <repo>/services/local-brain`. The `fritz-brain` and `fritz-local-brain-cli` commands read `~/.brain/registry.yaml` and resolve the configured token automatically.
-
-Important service safety notes:
-- Manual compile and sync should be dry-run first.
-- First real external sync and large compile batches require explicit approval configuration.
-- The service must not write registry, manifest, schema, identity files, or excluded paths.
-- Full service documentation is in `<repo>/services/local-brain/README.md`.
-
-Agent operating rule when `settings.local_brain_service.enabled: true` and the service health check passes:
-- Use the Dockerized service as the primary execution path for supported workflows: compile, sync, search/query, lint, embedding status/probe/index, MCP, and CLI operations. For brain checks and normal knowledge lookup, use semantic search first (`brain_search` or `/v1/search/run`); use exact query (`brain_query` or `/v1/query/run`) only as compatibility/fallback or when exact/raw lookup is explicitly needed.
-- Do not run the equivalent local slash-skill workflow for the same supported operation in the same session unless the service is unavailable or the human explicitly asks for the non-service path.
-- For handover preparation, use service-backed compile and sync where those steps are needed, then write the handover document. Do not duplicate compile/sync by also invoking `/fritz:brain-compile` or `/fritz:brain-sync` directly.
-- Continue to use local hooks and slash skills for workflows the service does not provide, including capture hooks, setup, ingest, update, and writing the handover document itself.
-
-If `settings.local_brain_service` is absent, agents must ask the human which behavior to use and then write the selected setting to `~/.brain/registry.yaml`. Absence means unconfigured, not disabled.
-
-If `settings.local_brain_service.enabled` is false, agents must use the original local hooks and slash-skill behavior even if a process happens to be listening on the default service port.
-
-When service mode is disabled and `settings.local_brain_service.suggest_setup` is not `false`, hooks may inject an advisory for supported brain workflows so agents can ask whether the human wants to configure the optional Docker stack. This advisory never enables the service by itself and must not block fallback local execution.
-
-For safety, hooks only probe loopback service URLs by default (`127.0.0.1`, `localhost`, `::1`) and reject credential-bearing URLs, query strings, fragments, and non-root paths. Set `allow_remote: true` only when the human intentionally points agents at a trusted remote Local Brain service. `LOCAL_BRAIN_BASE_URL` is only accepted for loopback overrides; remote service URLs must be written explicitly in the registry. Availability checks use `/v1/status`, not unauthenticated `/health`; if the service uses an API token, expose it to agents through `settings.local_brain_service.api_token` or the configured `api_token_env` environment variable.
-
-## Step 12: Keeping Fritz Local updated
-
-Fritz Local checks for updates on session start (once per 24 hours). When an update is available, you'll see a notification with the changelog.
-
-To update, run `/fritz:update` or manually:
-```
-git -C ~/.fritz-ai-local pull
+```bash
+python3 scripts/local-brain-service.py start --build
+curl http://127.0.0.1:8765/health
+curl -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" http://127.0.0.1:8765/v1/status
 ```
 
-Symlinked hooks and skills update immediately after pull. New skills are automatically symlinked by `/fritz:update`.
+When enabled and reachable, agents prefer the service for supported workflows
+(compile, search/query, sync, lint, embeddings); otherwise the local hooks and
+slash skills remain the fallback. For safety, hooks probe only loopback service
+URLs by default and `allow_remote: false` keeps it on-host. Full service
+documentation: [`services/local-brain/README.md`](services/local-brain/README.md).
 
-Existing installs receive a Local Brain service decision prompt through `/fritz:update` and the hooks when `settings.local_brain_service` is absent. The update path does not enable Docker or change execution behavior by default; it asks the human, writes the selected registry setting, and then follows that setting.
+## Verify
+
+1. Start a new session — brain context should be injected (C1).
+2. Submit a knowledge-seeking prompt — the BRAIN CHECK guardrail should appear (C2).
+3. End the session — a daily capture should appear under `~/.brain/capture/daily/` (C5).
+4. `python3 scripts/install.py smoke-test` reports `ALL PASS`.
+
+## Keeping Fritz Local updated
+
+Fritz checks for updates on session start (once per 24h). To apply an update,
+run `/fritz:update` (or `/fritz-update` on hyphenated runtimes), or `git pull` in
+your clone. Symlinked hooks and skills update immediately; re-run
+`scripts/install.py install --agent <agent>` (or `/fritz:update`) to pick up any
+new skills and run pending migrations.
