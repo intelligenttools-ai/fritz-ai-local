@@ -17,11 +17,27 @@ import time
 from pathlib import Path
 
 BRAIN_CAPTURE = Path.home() / ".brain" / "hooks" / "brain_capture.py"
-DEFAULT_HERMES_HOME = Path.home() / ".hermes"
 
 
 def _hermes_home() -> Path:
-    return Path(os.environ.get("HERMES_HOME", str(DEFAULT_HERMES_HOME))).expanduser()
+    # Resolved at call time (not import time) so tests that set HERMES_HOME after
+    # import — and a non-default profile root — are honored. Falls back to
+    # ``~/.hermes`` only when the env var is unset/empty.
+    env = os.environ.get("HERMES_HOME")
+    base = env.strip() if env and env.strip() else str(Path.home() / ".hermes")
+    return Path(base).expanduser()
+
+
+def resolve_transcript(session_id: str) -> Path | None:
+    """Resolve the Hermes JSONL transcript for ``session_id`` (or newest).
+
+    Single source of truth for transcript resolution — shared by the daily
+    capture (C5) and the auto-capture (C4) wrappers so both look in the SAME
+    ``$HERMES_HOME/sessions`` directory with identical fallback rules. Returns
+    ``None`` when no transcript can be confidently resolved.
+    """
+    candidates = _candidate_transcripts(session_id)
+    return candidates[0] if candidates else None
 
 
 def _candidate_transcripts(session_id: str) -> list[Path]:
@@ -50,11 +66,10 @@ def main() -> int:
         payload = {}
 
     session_id = str(payload.get("session_id") or "")
-    transcripts = _candidate_transcripts(session_id)
-    if not transcripts:
+    transcript = resolve_transcript(session_id)
+    if transcript is None:
         return 0
 
-    transcript = transcripts[0]
     payload.update({
         "event_type": "hermes",
         "hook_event_name": payload.get("hook_event_name") or "on_session_finalize",

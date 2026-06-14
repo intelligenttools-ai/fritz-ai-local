@@ -11,5 +11,9 @@ hooks:
     - command: "python3 ~/.brain/hooks/hermes_brain_context.py"
       timeout: 15
   on_session_finalize:
+    # C5: daily capture.
     - command: "python3 ~/.brain/hooks/hermes_brain_capture.py"
+      timeout: 30
+    # C4: durable auto-capture (inbox fact + .seen dedup; no second daily write).
+    - command: "python3 ~/.brain/hooks/hermes_brain_autocapture.py"
       timeout: 30
