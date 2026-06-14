@@ -55,7 +55,7 @@ def test_compile_dry_run_considers_inbox_capture_and_reports_source_counts(
     brain_home = tmp_path / "brain"
     vault_path = tmp_path / "vault"
     capture_path = brain_home / "capture" / "inbox" / "fact.md"
-    skill_path = tmp_path / "skills" / "fritz:brain-compile" / "SKILL.md"
+    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
 
     capture_path.parent.mkdir(parents=True)
     capture_path.write_text("# Capture\n\nDurable fact.\n", encoding="utf-8")
@@ -107,7 +107,7 @@ def test_compile_considers_all_pending_captures_oldest_first_so_later_updates_ca
     vault_path = tmp_path / "vault"
     older_capture = brain_home / "capture" / "daily" / "older.md"
     newer_capture = brain_home / "capture" / "inbox" / "newer.md"
-    skill_path = tmp_path / "skills" / "fritz:brain-compile" / "SKILL.md"
+    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
 
     older_capture.parent.mkdir(parents=True)
     newer_capture.parent.mkdir(parents=True)
@@ -151,7 +151,7 @@ def test_compile_considers_all_pending_captures_oldest_first_so_later_updates_ca
 def test_compile_default_uses_safe_chronological_batch_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     brain_home = tmp_path / "brain"
     vault_path = tmp_path / "vault"
-    skill_path = tmp_path / "skills" / "fritz:brain-compile" / "SKILL.md"
+    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
     capture_dir = brain_home / "capture" / "daily"
     capture_dir.mkdir(parents=True)
     captures = []
@@ -196,7 +196,7 @@ def test_compile_apply_leaves_unrepresented_capture_pending(tmp_path: Path, monk
     brain_home = tmp_path / "brain"
     vault_path = tmp_path / "vault"
     capture_path = brain_home / "capture" / "inbox" / "fact.md"
-    skill_path = tmp_path / "skills" / "fritz:brain-compile" / "SKILL.md"
+    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
 
     capture_path.parent.mkdir(parents=True)
     capture_path.write_text("# Capture\n\nUseful fact.\n", encoding="utf-8")
@@ -236,7 +236,7 @@ def test_compile_apply_marks_explicitly_skipped_captures_processed(
     brain_home = tmp_path / "brain"
     vault_path = tmp_path / "vault"
     capture_path = brain_home / "capture" / "inbox" / "noise.md"
-    skill_path = tmp_path / "skills" / "fritz:brain-compile" / "SKILL.md"
+    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
 
     capture_path.parent.mkdir(parents=True)
     capture_path.write_text("# Capture\n\nNo durable knowledge here.\n", encoding="utf-8")
@@ -278,7 +278,7 @@ def test_compile_apply_marks_accounted_daily_capture_processed(
     brain_home = tmp_path / "brain"
     vault_path = tmp_path / "vault"
     capture_path = brain_home / "capture" / "daily" / "2026-05-27.md"
-    skill_path = tmp_path / "skills" / "fritz:brain-compile" / "SKILL.md"
+    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
 
     capture_path.parent.mkdir(parents=True)
     capture_path.write_text("# Daily Log\n\n- useful fact\n", encoding="utf-8")
@@ -324,7 +324,7 @@ def test_compile_apply_leaves_changed_capture_pending(tmp_path: Path, monkeypatc
     brain_home = tmp_path / "brain"
     vault_path = tmp_path / "vault"
     capture_path = brain_home / "capture" / "inbox" / "fact.md"
-    skill_path = tmp_path / "skills" / "fritz:brain-compile" / "SKILL.md"
+    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
 
     capture_path.parent.mkdir(parents=True)
     capture_path.write_text("# Capture\n\nUseful fact.\n", encoding="utf-8")
@@ -378,7 +378,7 @@ def test_compile_apply_rejects_missing_source_even_for_single_capture(
     brain_home = tmp_path / "brain"
     vault_path = tmp_path / "vault"
     capture_path = brain_home / "capture" / "inbox" / "fact.md"
-    skill_path = tmp_path / "skills" / "fritz:brain-compile" / "SKILL.md"
+    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
 
     capture_path.parent.mkdir(parents=True)
     capture_path.write_text("# Capture\n\nUseful fact.\n", encoding="utf-8")
@@ -419,7 +419,7 @@ def test_compile_apply_repairs_single_capture_source_mangled_by_model(
     brain_home = tmp_path / "brain"
     vault_path = tmp_path / "vault"
     capture_path = brain_home / "capture" / "inbox" / "2026-06-02-real-long-capture-name.md"
-    skill_path = tmp_path / "skills" / "fritz:brain-compile" / "SKILL.md"
+    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
 
     capture_path.parent.mkdir(parents=True)
     capture_path.write_text("# Capture\n\nUseful fact.\n", encoding="utf-8")
@@ -462,7 +462,7 @@ def test_compile_apply_rejects_unrelated_hallucinated_single_capture_source(
     brain_home = tmp_path / "brain"
     vault_path = tmp_path / "vault"
     capture_path = brain_home / "capture" / "inbox" / "actual-capture.md"
-    skill_path = tmp_path / "skills" / "fritz:brain-compile" / "SKILL.md"
+    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
 
     capture_path.parent.mkdir(parents=True)
     capture_path.write_text("# Capture\n\nUseful fact.\n", encoding="utf-8")
@@ -502,7 +502,7 @@ def test_compile_apply_marks_successful_captures_processed(tmp_path: Path, monke
     brain_home = tmp_path / "brain"
     vault_path = tmp_path / "vault"
     capture_path = brain_home / "capture" / "inbox" / "fact.md"
-    skill_path = tmp_path / "skills" / "fritz:brain-compile" / "SKILL.md"
+    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
 
     capture_path.parent.mkdir(parents=True)
     capture_path.write_text("# Capture\n\nUseful fact.\n", encoding="utf-8")
@@ -549,7 +549,7 @@ def test_compile_apply_allows_later_batch_to_update_article_created_earlier(
     vault_path = tmp_path / "vault"
     older_capture = brain_home / "capture" / "daily" / "older.md"
     newer_capture = brain_home / "capture" / "inbox" / "newer.md"
-    skill_path = tmp_path / "skills" / "fritz:brain-compile" / "SKILL.md"
+    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
 
     older_capture.parent.mkdir(parents=True)
     newer_capture.parent.mkdir(parents=True)
@@ -606,7 +606,7 @@ def test_compile_dry_run_returns_proposals_without_applied_writes(tmp_path: Path
     brain_home = tmp_path / "brain"
     vault_path = tmp_path / "vault"
     capture_path = brain_home / "capture" / "daily" / "2026-05-12.md"
-    skill_path = tmp_path / "skills" / "fritz:brain-compile" / "SKILL.md"
+    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
 
     capture_path.parent.mkdir(parents=True)
     capture_path.write_text("# Capture\n\nUseful session detail.\n", encoding="utf-8")

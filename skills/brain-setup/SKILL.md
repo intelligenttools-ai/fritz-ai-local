@@ -1,12 +1,12 @@
 ---
-name: fritz:brain-setup
+name: brain-setup
 description: >
   Set up the Fritz Local brain overlay for a new vault. Explores directory
   structure, presents findings, asks questions interactively, then creates
   structure based on human answers. Handles per-project directories, common/
   shared area, index files, .fritz-local.json creation, and context injection
   configuration. Use when the user asks to set up a brain vault, add a project,
-  or run /fritz:brain-setup.
+  or run /brain-setup.
 ---
 
 # Brain Setup
@@ -18,7 +18,7 @@ The human decides structure. The agent discovers, proposes, and executes.
 Activate when the user asks to:
 - Set up a vault for the brain system
 - Initialize the brain for a directory/vault
-- Run `/fritz:brain-setup`
+- Run `/brain-setup`
 - "Add this vault to the brain"
 - Add a new project to an existing vault
 
@@ -275,7 +275,7 @@ chosen above) from its own root file. Append-only; if a reference to that
 path already exists, skip.
 
 Do NOT touch root files belonging to other agents. Each agent adds its own
-reference when it runs `/fritz:brain-setup` in the vault.
+reference when it runs `/brain-setup` in the vault.
 
 **Knowledge Management (Mandatory) section — body for `.brain/instructions/brain.md`:**
 
@@ -289,7 +289,7 @@ already-solved problems.
 
 ### Before planning, research, debugging, or any non-trivial change
 
-Run `/fritz:brain-query` to search for prior decisions, patterns, runbooks,
+Run `/brain-query` to search for prior decisions, patterns, runbooks,
 and similar issues. Apply what you find. Do not implement solutions the brain
 already contains — extend them.
 
@@ -307,16 +307,16 @@ the end.
 
 ### After execution
 
-Run `/fritz:brain-ingest` to promote new knowledge — runbooks, patterns,
+Run `/brain-ingest` to promote new knowledge — runbooks, patterns,
 post-incident learnings, external sources — into the brain. Run
-`/fritz:brain-compile` to consolidate captures into compiled articles when
+`/brain-compile` to consolidate captures into compiled articles when
 enough material has accumulated. Scope to what is worth preserving; this is
 not a changelog.
 
 ### At handover and session end
 
 For vaults with an external sync target (`sync` is not `local` or `none`),
-`/fritz:handover` must run `/fritz:brain-sync` as its final preservation
+`/handover` must run `/brain-sync` as its final preservation
 step. Unsynced knowledge in those vaults is lost knowledge — a handover
 that skips sync is not a handover, it is a context dump. Vaults configured
 with `sync: local` or `sync: none` have no external surface to push to;

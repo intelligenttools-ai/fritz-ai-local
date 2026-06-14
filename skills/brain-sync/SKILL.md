@@ -1,9 +1,9 @@
 ---
-name: fritz:brain-sync
+name: brain-sync
 description: >
   Push knowledge articles from brain vaults to external systems (AFFiNE, Obsidian,
   etc.). Brain markdown is source of truth — external systems are views.
-  Use when the user asks to sync, push, or export brain knowledge, or run /fritz:brain-sync.
+  Use when the user asks to sync, push, or export brain knowledge, or run /brain-sync.
 ---
 
 # Brain Sync
@@ -15,7 +15,7 @@ Push knowledge articles from brain vaults to external systems. Brain markdown is
 Activate when the user asks to:
 - Sync the brain/knowledge to an external system
 - Push knowledge articles externally
-- Run `/fritz:brain-sync`
+- Run `/brain-sync`
 
 ## Workflow
 

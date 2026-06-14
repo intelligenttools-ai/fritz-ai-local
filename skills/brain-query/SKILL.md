@@ -1,9 +1,9 @@
 ---
-name: fritz:brain-query
+name: brain-query
 description: >
   Search and synthesize knowledge across all brain vaults. Use when the user
   asks to search the brain/knowledge base, find what they know about a topic,
-  recall a decision/pattern/lesson, or run /fritz:brain-query.
+  recall a decision/pattern/lesson, or run /brain-query.
 ---
 
 # Brain Query
@@ -16,7 +16,7 @@ Activate when the user asks to:
 - Search the brain/knowledge base
 - Find what they know about a topic
 - Recall a decision, pattern, or lesson
-- Run `/fritz:brain-query`
+- Run `/brain-query`
 
 ## Workflow
 
@@ -86,4 +86,4 @@ Use `vault://` URIs in citations so the user can navigate to the source.
 - Cite sources — never present knowledge without attribution
 - If nothing is found, say so clearly rather than hallucinating
 - Prefer compiled knowledge articles over raw captures (higher signal)
-- Suggest `/fritz:brain-compile` if relevant captures exist but haven't been compiled yet
+- Suggest `/brain-compile` if relevant captures exist but haven't been compiled yet

@@ -112,7 +112,7 @@ def test_no_hardcoded_home_path_in_setup_hyphenated_skills():
 
 
 def test_setup_hyphenated_skills_resolves_repo_from_file(monkeypatch, tmp_path):
-    """generate_hyphenated should resolve skills from the real repo via __file__
+    """generate_variants should resolve skills from the real repo via __file__
     when FRITZ_REPO_PATH is not set, even when the module is symlinked."""
     fake_brain_hooks = tmp_path / ".brain" / "hooks"
     fake_brain_hooks.mkdir(parents=True)
@@ -131,19 +131,19 @@ def test_setup_hyphenated_skills_resolves_repo_from_file(monkeypatch, tmp_path):
 
     skills_out = tmp_path / "agent-skills"
     skills_out.mkdir()
-    created = module.generate_hyphenated(None, skills_out, dry_run=True)
-    # Repo has at least one fritz:* skill, so dry-run output is non-empty.
-    # generate_hyphenated would sys.exit(1) if the source dir were unresolved.
-    assert created, "expected fritz:* skills resolved from the real repo"
+    created = module.generate_variants(skills_out, "pi", dry_run=True)
+    # Repo has plain source skills, so dry-run output is non-empty.
+    # generate_variants would sys.exit(1) if the source dir were unresolved.
+    assert created, "expected plain source skills resolved from the real repo"
 
 
 def test_setup_hyphenated_skills_env_override(monkeypatch, tmp_path):
-    """FRITZ_REPO_PATH override is honored by generate_hyphenated."""
+    """FRITZ_REPO_PATH override is honored by generate_variants (plain source)."""
     repo = tmp_path / "myrepo"
-    skills_src = repo / "skills" / "fritz:demo"
+    skills_src = repo / "skills" / "demo"
     skills_src.mkdir(parents=True)
     (skills_src / "SKILL.md").write_text(
-        "---\nname: fritz:demo\n---\nUse /fritz:update here.\n", encoding="utf-8"
+        "---\nname: demo\n---\nUse /demo here.\n", encoding="utf-8"
     )
     monkeypatch.setenv("FRITZ_REPO_PATH", str(repo))
 
@@ -155,10 +155,21 @@ def test_setup_hyphenated_skills_env_override(monkeypatch, tmp_path):
 
     skills_out = tmp_path / "agent-skills"
     skills_out.mkdir()
-    created = module.generate_hyphenated(None, skills_out, dry_run=False)
+
+    # pi variant: hyphen prefix.
+    created = module.generate_variants(skills_out, "pi", dry_run=False)
     assert len(created) == 1
     out_file = skills_out / "fritz-demo" / "SKILL.md"
     assert out_file.exists()
     content = out_file.read_text(encoding="utf-8")
     assert "name: fritz-demo" in content
-    assert "/fritz-update" in content
+    assert "/fritz-demo" in content
+
+    # claude variant: colon prefix.
+    created = module.generate_variants(skills_out, "claude", dry_run=False)
+    assert len(created) == 1
+    out_file = skills_out / "fritz:demo" / "SKILL.md"
+    assert out_file.exists()
+    content = out_file.read_text(encoding="utf-8")
+    assert "name: fritz:demo" in content
+    assert "/fritz:demo" in content
