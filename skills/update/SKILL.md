@@ -80,7 +80,13 @@ Each migration script:
 - Is idempotent (safe to run twice)
 - Prints a summary of what it did
 
-After running, append the migration number to `~/.brain/.migrations-run`.
+After running each pending migration, the runner must **ensure** that
+migration's number is recorded in `~/.brain/.migrations-run`. Do a line-exact
+membership check (so `002` does not match `0020`) and append the number on its
+own line **only if it is not already present**. Some migrations (e.g. 002) also
+self-record their own number; because the runner appends only when the number is
+absent, this is safe and never double-records. Migrations that do not self-record
+(e.g. 001) rely on the runner to record them.
 
 ### 5. Scan vaults for brain contract drift
 
