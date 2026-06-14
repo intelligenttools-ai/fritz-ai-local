@@ -74,5 +74,14 @@ class TranscriptAdapter:
         if ".pi/agent/sessions" in cwd or ".pi/agent/sessions" in transcript_path:
             return "pi"
 
+        # Claude Code stores transcripts under ~/.claude/projects/<proj>/*.jsonl.
+        # Claude's hook-input (SessionStart/Stop/PreCompact) carries no distinct
+        # event/env marker, so key off the transcript path. Checked last so the
+        # more specific markers above still win.
+        if os.environ.get("CLAUDE_SESSION_ID") or os.environ.get("CLAUDE_PLUGIN_ROOT"):
+            return "claude_code"
+        if ".claude/projects" in transcript_path or ".claude/projects" in cwd:
+            return "claude_code"
+
         # No known agent detected — caller must handle fallback explicitly.
         return "unknown"
