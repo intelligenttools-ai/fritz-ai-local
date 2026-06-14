@@ -231,10 +231,12 @@ To add a new runtime to the capture path:
 2. **Extend `detect()`** so `hook_input` is classified to your `agent_name`.
    Detection today keys off: `hook_event_name == "PreCompress"` → gemini;
    presence of `event_type` → hermes; `permission_mode` set with no
-   `hook_event_name` → codex; `GEMINI_SESSION_ID` / `CODEX_SESSION_ID` env vars;
-   and `.pi/agent/sessions` substring in `cwd`/`transcript_path` → pi. Unknown
-   input returns `"unknown"`, and the caller (`brain_capture.py`) falls back to a
-   minimal `CaptureEntry(agent="unknown")` so the hook never crashes.
+   `hook_event_name` → codex; `GEMINI_SESSION_ID` / `CODEX_SESSION_ID` /
+   `CLAUDE_SESSION_ID` / `CLAUDE_PLUGIN_ROOT` env vars; `.pi/agent/sessions`
+   substring in `cwd`/`transcript_path` → pi; and `.claude/projects` substring
+   in `transcript_path`/`cwd` → claude_code. Unknown input returns `"unknown"`,
+   and the caller (`brain_capture.py`) falls back to a minimal
+   `CaptureEntry(agent="unknown")` so the hook never crashes.
 3. **Register it** in `adapters/registry.py` (`ADAPTERS["<agent>"] = …`).
 
 A binding for a brand-new runtime is still conformant *without* a transcript
