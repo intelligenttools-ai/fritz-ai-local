@@ -19,7 +19,10 @@ each installed agent's skill directory, refreshes managed hook symlinks,
 runs pending migrations, scans vaults for brain-contract drift, and prints a
 report.
 
-If you prefer manual control:
+If you prefer manual control, run `git pull` in your clone. `~/.fritz-ai-local`
+is only the conventional location — Fritz resolves its repo root dynamically
+(via `FRITZ_REPO_PATH` or the symlinked hook location), so the clone can live
+anywhere. Substitute your actual clone path:
 
 ```
 git -C ~/.fritz-ai-local pull
