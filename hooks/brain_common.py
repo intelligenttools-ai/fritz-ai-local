@@ -160,6 +160,59 @@ def load_settings() -> dict:
     return registry.get("settings", {})
 
 
+# Sentinel distinguishing "key absent" from "key present with value None".
+_MISSING = object()
+
+
+def get_setting(
+    key: str,
+    default=None,
+    *,
+    fritz_local: dict | None = None,
+    cwd: str | None = None,
+):
+    """Resolve a single project-overridable configuration value.
+
+    This is the ONE generic resolution path for settings that may be
+    overridden per project. Precedence is:
+
+        1. project  -> ``.fritz-local.json`` (the ``fritz_local`` dict)
+        2. central   -> ``registry.yaml`` ``settings:`` block
+        3. default   -> the ``default`` argument
+
+    The project layer may be supplied directly via ``fritz_local`` or, when
+    that is ``None``, loaded by walking up from ``cwd`` for a
+    ``.fritz-local.json`` (via :func:`load_fritz_local`). If both are ``None``
+    the project layer is simply skipped.
+
+    "Present but null/empty" semantics: a layer is considered to *provide* a
+    value only when it contains ``key`` AND that value is not ``None``. A
+    layer that omits the key, or sets it explicitly to ``null``/``None``,
+    falls through to the next layer. This means a present ``.fritz-local.json``
+    that lacks ``key`` does not mask the central value or default — it simply
+    does not contribute, matching the historical behavior of the per-key
+    getters that delegate here. (The injection getters layer their own enum/
+    range validation on top of this lookup to preserve their stricter,
+    documented edge-case behavior; see ``get_context_injection_level`` and
+    ``get_max_injection_chars``.)
+    """
+    if fritz_local is None and cwd is not None:
+        fritz_local = load_fritz_local(cwd)
+
+    if isinstance(fritz_local, dict):
+        value = fritz_local.get(key, _MISSING)
+        if value is not _MISSING and value is not None:
+            return value
+
+    central = load_settings()
+    if isinstance(central, dict):
+        value = central.get(key, _MISSING)
+        if value is not _MISSING and value is not None:
+            return value
+
+    return default
+
+
 def get_local_brain_service_config() -> dict:
     """Return optional Local Brain service config from registry settings."""
 
@@ -642,29 +695,33 @@ def get_context_injection_level(fritz_local: dict | None) -> str:
 
     If .fritz-local.json exists but has no context_injection → "off"
     If no .fritz-local.json → "off" (today's behavior)
+
+    This delegates the value lookup to :func:`get_setting` but keeps a stricter
+    edge-case rule: when a ``.fritz-local.json`` IS present, its (possibly
+    invalid/absent) value is authoritative and never falls through to the
+    central layer — a present-but-uninjected project is "off". Only when no
+    project file is present do we consult the central ``settings:`` value.
     """
+    valid = ("off", "light", "full")
     if fritz_local is not None:
+        # Project file present: its value is authoritative, no central fallthrough.
         level = fritz_local.get("context_injection")
-        if level in ("off", "light", "full"):
-            return level
-        # .fritz-local.json exists but no context_injection → off
-        return "off"
+        return level if level in valid else "off"
 
-    # No .fritz-local.json: check global settings
-    settings = load_settings()
-    level = settings.get("context_injection")
-    if level in ("off", "light", "full"):
-        return level
-
-    return "off"
+    # No .fritz-local.json: resolve through the shared path (central → default).
+    level = get_setting("context_injection", "off")
+    return level if level in valid else "off"
 
 
 def get_max_injection_chars(fritz_local: dict | None) -> int:
-    """Get max injection chars. Project overrides global."""
-    if fritz_local and "max_injection_chars" in fritz_local:
-        return int(fritz_local["max_injection_chars"])
-    settings = load_settings()
-    return int(settings.get("max_injection_chars", 8000))
+    """Get max injection chars. Project overrides global.
+
+    Resolves through the shared :func:`get_setting` path
+    (project ``.fritz-local.json`` > central ``settings:`` > default 8000),
+    then coerces the resolved value to ``int`` to preserve the historical
+    return type.
+    """
+    return int(get_setting("max_injection_chars", 8000, fritz_local=fritz_local))
 
 
 def get_fritz_version() -> str | None:
