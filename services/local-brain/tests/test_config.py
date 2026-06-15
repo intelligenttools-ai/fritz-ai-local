@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from fritz_local_brain.config import Settings
 
 
@@ -29,3 +31,34 @@ def test_default_model_endpoints_use_simple_local_openai_compatible_path(tmp_pat
     assert settings.embedding_model == "nomic-embed-text:latest"
     assert settings.embedding_refresh_after_compile is True
     assert settings.embedding_refresh_debounce_seconds == 300.0
+
+
+# ---------------------------------------------------------------------------
+# WI12: merge policy + mirror scheduler config
+# ---------------------------------------------------------------------------
+
+
+def test_merge_policy_defaults_to_brain_first(tmp_path) -> None:
+    settings = Settings(_env_file=None, LOCAL_BRAIN_HOME=tmp_path)
+    assert settings.merge_policy == "brain-first"
+
+
+def test_merge_policy_accepts_peer_ranked_and_normalizes(tmp_path) -> None:
+    settings = Settings(_env_file=None, LOCAL_BRAIN_HOME=tmp_path, MERGE_POLICY="  Peer-Ranked  ")
+    assert settings.merge_policy == "peer-ranked"
+
+
+def test_merge_policy_empty_falls_back_to_brain_first(tmp_path) -> None:
+    settings = Settings(_env_file=None, LOCAL_BRAIN_HOME=tmp_path, MERGE_POLICY="")
+    assert settings.merge_policy == "brain-first"
+
+
+def test_merge_policy_invalid_rejected(tmp_path) -> None:
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, LOCAL_BRAIN_HOME=tmp_path, MERGE_POLICY="whatever")
+
+
+def test_mirror_scheduler_defaults(tmp_path) -> None:
+    settings = Settings(_env_file=None, LOCAL_BRAIN_HOME=tmp_path)
+    assert settings.mirror_enabled is False
+    assert settings.mirror_interval_minutes == 60

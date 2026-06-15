@@ -65,6 +65,13 @@ class Settings(BaseSettings):
     reconciliation_autonomy: str = Field(default="apply", validation_alias=AliasChoices("LOCAL_BRAIN_RECONCILIATION_AUTONOMY", "RECONCILIATION_AUTONOMY"))
     bulk_supersession_threshold: int = Field(default=5, ge=1, validation_alias=AliasChoices("LOCAL_BRAIN_BULK_SUPERSESSION_THRESHOLD", "BULK_SUPERSESSION_THRESHOLD"))
 
+    # WI12: mirror agent + retrieval-synthesis merge policy.
+    # brain-first is the epic-confirmed default (epic §10): brain knowledge is
+    # authoritative; external mirror matches only fill remaining gaps.
+    merge_policy: str = Field(default="brain-first", validation_alias=AliasChoices("LOCAL_BRAIN_MERGE_POLICY", "MERGE_POLICY"))
+    mirror_enabled: bool = Field(default=False, validation_alias=AliasChoices("LOCAL_BRAIN_MIRROR_ENABLED", "MIRROR_ENABLED"))
+    mirror_interval_minutes: int = Field(default=60, ge=1, validation_alias=AliasChoices("LOCAL_BRAIN_MIRROR_INTERVAL_MINUTES", "MIRROR_INTERVAL_MINUTES"))
+
     @field_validator("brain_store_path", mode="before")
     @classmethod
     def empty_brain_store_path_is_unset(cls, value: object) -> object:
@@ -91,6 +98,18 @@ class Settings(BaseSettings):
             return "apply"
         if normalized not in {"apply", "propose"}:
             raise ValueError(f"reconciliation_autonomy must be 'apply' or 'propose', got: {value!r}")
+        return normalized
+
+    @field_validator("merge_policy", mode="before")
+    @classmethod
+    def validate_merge_policy(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return "brain-first"
+        normalized = value.strip().lower()
+        if not normalized:
+            return "brain-first"
+        if normalized not in {"brain-first", "peer-ranked"}:
+            raise ValueError(f"merge_policy must be 'brain-first' or 'peer-ranked', got: {value!r}")
         return normalized
 
     def resolve_brain_store_path(self) -> Path:

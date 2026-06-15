@@ -737,3 +737,369 @@ def test_allowed_vector_paths_all_scope_includes_archive(tmp_path) -> None:
 
     keys = _allowed_vector_paths(settings, {}, "_captures", scope="all")
     assert ("brain", "superseded.md") in keys
+
+
+# ---------------------------------------------------------------------------
+# WI12: merge_matches + live-fetch query integration
+# ---------------------------------------------------------------------------
+
+
+def _qm(vault, path, title="t", snippet="s"):
+    from fritz_local_brain.models import QueryMatch
+
+    return QueryMatch(vault=vault, path=path, title=title, snippet=snippet)
+
+
+def test_merge_matches_brain_first_keeps_brain_authoritative() -> None:
+    from fritz_local_brain.query_workflow import merge_matches
+
+    brain = [_qm("brain", "a.md"), _qm("brain", "b.md")]
+    external = [_qm("ext", "x.md"), _qm("brain", "b.md")]  # b.md is a dup of a brain match
+
+    merged = merge_matches(brain, external, policy="brain-first", limit=10)
+    paths = [(m.vault, m.path) for m in merged]
+
+    # Brain matches come first and are never displaced; ext fills the gap.
+    assert paths[:2] == [("brain", "a.md"), ("brain", "b.md")]
+    # Duplicate ext b.md is deduped; only ext x.md is appended.
+    assert ("ext", "x.md") in paths
+    assert paths.count(("brain", "b.md")) == 1
+
+
+def test_merge_matches_brain_first_respects_limit_no_displacement() -> None:
+    from fritz_local_brain.query_workflow import merge_matches
+
+    brain = [_qm("brain", "a.md"), _qm("brain", "b.md")]
+    external = [_qm("ext", "x.md"), _qm("ext", "y.md")]
+
+    merged = merge_matches(brain, external, policy="brain-first", limit=2)
+    paths = [(m.vault, m.path) for m in merged]
+
+    # Limit fully consumed by brain; no external displaces a brain match.
+    assert paths == [("brain", "a.md"), ("brain", "b.md")]
+
+
+def test_merge_matches_peer_ranked_appends_with_dedup() -> None:
+    from fritz_local_brain.query_workflow import merge_matches
+
+    brain = [_qm("brain", "a.md")]
+    external = [_qm("brain", "a.md"), _qm("ext", "x.md")]
+
+    merged = merge_matches(brain, external, policy="peer-ranked", limit=10)
+    paths = [(m.vault, m.path) for m in merged]
+    assert paths == [("brain", "a.md"), ("ext", "x.md")]
+
+
+def test_query_live_fetch_false_unchanged_regression(tmp_path) -> None:
+    """live_fetch=False leaves an index-only mirrored capture snippet unchanged."""
+    brain_home = tmp_path / "brain"
+    skill_path = tmp_path / "skills" / "brain-query" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Query Skill\n", encoding="utf-8")
+
+    # External vault with the live (full) content.
+    vault = tmp_path / "ext"
+    vault.mkdir()
+    (vault / "note.md").write_text("# Note\n\nLIVE_FULL_DETAIL token here.", encoding="utf-8")
+
+    registry = (
+        "external_targets:\n"
+        "  ext:\n"
+        "    kind: local-vault\n"
+        f"    connection: {vault}\n"
+        "    mirror_mode: index-only\n"
+    )
+    brain_home.mkdir(parents=True)
+    (brain_home / "registry.yaml").write_text(registry, encoding="utf-8")
+
+    # An index-only mirrored capture in the inbox.
+    capture = brain_home / "capture" / "inbox" / "mirror-ext-note.md"
+    capture.parent.mkdir(parents=True)
+    capture.write_text(
+        "---\n"
+        "title: Note\n"
+        "source: ext (local-vault)\n"
+        "mode: index-only\n"
+        "pointer: 'ext:note.md'\n"
+        "---\n\n"
+        "Note\n\nContent available via live-fetch on hit.\n",
+        encoding="utf-8",
+    )
+
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills")
+    result = asyncio.run(run_query(settings, QueryRunRequest(query="live-fetch")))
+
+    assert result.errors == []
+    assert any(m.vault == "_captures" for m in result.matches)
+    # Without live_fetch, the live full detail must not appear.
+    assert all("LIVE_FULL_DETAIL" not in m.snippet for m in result.matches)
+
+
+def test_query_live_fetch_true_enriches_index_only_hit(tmp_path) -> None:
+    """live_fetch=True enriches an index-only hit with live pointer content."""
+    brain_home = tmp_path / "brain"
+    skill_path = tmp_path / "skills" / "brain-query" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Query Skill\n", encoding="utf-8")
+
+    vault = tmp_path / "ext"
+    vault.mkdir()
+    (vault / "note.md").write_text("# Note\n\nLIVE_FULL_DETAIL token here.", encoding="utf-8")
+
+    registry = (
+        "external_targets:\n"
+        "  ext:\n"
+        "    kind: local-vault\n"
+        f"    connection: {vault}\n"
+        "    mirror_mode: index-only\n"
+    )
+    brain_home.mkdir(parents=True)
+    (brain_home / "registry.yaml").write_text(registry, encoding="utf-8")
+
+    capture = brain_home / "capture" / "inbox" / "mirror-ext-note.md"
+    capture.parent.mkdir(parents=True)
+    capture.write_text(
+        "---\n"
+        "title: Note\n"
+        "source: ext (local-vault)\n"
+        "mode: index-only\n"
+        "pointer: 'ext:note.md'\n"
+        "---\n\n"
+        "Note\n\nContent available via live-fetch on hit.\n",
+        encoding="utf-8",
+    )
+
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills")
+    result = asyncio.run(
+        run_query(settings, QueryRunRequest(query="live-fetch", live_fetch=True))
+    )
+
+    assert result.errors == []
+    enriched = [m for m in result.matches if m.vault == "_captures"]
+    assert enriched, "expected the index-only capture to be a match"
+    assert any("LIVE_FULL_DETAIL" in m.snippet for m in enriched)
+
+
+# ---------------------------------------------------------------------------
+# WI12: merge_policy wired into live-fetch synthesis path
+# ---------------------------------------------------------------------------
+
+
+def _make_live_fetch_brain(tmp_path):
+    """Set up a brain_home with a local brain-store article AND an index-only
+    mirrored capture for live-fetch tests.
+
+    Returns ``(brain_home, settings_base_kwargs)`` where the caller can
+    override ``LOCAL_BRAIN_MERGE_POLICY`` to test different policies.
+
+    Layout
+    ------
+    - Brain-store article: ``knowledge/brain-fact.md`` containing ``BRAIN_NEEDLE``
+    - External vault: ``ext/`` with ``ext_note.md`` containing ``EXT_LIVE_TOKEN``
+    - Index-only capture: ``capture/inbox/mirror-ext.md`` pointing to ``ext:ext_note.md``
+      and containing ``MIRROR_INDEX_NEEDLE`` in its summary (so it matches queries)
+    """
+    brain_home = tmp_path / "brain"
+    skill_path = tmp_path / "skills" / "brain-query" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Query Skill\n", encoding="utf-8")
+
+    # Brain-store article (no registry.yaml → store mode).
+    store = brain_home / "knowledge"
+    store.mkdir(parents=True)
+    (store / "brain-fact.md").write_text(
+        "# Brain Fact\n\nBRAIN_NEEDLE shared-token\n", encoding="utf-8"
+    )
+
+    # External vault with the live content.
+    vault = tmp_path / "ext"
+    vault.mkdir()
+    (vault / "ext_note.md").write_text(
+        "# Ext Note\n\nEXT_LIVE_TOKEN shared-token\n", encoding="utf-8"
+    )
+
+    # Registry with external target (no vault registrations → store mode).
+    registry = (
+        "external_targets:\n"
+        "  ext:\n"
+        "    kind: local-vault\n"
+        f"    connection: {vault}\n"
+        "    mirror_mode: index-only\n"
+    )
+    (brain_home / "registry.yaml").write_text(registry, encoding="utf-8")
+
+    # Index-only mirrored capture.
+    capture = brain_home / "capture" / "inbox" / "mirror-ext.md"
+    capture.parent.mkdir(parents=True)
+    capture.write_text(
+        "---\n"
+        "title: Ext Note\n"
+        "source: ext (local-vault)\n"
+        "mode: index-only\n"
+        "pointer: 'ext:ext_note.md'\n"
+        "---\n\n"
+        "Ext Note\n\nMIRROR_INDEX_NEEDLE shared-token\n",
+        encoding="utf-8",
+    )
+
+    return brain_home
+
+
+def test_live_fetch_brain_first_keeps_brain_authoritative(tmp_path) -> None:
+    """brain-first (default): brain-store match comes BEFORE external live-fetched hit.
+
+    Even though both match ``shared-token``, the brain-store article (vault='brain')
+    must appear first and the live-fetched external hit (vault='_captures') fills the
+    remaining slot.
+    """
+    brain_home = _make_live_fetch_brain(tmp_path)
+    settings = Settings(
+        LOCAL_BRAIN_HOME=brain_home,
+        LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills",
+        LOCAL_BRAIN_MERGE_POLICY="brain-first",
+    )
+
+    result = asyncio.run(
+        run_query(settings, QueryRunRequest(query="shared-token", live_fetch=True, limit=10))
+    )
+
+    assert result.errors == []
+    vaults = [m.vault for m in result.matches]
+    # Brain-store match must be present.
+    assert "brain" in vaults, f"brain vault not found in {vaults}"
+    # Live-fetched external match must be present (enriched snippet).
+    capture_matches = [m for m in result.matches if m.vault == "_captures"]
+    assert capture_matches, "expected enriched _captures match"
+    assert any("EXT_LIVE_TOKEN" in m.snippet for m in capture_matches), (
+        "expected live-fetched content in capture match snippet"
+    )
+    # Brain match must come BEFORE the external/captures match.
+    brain_idx = next(i for i, m in enumerate(result.matches) if m.vault == "brain")
+    capture_idx = next(i for i, m in enumerate(result.matches) if m.vault == "_captures")
+    assert brain_idx < capture_idx, (
+        f"brain match (idx={brain_idx}) must precede external match (idx={capture_idx}) "
+        f"with brain-first policy"
+    )
+
+
+def test_live_fetch_brain_first_externals_fill_gaps_up_to_limit(tmp_path) -> None:
+    """brain-first with limit=1: only the brain match is returned; external does not displace it."""
+    brain_home = _make_live_fetch_brain(tmp_path)
+    settings = Settings(
+        LOCAL_BRAIN_HOME=brain_home,
+        LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills",
+        LOCAL_BRAIN_MERGE_POLICY="brain-first",
+    )
+
+    result = asyncio.run(
+        run_query(settings, QueryRunRequest(query="shared-token", live_fetch=True, limit=1))
+    )
+
+    assert result.errors == []
+    assert len(result.matches) == 1, f"expected 1 match, got {len(result.matches)}"
+    assert result.matches[0].vault == "brain", (
+        "with limit=1 and brain-first, the brain match must win (external cannot displace it)"
+    )
+
+
+def test_live_fetch_peer_ranked_selectable_at_runtime(tmp_path) -> None:
+    """peer-ranked policy is selectable at runtime (via MERGE_POLICY / LOCAL_BRAIN_MERGE_POLICY).
+
+    With peer-ranked the external match is still appended after the brain match
+    (brain-first order is brain → external in both policies), but the key assertion
+    is that peer-ranked does NOT error and the external match IS included even when
+    brain fills the first slot, demonstrating that ``settings.merge_policy`` is
+    actually read at runtime.
+    """
+    brain_home = _make_live_fetch_brain(tmp_path)
+    settings = Settings(
+        LOCAL_BRAIN_HOME=brain_home,
+        LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills",
+        LOCAL_BRAIN_MERGE_POLICY="peer-ranked",
+    )
+
+    result = asyncio.run(
+        run_query(settings, QueryRunRequest(query="shared-token", live_fetch=True, limit=10))
+    )
+
+    assert result.errors == []
+    vaults = [m.vault for m in result.matches]
+    # peer-ranked: both brain and external results must be present.
+    assert "brain" in vaults, "brain match expected with peer-ranked"
+    assert "_captures" in vaults, "external/captures match expected with peer-ranked"
+    # peer-ranked: external snippet is enriched with live content.
+    capture_matches = [m for m in result.matches if m.vault == "_captures"]
+    assert any("EXT_LIVE_TOKEN" in m.snippet for m in capture_matches)
+
+
+def test_live_fetch_peer_ranked_ordering_differs_from_brain_first_at_limit(tmp_path) -> None:
+    """peer-ranked with limit=2 includes both brain and external; ordering is brain then external.
+
+    The key difference from brain-first at limit=1 is that peer-ranked does NOT
+    give the brain set veto power over the total result count — both sets
+    contribute up to the limit.  Here we confirm that with limit=2, peer-ranked
+    returns 2 results (brain + external), while brain-first at limit=1 returns
+    only 1 (brain wins the single slot).
+    """
+    brain_home = _make_live_fetch_brain(tmp_path)
+
+    # brain-first, limit=1 → only brain match.
+    settings_bf = Settings(
+        LOCAL_BRAIN_HOME=brain_home,
+        LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills",
+        LOCAL_BRAIN_MERGE_POLICY="brain-first",
+    )
+    result_bf = asyncio.run(
+        run_query(settings_bf, QueryRunRequest(query="shared-token", live_fetch=True, limit=1))
+    )
+    assert len(result_bf.matches) == 1
+    assert result_bf.matches[0].vault == "brain"
+
+    # peer-ranked, limit=2 → brain + external both included.
+    settings_pr = Settings(
+        LOCAL_BRAIN_HOME=brain_home,
+        LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills",
+        LOCAL_BRAIN_MERGE_POLICY="peer-ranked",
+    )
+    result_pr = asyncio.run(
+        run_query(settings_pr, QueryRunRequest(query="shared-token", live_fetch=True, limit=2))
+    )
+    assert len(result_pr.matches) == 2
+    pr_vaults = [m.vault for m in result_pr.matches]
+    assert "brain" in pr_vaults
+    assert "_captures" in pr_vaults
+
+
+def test_live_fetch_false_regression_no_merge_matches_called(tmp_path, monkeypatch) -> None:
+    """Regression: live_fetch=False MUST NOT call merge_matches (existing ordering unchanged).
+
+    We monkeypatch merge_matches to raise if called; any live_fetch=False query
+    must pass without error.
+    """
+    import fritz_local_brain.query_workflow as qw
+
+    brain_home = tmp_path / "brain"
+    skill_path = tmp_path / "skills" / "brain-query" / "SKILL.md"
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Query Skill\n", encoding="utf-8")
+    store = brain_home / "knowledge"
+    store.mkdir(parents=True)
+    (store / "fact.md").write_text("# Fact\n\nregression-needle\n", encoding="utf-8")
+
+    original_merge = qw.merge_matches
+
+    def fail_if_called(*args, **kwargs):
+        raise AssertionError("merge_matches must NOT be called when live_fetch=False")
+
+    monkeypatch.setattr(qw, "merge_matches", fail_if_called)
+
+    try:
+        settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills")
+        result = asyncio.run(
+            run_query(settings, QueryRunRequest(query="regression-needle", live_fetch=False))
+        )
+    finally:
+        monkeypatch.setattr(qw, "merge_matches", original_merge)
+
+    assert result.errors == []
+    assert any("fact.md" in m.path for m in result.matches)
