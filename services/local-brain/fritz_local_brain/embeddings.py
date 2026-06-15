@@ -17,6 +17,7 @@ from openai import AsyncOpenAI
 
 from .captures import list_queryable_captures, read_capture
 from .config import Settings
+from .knowledge import store_root
 from .logs import append_global_log
 from .manifests import load_manifest, resolve_manifest_path
 from .models import (
@@ -30,8 +31,10 @@ from .models import (
 )
 from .operation_locks import OperationAlreadyRunning, embedding_lock
 from .paths import PathMapper
-from .registry import load_registry, registered_vault_paths
+from .registry import RegistryError, load_registry, registered_vault_paths
 from .security import is_excluded
+
+_BRAIN_VAULT_NAME = "brain"
 
 
 def metadata_path(settings: Settings) -> Path:
@@ -417,24 +420,50 @@ async def _embed_text(settings: Settings, text: str) -> list[float]:
 def _collect_embedding_documents(settings: Settings) -> list[dict[str, Any]]:
     documents: list[dict[str, Any]] = []
     mapper = PathMapper(settings.path_map)
-    registry = load_registry(settings.brain_home)
-    vault_paths = registered_vault_paths(registry, mapper)
-    for name, vault_path in vault_paths.items():
-        manifest = load_manifest(vault_path)
-        if manifest is None:
-            continue
-        knowledge_root = resolve_manifest_path(vault_path, manifest, "knowledge")
-        if knowledge_root is None or not knowledge_root.exists():
-            continue
-        for path in sorted(knowledge_root.glob("**/*.md")):
-            if not _is_regular_knowledge_file(path, knowledge_root) or is_excluded(path, vault_path, manifest):
+    try:
+        registry = load_registry(settings.brain_home)
+        vault_paths = registered_vault_paths(registry, mapper)
+    except RegistryError:
+        vault_paths = {}
+
+    # Determine store mode: no usable vault manifests → brain store mode.
+    manifests = {
+        name: manifest
+        for name, path in vault_paths.items()
+        if (manifest := load_manifest(path)) is not None
+    }
+    if not manifests:
+        # Store mode: index brain-store articles.
+        brain_store_root = store_root(settings)
+        if brain_store_root.exists():
+            for path in sorted(brain_store_root.glob("**/*.md")):
+                if path.name == "index.md":
+                    continue
+                if not _is_regular_knowledge_file(path, brain_store_root):
+                    continue
+                try:
+                    stat_result = path.stat()
+                    text = path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                documents.append(_document(_BRAIN_VAULT_NAME, str(path.relative_to(brain_store_root)), text, stat_result))
+    else:
+        for name, vault_path in vault_paths.items():
+            manifest = manifests.get(name)
+            if manifest is None:
                 continue
-            try:
-                stat_result = path.stat()
-                text = path.read_text(encoding="utf-8", errors="replace")
-            except OSError:
+            knowledge_root = resolve_manifest_path(vault_path, manifest, "knowledge")
+            if knowledge_root is None or not knowledge_root.exists():
                 continue
-            documents.append(_document(name, str(path.relative_to(knowledge_root)), text, stat_result))
+            for path in sorted(knowledge_root.glob("**/*.md")):
+                if not _is_regular_knowledge_file(path, knowledge_root) or is_excluded(path, vault_path, manifest):
+                    continue
+                try:
+                    stat_result = path.stat()
+                    text = path.read_text(encoding="utf-8", errors="replace")
+                except OSError:
+                    continue
+                documents.append(_document(name, str(path.relative_to(knowledge_root)), text, stat_result))
 
     for path in list_queryable_captures(settings.brain_home).paths:
         try:

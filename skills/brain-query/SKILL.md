@@ -30,19 +30,25 @@ If the service is disabled or not reachable, continue with the manual file-searc
 
 If service mode is disabled and `settings.local_brain_service.suggest_setup` is not `false`, you may briefly offer to configure the optional Docker stack when queries are repeated, broad, or would benefit from service-backed query/embedding/MCP support. Do not block the query if the human declines.
 
-### 1. Load the registry
+### 1. Load the registry (optional)
 
-Read `~/.brain/registry.yaml` to get all vaults. For each vault with a `.brain/manifest.yaml`, resolve its `index` and `knowledge` paths.
+Try to read `~/.brain/registry.yaml`. If the file is absent or empty, operate in **store mode** (registry-free): search the brain-owned knowledge store at `~/.brain/knowledge` (layout: `<scope>/<section>/<slug>.md` where scope is `common` or a project slug and section is one of `decisions`, `lessons`, `runbooks`, `context`). `index.md` files at each level are Maps of Content (MOCs) that summarise the scope; read them for orientation but do not return them as matches.
+
+When a registry IS present, resolve each vault with a `.brain/manifest.yaml` and use its `index` and `knowledge` paths as described below.
+
+Default scope for store-mode search is **active**: articles with no `status` frontmatter, or with `status: active` or `status: corroborated`, are included. Articles with `status: superseded`, `status: deprecated`, `status: historical`, or any other value are excluded from the default scope.
 
 ### 2. Manual fallback search strategy (index-first, no vector DB)
 
 Following Karpathy's insight: "I thought I had to reach for fancy RAG, but the LLM has been pretty good about auto-maintaining index files."
 
-**Step 1 — Index scan**: Read each vault's index file. Use the index to identify which knowledge articles are likely relevant to the query.
+**Step 1 — Index scan (registry mode)**: Read each vault's index file. Use the index to identify which knowledge articles are likely relevant to the query.
 
-**Step 2 — Article read**: Read the identified articles. Follow `related` links and `vault://` URIs to find connected knowledge across vaults.
+**Step 1 — Store scan (store mode)**: Read `~/.brain/knowledge/index.md` (global MOC) and the relevant `<scope>/index.md` files to identify likely articles.
 
-**Step 3 — Capture search** (if knowledge articles insufficient): Search `~/.brain/capture/daily/` for raw captures that may contain relevant information not yet compiled into knowledge.
+**Step 2 — Article read**: Read the identified articles. Follow `related` links and `vault://` URIs (registry mode) or relative paths (store mode) to find connected knowledge.
+
+**Step 3 — Capture search** (always, regardless of mode): Search `~/.brain/capture/inbox/` and `~/.brain/capture/daily/` for raw captures that may contain relevant information not yet compiled into knowledge.
 
 ### 3. Synthesize and cite
 

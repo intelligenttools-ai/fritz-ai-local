@@ -370,3 +370,106 @@ def test_query_workflow_rejects_reserved_capture_vault_name(tmp_path) -> None:
     )
 
     assert result.errors == ["Reserved vault name is not allowed: _captures"]
+
+
+def test_query_workflow_searches_brain_store_without_registry(tmp_path) -> None:
+    """Store-only brain (no registry.yaml) returns brain-store matches (vault 'brain') and capture matches."""
+    brain_home = tmp_path / "brain"
+    skill_path = tmp_path / "skills" / "brain-query" / "SKILL.md"
+    # Brain store article.
+    store = brain_home / "knowledge"
+    article = store / "common" / "context" / "runner-vm.md"
+    article.parent.mkdir(parents=True)
+    article.write_text("# Runner VM\n\nForgejo runner is on 192.168.1.51.\n", encoding="utf-8")
+    # Capture file.
+    capture = brain_home / "capture" / "inbox" / "note.md"
+    capture.parent.mkdir(parents=True)
+    capture.write_text("# Note\n\n192.168.1.51 is also reachable via ssh.\n", encoding="utf-8")
+    # Skill file.
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Query Skill\n", encoding="utf-8")
+    # NO registry.yaml — pure store mode.
+
+    result = asyncio.run(
+        run_query(
+            Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills"),
+            QueryRunRequest(query="192.168.1.51"),
+        )
+    )
+
+    assert result.errors == []
+    vaults = [m.vault for m in result.matches]
+    assert "brain" in vaults
+    assert "_captures" in vaults
+    brain_match = next(m for m in result.matches if m.vault == "brain")
+    assert brain_match.path == "common/context/runner-vm.md"
+    assert "192.168.1.51" in brain_match.snippet
+
+
+def test_query_workflow_store_mode_excludes_superseded_articles_by_default(tmp_path) -> None:
+    """Active scope (default) excludes articles with status: superseded; 'all' includes them."""
+    brain_home = tmp_path / "brain"
+    skill_path = tmp_path / "skills" / "brain-query" / "SKILL.md"
+    store = brain_home / "knowledge"
+    # Active article (no status).
+    active_article = store / "common" / "context" / "active-fact.md"
+    active_article.parent.mkdir(parents=True)
+    active_article.write_text("# Active Fact\n\nThis is searchable content.\n", encoding="utf-8")
+    # Superseded article.
+    superseded_article = store / "common" / "context" / "old-fact.md"
+    superseded_article.write_text(
+        "---\nstatus: superseded\n---\n\n# Old Fact\n\nThis is searchable content.\n", encoding="utf-8"
+    )
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Query Skill\n", encoding="utf-8")
+    # NO registry.yaml.
+
+    result_active = asyncio.run(
+        run_query(
+            Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills"),
+            QueryRunRequest(query="searchable content", scope="active"),
+        )
+    )
+
+    result_all = asyncio.run(
+        run_query(
+            Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills"),
+            QueryRunRequest(query="searchable content", scope="all"),
+        )
+    )
+
+    active_paths = [m.path for m in result_active.matches if m.vault == "brain"]
+    all_paths = [m.path for m in result_all.matches if m.vault == "brain"]
+    assert "common/context/active-fact.md" in active_paths
+    assert "common/context/old-fact.md" not in active_paths
+    assert "common/context/active-fact.md" in all_paths
+    assert "common/context/old-fact.md" in all_paths
+
+
+def test_query_workflow_store_mode_includes_corroborated_articles_in_active_scope(tmp_path) -> None:
+    """Active scope includes articles with status: active or status: corroborated."""
+    brain_home = tmp_path / "brain"
+    skill_path = tmp_path / "skills" / "brain-query" / "SKILL.md"
+    store = brain_home / "knowledge"
+    corroborated_article = store / "common" / "context" / "corroborated-fact.md"
+    corroborated_article.parent.mkdir(parents=True)
+    corroborated_article.write_text(
+        "---\nstatus: corroborated\n---\n\n# Corroborated Fact\n\nThis is confirmed content.\n", encoding="utf-8"
+    )
+    deprecated_article = store / "common" / "context" / "old-deprecated.md"
+    deprecated_article.write_text(
+        "---\nstatus: deprecated\n---\n\n# Deprecated Fact\n\nThis is confirmed content.\n", encoding="utf-8"
+    )
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Query Skill\n", encoding="utf-8")
+
+    result = asyncio.run(
+        run_query(
+            Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills"),
+            QueryRunRequest(query="confirmed content", scope="active"),
+        )
+    )
+
+    brain_paths = [m.path for m in result.matches if m.vault == "brain"]
+    assert "common/context/corroborated-fact.md" in brain_paths
+    assert "common/context/old-deprecated.md" not in brain_paths
