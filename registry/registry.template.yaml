@@ -39,6 +39,33 @@ settings:
     # SCHEDULER_ENABLED=false, SCHEDULER_DRY_RUN=true, AUTOSTART_INSTALLED=false.
     suggest_setup: true
 
+# External targets (service mode only; additive — the brain store works without this).
+# The registry now includes "external targets": other vaults, MCPs, shared drives,
+# or off-site systems that the optional Docker service mirrors INTO the brain store.
+# Mirror execution is performed by the Docker mirror agent; absence is not an error.
+# Supported kinds: local-vault | mcp | drive | offsite
+# Supported mirror_mode values: index-only | full-summary  (default: index-only)
+#
+# external_targets:
+#   team-vault:
+#     kind: local-vault          # local-vault | mcp | drive | offsite
+#     connection: ~/Notes/TeamVault
+#     mirror_mode: full-summary  # index-only | full-summary
+#   team-mcp:
+#     kind: mcp
+#     connection: mcp://obsidian-bridge
+#     auth: OBSIDIAN_MCP_TOKEN   # env var name (resolved by the service, not here)
+#     mirror_mode: index-only
+#   shared-drive:
+#     kind: drive
+#     connection: /mnt/shared/knowledge
+#     mirror_mode: index-only
+#   offsite-affine:
+#     kind: offsite
+#     connection: https://affine.example.com/workspace/<id>
+#     auth: AFFINE_TOKEN
+#     mirror_mode: full-summary
+
 vaults:
   my-vault:
     path: ~/Notes/MyVault
