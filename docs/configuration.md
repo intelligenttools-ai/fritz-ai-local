@@ -75,6 +75,56 @@ settings:
 > resolved by its own helper (`get_local_brain_service_config`) and is **not**
 > routed through `get_setting`.
 
+## External targets (`external_targets:` in `registry.yaml`)
+
+The `external_targets:` block is **optional and service-mode only**. It
+describes off-brain systems that the optional Docker mirror agent can pull
+data from. The brain core (compile, query, captures) functions fully when
+this key is absent.
+
+### Schema
+
+Each entry under `external_targets:` is keyed by a short name and may carry:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `kind` | enum | required | `local-vault` \| `mcp` \| `drive` \| `offsite` |
+| `connection` | string | `null` | Path, URL, URI, or MCP server reference |
+| `auth` | any | `null` | Token value, env-var name, or credentials ref (opaque; resolved by the service) |
+| `mirror_mode` | enum | `index-only` | `index-only` — title/path index only; `full-summary` — full-text summary mirrored in |
+
+Unknown per-kind extra fields are allowed (passed through to the mirror agent
+without validation).
+
+### Example
+
+```yaml
+external_targets:
+  team-vault:
+    kind: local-vault
+    connection: ~/Notes/TeamVault
+    mirror_mode: full-summary
+  team-mcp:
+    kind: mcp
+    connection: mcp://obsidian-bridge
+    auth: OBSIDIAN_MCP_TOKEN
+    mirror_mode: index-only
+  shared-drive:
+    kind: drive
+    connection: /mnt/shared/knowledge
+  offsite-affine:
+    kind: offsite
+    connection: https://affine.example.com/workspace/<id>
+    auth: AFFINE_TOKEN
+    mirror_mode: full-summary
+```
+
+> **Note:** `external_targets` is loaded and validated by
+> `load_external_targets()` in `registry.py`. An invalid `kind` or
+> `mirror_mode` raises a `RegistryError` at load time. Mirror execution
+> (fetching/summarising) is performed by the Docker mirror agent and is out
+> of scope here.
+
 ## Per-project override (`.fritz-local.json`)
 
 A `.fritz-local.json` file placed in (or above) a project's working directory

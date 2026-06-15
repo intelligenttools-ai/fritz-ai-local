@@ -69,14 +69,44 @@ Each vault is registered in `~/.brain/registry.yaml` with:
 
 ## Registry — `~/.brain/registry.yaml`
 
-The single source of truth for which vaults exist on this machine. It also
-holds global settings (`context_injection`, `max_injection_chars`,
-`update_check`, `local_brain_service`).
+The registry (`registry.yaml`) holds global settings (`context_injection`,
+`max_injection_chars`, `update_check`, `local_brain_service`) and optionally
+describes **external targets**.
 
 Template: [`../registry/registry.template.yaml`](../registry/registry.template.yaml).
 
 A vault exists only if it is listed in the registry. Adding a new vault
 means: add an entry here, then run `/fritz:brain-setup` in that vault.
+
+### Brain core works without the registry
+
+The brain store, index, and knowledge lifecycle (compile, query, captures,
+lint) all operate fully when `registry.yaml` is absent. The registry is
+**optional and additive** — its absence is never an error for core
+workflows. Switching between local mode and the optional Docker service mode
+never restructures or migrates the brain store.
+
+### External targets
+
+The registry now also carries an optional `external_targets:` block that
+lists off-brain systems the optional Docker mirror agent can pull data FROM:
+
+| Kind | What it points to |
+|---|---|
+| `local-vault` | Another vault directory on this machine |
+| `mcp` | An MCP server (e.g. Obsidian bridge) |
+| `drive` | A shared or mounted filesystem path |
+| `offsite` | A remote URL (Affine, Notion, etc.) |
+
+Each target has a `mirror_mode`:
+
+- `index-only` (default) — only a title/path index is mirrored in
+- `full-summary` — a full-text summary is mirrored in alongside the index
+
+External targets are **service mode only** and entirely additive. The brain
+store operates identically with or without them. Mirror execution (fetching
+and summarisation) is performed by the Docker mirror agent (WI11/WI12) and
+is not part of this schema definition.
 
 ## Vault overlay — `<vault-path>/.brain/`
 
