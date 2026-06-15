@@ -10,14 +10,15 @@ from uuid import uuid4
 from pydantic_ai.usage import UsageLimits
 
 from .agents.compile_agent import CompileDeps, build_compile_agent
+from .agents.reconciliation_agent import ReconciliationDeps, build_reconciliation_agent
 from .captures import archive_processed_inbox_captures, capture_hash, list_all_captures, mark_captures_processed, read_capture
 from .config import Settings
 from .correlation import find_related_articles
 from .indexes import update_directory_index, update_indexes_for_article
-from .knowledge import apply_article_write, ensure_store_root
+from .knowledge import apply_article_write, apply_reconciliation_verdict, ensure_store_root
 from .logs import append_global_log
 from .manifests import load_manifest, resolve_manifest_path
-from .models import AppliedArticleWrite, ArticleWriteProposal, CompileRunRequest, CompileRunResult
+from .models import AppliedArticleWrite, ArticleWriteProposal, CompileRunRequest, CompileRunResult, ReconciliationOutcome
 from .paths import PathMapper
 from .registry import RegistryError, load_registry, registered_vault_paths
 from .security import PolicyError, validate_article_write, validate_store_article_write
@@ -104,6 +105,7 @@ async def run_compile(settings: Settings, request: CompileRunRequest) -> Compile
     run_id = str(uuid4())
     errors: list[str] = []
     applied: list[AppliedArticleWrite] = []
+    reconciliations: list[ReconciliationOutcome] = []
 
     mapper = PathMapper(settings.path_map)
     try:
@@ -261,6 +263,7 @@ Available vaults:
             errors.append(f"{proposal.vault}/{proposal.relative_path}: {exc}")
 
     processed_capture_paths: set[Path] = set()
+    applied_store_targets: list[Path] = []
     if not errors:
         for proposal, target in validated_targets:
             try:
@@ -279,6 +282,8 @@ Available vaults:
                             title=proposal.title,
                         )
                     )
+                    if store_mode:
+                        applied_store_targets.append(target)
                     for source in proposal.sources:
                         source_path = _resolve_capture_source(settings.brain_home, source)
                         if source_path in allowed_sources:
@@ -295,6 +300,30 @@ Available vaults:
             archive_processed_inbox_captures(settings.brain_home, sorted_processed_paths, capture_hashes)
         except Exception as exc:  # noqa: BLE001 - inbox archive cleanup must not fail applied compile work.
             nonfatal_warnings.append(f"Processed capture archive cleanup failed after compile apply: {exc}")
+
+    if (
+        store_mode
+        and not request.dry_run
+        and not errors
+        and settings.reconciliation_enabled
+        and settings.correlation_top_k > 0
+        and applied_store_targets
+    ):
+        assert brain_store_root is not None
+        reconciliations.extend(
+            await _reconcile_applied_articles(settings, brain_store_root, applied_store_targets)
+        )
+        if reconciliations:
+            verdict_counts: dict[str, int] = {}
+            for outcome in reconciliations:
+                verdict_counts[outcome.verdict] = verdict_counts.get(outcome.verdict, 0) + 1
+            summary = ", ".join(f"{verdict}={count}" for verdict, count in sorted(verdict_counts.items()))
+            append_global_log(
+                settings.brain_home,
+                "RECONCILE",
+                f"Reconciled {len(reconciliations)} pairs across {len(applied_store_targets)} new articles ({summary})",
+                request.dry_run,
+            )
 
     for warning in nonfatal_warnings:
         append_global_log(settings.brain_home, "COMPILE", warning, request.dry_run)
@@ -322,4 +351,82 @@ Available vaults:
         applied=applied,
         skipped=all_skipped,
         errors=errors,
+        reconciliations=reconciliations,
     )
+
+
+async def _reconcile_applied_articles(
+    settings: Settings,
+    store_root: Path,
+    applied_targets: list[Path],
+) -> list[ReconciliationOutcome]:
+    """Run the reconciliation agent for each (new article, related-old article) pair.
+
+    For each applied NEW store article, find related EXISTING store articles
+    (excluding the new article itself), get a structured verdict per pair, and
+    apply the deterministic outcome to the store files.
+    """
+
+    outcomes: list[ReconciliationOutcome] = []
+    agent = build_reconciliation_agent(settings)
+
+    for new_target in applied_targets:
+        try:
+            new_content = new_target.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        new_rel = str(new_target.resolve().relative_to(store_root.resolve()))
+        new_title = _store_article_title(new_rel, new_content)
+
+        related = await find_related_articles(
+            settings,
+            new_content,
+            store_root=store_root,
+            top_k=settings.correlation_top_k,
+            char_budget=settings.correlation_max_chars,
+        )
+        for entry in related:
+            old_rel = entry["path"]
+            if old_rel == new_rel:
+                continue
+            old_path = (store_root / old_rel).resolve()
+            deps = ReconciliationDeps(
+                new_path=new_rel,
+                new_title=new_title,
+                new_content=new_content,
+                old_path=old_rel,
+                old_title=entry.get("title", old_rel),
+                old_content=entry.get("content", ""),
+            )
+            result = await agent.run(
+                _reconciliation_prompt(new_rel, old_rel),
+                deps=deps,
+                usage_limits=UsageLimits(request_limit=3),
+            )
+            outcome = apply_reconciliation_verdict(
+                result.output,
+                new_path=new_target,
+                old_path=old_path,
+                store_root=store_root,
+                dry_run=False,
+            )
+            outcomes.append(outcome)
+
+    return outcomes
+
+
+def _reconciliation_prompt(new_rel: str, old_rel: str) -> str:
+    return f"""
+Reconcile one pair of knowledge articles.
+
+Call load_reconciliation_context exactly once, then return the final structured verdict.
+
+NEW article: {new_rel}
+OLD (related existing) article: {old_rel}
+""".strip()
+
+
+def _store_article_title(rel_path: str, content: str) -> str:
+    from .embeddings import _title_for
+
+    return _title_for(rel_path, content)

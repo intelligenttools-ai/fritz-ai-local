@@ -37,6 +37,34 @@ class AppliedArticleWrite(BaseModel):
     title: str
 
 
+class ReconciliationVerdict(BaseModel):
+    """Structured verdict for one (new article, related-old article) pair."""
+
+    verdict: Literal[
+        "corroborates",
+        "refines",
+        "contradicts_supersedes",
+        "context_split",
+        "orthogonal",
+    ]
+    reasoning: str
+    evidence_strength: float = 0.0  # agent's weighting inputs (0..1)
+    source_authority: float = 0.0
+    anchor_strength: float = 0.0
+    confidence: float = 0.0
+    scope_qualifier: str | None = None  # used for context_split
+
+
+class ReconciliationOutcome(BaseModel):
+    """Record of one applied reconciliation verdict for visibility."""
+
+    new_path: str
+    old_path: str
+    verdict: str
+    actions: list[str] = Field(default_factory=list)
+    reasoning: str = ""
+
+
 class CompileRunRequest(BaseModel):
     """Request body for a manual compile run."""
 
@@ -58,6 +86,7 @@ class CompileRunResult(BaseModel):
     applied: list[AppliedArticleWrite] = Field(default_factory=list)
     skipped: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+    reconciliations: list[ReconciliationOutcome] = Field(default_factory=list)
 
 
 class SyncRunRequest(BaseModel):
