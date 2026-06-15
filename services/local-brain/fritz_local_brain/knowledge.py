@@ -11,6 +11,24 @@ import yaml
 from .config import Settings
 from .models import ArticleWriteProposal
 
+# ---------------------------------------------------------------------------
+# Knowledge lifecycle vocabulary
+# ---------------------------------------------------------------------------
+
+STATUS_VALUES = ("active", "corroborated", "deprecated", "superseded", "historical")
+DEFAULT_STATUS = "active"
+
+# Statuses visible in the default ("active") retrieval scope.
+DEFAULT_VISIBLE_STATUSES: frozenset[str] = frozenset({"active", "corroborated", "deprecated"})
+
+# Statuses that are visible but ranked AFTER primary (active/corroborated) matches.
+DEMOTED_STATUSES: frozenset[str] = frozenset({"deprecated"})
+
+
+def normalize_status(value: str) -> str:
+    """Lowercase and strip a status string."""
+    return value.lower().strip()
+
 
 def store_root(settings: Settings) -> Path:
     """Resolve the brain-owned knowledge store root from settings.

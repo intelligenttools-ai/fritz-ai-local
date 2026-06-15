@@ -7,12 +7,10 @@ from pathlib import Path
 from typing import Any
 
 from ..captures import list_queryable_captures, read_capture_raw
+from ..knowledge import DEFAULT_VISIBLE_STATUSES, DEMOTED_STATUSES, normalize_status
 from ..manifests import resolve_manifest_path
 from ..models import QueryMatch
 from ..security import is_excluded
-
-# Status values that are included in the default "active" scope.
-_ACTIVE_STATUSES: frozenset[str] = frozenset({"active", "corroborated"})
 
 
 @dataclass
@@ -68,9 +66,15 @@ class BrainQueryAgent:
         Returns an empty list when *store_root* is None or does not exist.
         Each match uses vault name ``"brain"`` with a path relative to
         *store_root*.  ``index.md`` files and symlinks are skipped.
-        The *scope* filter applies the article's ``status`` frontmatter value:
-        ``"active"`` (the default) includes articles with no status or whose
-        status is in {active, corroborated}; ``"all"`` includes everything.
+
+        Scope semantics:
+        - ``"active"`` (default): INCLUDE active/corroborated/no-status
+          (primary), INCLUDE deprecated (demoted — appended after primary),
+          EXCLUDE superseded and historical.
+        - ``"all"``: include everything, natural order.
+
+        The result is primary matches followed by demoted matches, truncated
+        to *remaining* total.
         """
 
         if store_root is None or not store_root.exists():
@@ -79,10 +83,9 @@ class BrainQueryAgent:
             return []
 
         needle = query.casefold()
-        matches: list[QueryMatch] = []
+        primary: list[QueryMatch] = []
+        demoted: list[QueryMatch] = []
         for path in sorted(store_root.glob("**/*.md")):
-            if len(matches) >= remaining:
-                break
             if path.name == "index.md":
                 continue
             if not _is_regular_knowledge_file(path, store_root):
@@ -91,20 +94,31 @@ class BrainQueryAgent:
                 text = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            if scope != "all" and not _is_active_article(text):
-                continue
+            if scope != "all":
+                # Compute status once and reuse for both visibility and demotion checks.
+                status = _status_of(text)
+                effective = status if status is not None else "active"
+                if effective not in DEFAULT_VISIBLE_STATUSES:
+                    continue
             position = text.casefold().find(needle)
             if position < 0:
                 continue
-            matches.append(
-                QueryMatch(
-                    vault="brain",
-                    path=str(path.relative_to(store_root)),
-                    title=_title_for(path, text),
-                    snippet=_snippet(text, position),
-                )
+            match = QueryMatch(
+                vault="brain",
+                path=str(path.relative_to(store_root)),
+                title=_title_for(path, text),
+                snippet=_snippet(text, position),
             )
-        return matches
+            if scope != "all":
+                if effective in DEMOTED_STATUSES:
+                    demoted.append(match)
+                else:
+                    primary.append(match)
+            else:
+                primary.append(match)
+        # Demoted (deprecated) matches never consume the primary budget: active/
+        # corroborated matches fill the budget first; deprecated fills leftover slots.
+        return (primary + demoted)[:remaining]
 
     def search_captures(self, brain_home: Path, query: str, remaining: int) -> list[QueryMatch]:
         """Search raw capture files so inbox-only facts are visible to clients."""
@@ -158,31 +172,24 @@ def _snippet(text: str, position: int) -> str:
     return " ".join(text[start:end].split())
 
 
-def _is_active_article(text: str) -> bool:
-    """Return True when an article's status is compatible with the active scope.
+def _status_of(text: str) -> str | None:
+    """Return the normalized ``status`` value from YAML frontmatter, or None.
 
-    An article is active when:
-    - it has no ``status:`` key in its YAML front matter (forward-compatible:
-      today's articles have no status), OR
-    - its ``status`` value is in ``_ACTIVE_STATUSES`` (``active`` or
-      ``corroborated``).
-
-    Articles with ``status: superseded``, ``status: deprecated``,
-    ``status: historical``, or any other value are excluded.
+    Returns None when there is no frontmatter or no ``status:`` key —
+    callers treat None as ``"active"`` (forward-compatible default).
     """
 
     if not text.startswith("---"):
-        return True
+        return None
 
     end = text.find("\n---", 3)
     if end == -1:
-        return True
+        return None
 
     front_matter_block = text[3:end]
     for raw_line in front_matter_block.splitlines():
         line = raw_line.strip()
         if line.startswith("status:"):
-            status_value = line[len("status:"):].strip().strip('"').strip("'")
-            return status_value in _ACTIVE_STATUSES
-    # No status key found — include in active scope.
-    return True
+            raw_value = line[len("status:"):].strip().strip('"').strip("'")
+            return normalize_status(raw_value)
+    return None

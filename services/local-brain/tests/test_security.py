@@ -209,3 +209,93 @@ def test_validate_store_article_write_rejects_path_escape_via_dotdot(tmp_path) -
     proposal = _make_store_proposal(relative_path="../outside.md", sources=[str(capture_path)])
     with pytest.raises(PolicyError, match="Unsafe relative_path"):
         validate_store_article_write(proposal, store_root, brain_home, allowed_sources={capture_path.resolve()})
+
+
+# ---------------------------------------------------------------------------
+# Status / lifecycle vocabulary tests
+# ---------------------------------------------------------------------------
+
+
+def _capture_setup(tmp_path):
+    """Return (brain_home, store_root, capture_path, allowed_sources)."""
+    brain_home = tmp_path / "brain"
+    store_root = tmp_path / "store"
+    capture_path = brain_home / "capture" / "inbox" / "fact.md"
+    capture_path.parent.mkdir(parents=True)
+    capture_path.write_text("# Capture\n", encoding="utf-8")
+    store_root.mkdir(parents=True)
+    allowed = {capture_path.resolve()}
+    return brain_home, store_root, capture_path, allowed
+
+
+def test_validate_store_article_write_defaults_status_to_active(tmp_path) -> None:
+    """When status is absent from frontmatter it is set to 'active' by default."""
+    brain_home, store_root, capture_path, allowed = _capture_setup(tmp_path)
+    proposal = _make_store_proposal(sources=[str(capture_path)])
+    assert "status" not in proposal.frontmatter
+    validate_store_article_write(proposal, store_root, brain_home, allowed_sources=allowed)
+    assert proposal.frontmatter["status"] == "active"
+
+
+def test_validate_store_article_write_accepts_valid_status(tmp_path) -> None:
+    """Explicit valid status values are accepted and preserved."""
+    brain_home, store_root, capture_path, allowed = _capture_setup(tmp_path)
+    for status in ("active", "corroborated", "deprecated", "superseded", "historical"):
+        p = _make_store_proposal(relative_path=f"common/decisions/{status}.md", sources=[str(capture_path)])
+        p.frontmatter["status"] = status
+        validate_store_article_write(p, store_root, brain_home, allowed_sources=allowed)
+        assert p.frontmatter["status"] == status
+
+
+def test_validate_store_article_write_normalizes_status_case(tmp_path) -> None:
+    """Status value is lowercased and stripped during validation."""
+    brain_home, store_root, capture_path, allowed = _capture_setup(tmp_path)
+    proposal = _make_store_proposal(sources=[str(capture_path)])
+    proposal.frontmatter["status"] = "Active"
+    validate_store_article_write(proposal, store_root, brain_home, allowed_sources=allowed)
+    assert proposal.frontmatter["status"] == "active"
+
+
+def test_validate_store_article_write_rejects_invalid_status(tmp_path) -> None:
+    """An unrecognized status value raises PolicyError."""
+    brain_home, store_root, capture_path, allowed = _capture_setup(tmp_path)
+    proposal = _make_store_proposal(sources=[str(capture_path)])
+    proposal.frontmatter["status"] = "draft"
+    with pytest.raises(PolicyError, match="Invalid status"):
+        validate_store_article_write(proposal, store_root, brain_home, allowed_sources=allowed)
+
+
+def test_validate_store_article_write_accepts_supersedes_as_list(tmp_path) -> None:
+    """Optional 'supersedes' field is accepted when it is a list."""
+    brain_home, store_root, capture_path, allowed = _capture_setup(tmp_path)
+    proposal = _make_store_proposal(sources=[str(capture_path)])
+    proposal.frontmatter["supersedes"] = ["common/decisions/old.md"]
+    validate_store_article_write(proposal, store_root, brain_home, allowed_sources=allowed)
+    assert proposal.frontmatter["supersedes"] == ["common/decisions/old.md"]
+
+
+def test_validate_store_article_write_accepts_superseded_by_as_list(tmp_path) -> None:
+    """Optional 'superseded_by' field is accepted when it is a list."""
+    brain_home, store_root, capture_path, allowed = _capture_setup(tmp_path)
+    proposal = _make_store_proposal(sources=[str(capture_path)])
+    proposal.frontmatter["superseded_by"] = ["common/decisions/new.md"]
+    validate_store_article_write(proposal, store_root, brain_home, allowed_sources=allowed)
+    assert proposal.frontmatter["superseded_by"] == ["common/decisions/new.md"]
+
+
+def test_validate_store_article_write_rejects_supersedes_non_list(tmp_path) -> None:
+    """'supersedes' must be a list; a string value raises PolicyError."""
+    brain_home, store_root, capture_path, allowed = _capture_setup(tmp_path)
+    proposal = _make_store_proposal(sources=[str(capture_path)])
+    proposal.frontmatter["supersedes"] = "common/decisions/old.md"
+    with pytest.raises(PolicyError, match="supersedes must be a list"):
+        validate_store_article_write(proposal, store_root, brain_home, allowed_sources=allowed)
+
+
+def test_validate_store_article_write_rejects_superseded_by_non_list(tmp_path) -> None:
+    """'superseded_by' must be a list; a string value raises PolicyError."""
+    brain_home, store_root, capture_path, allowed = _capture_setup(tmp_path)
+    proposal = _make_store_proposal(sources=[str(capture_path)])
+    proposal.frontmatter["superseded_by"] = "common/decisions/new.md"
+    with pytest.raises(PolicyError, match="superseded_by must be a list"):
+        validate_store_article_write(proposal, store_root, brain_home, allowed_sources=allowed)
