@@ -644,3 +644,116 @@ def test_compile_dry_run_returns_proposals_without_applied_writes(tmp_path: Path
     assert not target_path.exists()
     assert not (target_path.parent / "index.md").exists()
     assert not (brain_home / "log.md").exists()
+
+
+# ---------------------------------------------------------------------------
+# Store mode tests (no registry.yaml, no vault configured)
+# ---------------------------------------------------------------------------
+
+
+def _store_mode_settings(tmp_path: Path) -> tuple[Path, Path]:
+    """Return (brain_home, skills_dir) for a registry-free store-mode setup."""
+    brain_home = tmp_path / "brain"
+    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
+    (brain_home / "capture" / "inbox").mkdir(parents=True)
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Compile Skill\n", encoding="utf-8")
+    return brain_home, tmp_path / "skills"
+
+
+def test_store_mode_apply_writes_article_and_indexes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Apply run without registry writes article under store root and creates MOC indexes."""
+    brain_home, skills_dir = _store_mode_settings(tmp_path)
+    capture_path = brain_home / "capture" / "inbox" / "fact.md"
+    capture_path.write_text("# Capture\n\nDurable fact.\n", encoding="utf-8")
+
+    proposal = ArticleWriteProposal(
+        vault="brain",
+        relative_path="common/decisions/foo.md",
+        operation="create",
+        title="Foo Decision",
+        summary="A key decision.",
+        sources=[str(capture_path)],
+        body="We decided foo.",
+    )
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: FakeCompileAgent(proposal))
+
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=skills_dir)
+    first = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False, max_captures=1)))
+
+    assert first.errors == []
+    assert len(first.applied) == 1
+
+    store_root = brain_home / "knowledge"
+    article_path = store_root / "common" / "decisions" / "foo.md"
+    assert article_path.exists(), "Article must be written under store root"
+    # Leaf index.md created in the decisions dir
+    assert (store_root / "common" / "decisions" / "index.md").exists(), "Leaf index must be created"
+    # Scope-level index.md for 'common'
+    assert (store_root / "common" / "index.md").exists(), "Scope index must be created"
+    # Global store index.md
+    assert (store_root / "index.md").exists(), "Global MOC must be created"
+
+    # Second run (dry-run) should see 0 pending captures — archival worked.
+    second = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=True)))
+    assert second.captures_considered == 0
+
+
+def test_store_mode_dry_run_writes_nothing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Dry-run in store mode returns proposals but does not write any files."""
+    brain_home, skills_dir = _store_mode_settings(tmp_path)
+    capture_path = brain_home / "capture" / "inbox" / "fact.md"
+    capture_path.write_text("# Capture\n\nDurable fact.\n", encoding="utf-8")
+
+    proposal = ArticleWriteProposal(
+        vault="brain",
+        relative_path="common/decisions/dry.md",
+        operation="create",
+        title="Dry Decision",
+        summary="Dry-run proposal.",
+        sources=[str(capture_path)],
+        body="Dry body.",
+    )
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: FakeCompileAgent(proposal))
+
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=skills_dir)
+    result = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=True, max_captures=1)))
+
+    assert result.dry_run is True
+    assert result.proposals == [proposal]
+    assert result.applied == []
+    assert result.errors == []
+    store_root = brain_home / "knowledge"
+    assert not (store_root / "common" / "decisions" / "dry.md").exists(), "No file must be written in dry-run"
+    assert not (brain_home / "log.md").exists(), "No log must be written in dry-run"
+
+
+def test_store_mode_repairs_single_capture_source_mangled_by_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Single-capture source repair works in store mode (registry-free)."""
+    brain_home, skills_dir = _store_mode_settings(tmp_path)
+    capture_path = brain_home / "capture" / "inbox" / "2026-06-02-real-long-capture-name.md"
+    capture_path.write_text("# Capture\n\nUseful fact.\n", encoding="utf-8")
+
+    # Proposal has a mangled (truncated) source name that looks similar to the real file.
+    proposal = ArticleWriteProposal(
+        vault="brain",
+        relative_path="common/lessons/useful.md",
+        operation="create",
+        title="Useful Lesson",
+        summary="Useful fact.",
+        sources=[str(brain_home / "capture" / "inbox" / "2026-06-02-real-long-capture.md")],
+        frontmatter={"sources": ["wrong"]},
+        body="Useful body.",
+    )
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: FakeCompileAgent(proposal))
+
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=skills_dir)
+    result = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False, max_captures=1)))
+
+    assert result.errors == []
+    assert len(result.applied) == 1
+    assert result.proposals[0].sources == [str(capture_path.resolve())]
+    # Capture must be archived (not exist in inbox after compile).
+    assert not capture_path.exists()

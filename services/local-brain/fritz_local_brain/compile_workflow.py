@@ -12,14 +12,14 @@ from pydantic_ai.usage import UsageLimits
 from .agents.compile_agent import CompileDeps, build_compile_agent
 from .captures import archive_processed_inbox_captures, capture_hash, list_all_captures, mark_captures_processed
 from .config import Settings
-from .indexes import update_directory_index
-from .knowledge import apply_article_write
+from .indexes import update_directory_index, update_indexes_for_article
+from .knowledge import apply_article_write, ensure_store_root
 from .logs import append_global_log
 from .manifests import load_manifest, resolve_manifest_path
 from .models import AppliedArticleWrite, ArticleWriteProposal, CompileRunRequest, CompileRunResult
 from .paths import PathMapper
-from .registry import load_registry, registered_vault_paths
-from .security import PolicyError, validate_article_write
+from .registry import RegistryError, load_registry, registered_vault_paths
+from .security import PolicyError, validate_article_write, validate_store_article_write
 from .skill_loader import load_skill
 
 
@@ -105,13 +105,17 @@ async def run_compile(settings: Settings, request: CompileRunRequest) -> Compile
     applied: list[AppliedArticleWrite] = []
 
     mapper = PathMapper(settings.path_map)
-    registry = load_registry(settings.brain_home)
-    vault_paths = registered_vault_paths(registry, mapper)
+    try:
+        registry = load_registry(settings.brain_home)
+        vault_paths = registered_vault_paths(registry, mapper)
+    except RegistryError:
+        vault_paths = {}
     manifests = {
         name: manifest
         for name, path in vault_paths.items()
         if (manifest := load_manifest(path)) is not None
     }
+    store_mode = not manifests
     capture_limit = request.max_captures if request.max_captures is not None else settings.compile_max_captures
     capture_discovery = list_all_captures(settings.brain_home, capture_limit)
     capture_paths = capture_discovery.paths
@@ -121,32 +125,60 @@ async def run_compile(settings: Settings, request: CompileRunRequest) -> Compile
     all_proposals = []
     all_skipped: list[str] = []
     nonfatal_warnings: list[str] = []
-    simulated_article_paths: dict[str, set[str]] = {name: set() for name in manifests}
+    simulated_article_paths: dict[str, set[str]] = {name: set() for name in manifests} if not store_mode else {"brain": set()}
     batch_size = settings.compile_max_captures or len(capture_paths) or 1
+
+    # In store mode, resolve the store root once outside the loop.
+    brain_store_root = ensure_store_root(settings) if store_mode else None
 
     for batch_start in range(0, len(capture_paths), batch_size):
         batch_paths = capture_paths[batch_start : batch_start + batch_size]
         article_paths: dict[str, list[str]] = {}
-        for name, manifest in manifests.items():
-            knowledge_root = resolve_manifest_path(vault_paths[name], manifest, "knowledge")
-            if knowledge_root and knowledge_root.exists():
-                article_paths[name] = sorted(
+        if store_mode:
+            assert brain_store_root is not None
+            if brain_store_root.exists():
+                article_paths["brain"] = sorted(
                     {
-                        str(path.relative_to(knowledge_root))
-                        for path in knowledge_root.glob("**/*.md")
-                        if ".brain" not in path.parts
+                        str(path.relative_to(brain_store_root))
+                        for path in brain_store_root.glob("**/*.md")
+                        if path.name != "index.md"
                     }
-                    | simulated_article_paths.get(name, set())
+                    | simulated_article_paths.get("brain", set())
                 )
+        else:
+            for name, manifest in manifests.items():
+                knowledge_root = resolve_manifest_path(vault_paths[name], manifest, "knowledge")
+                if knowledge_root and knowledge_root.exists():
+                    article_paths[name] = sorted(
+                        {
+                            str(path.relative_to(knowledge_root))
+                            for path in knowledge_root.glob("**/*.md")
+                            if ".brain" not in path.parts
+                        }
+                        | simulated_article_paths.get(name, set())
+                    )
 
         agent = build_compile_agent(settings, skill_text)
         deps = CompileDeps(
             capture_paths=batch_paths,
-            vault_names=sorted(manifests),
+            vault_names=["brain"] if store_mode else sorted(manifests),
             article_paths=article_paths,
             capture_max_chars=settings.capture_max_chars,
         )
-        prompt = f"""
+        if store_mode:
+            prompt = f"""
+Run one chronological compile batch.
+
+Call load_compile_context exactly once. Then return final structured output.
+Do not invent vault names or source paths. Later batches may update knowledge created by earlier batches.
+
+Destination: brain knowledge store (~/.brain/knowledge).
+Set vault to "brain" for all proposals.
+Set relative_path to <scope>/<section>/<slug>.md where scope is "common" or a project slug, and section is one of: decisions, lessons, runbooks, context.
+{deps.vault_names}
+""".strip()
+        else:
+            prompt = f"""
 Run one chronological compile batch.
 
 Call load_compile_context exactly once. Then return final structured output.
@@ -180,19 +212,32 @@ Available vaults:
             proposals_to_apply.clear()
 
     known_existing_targets: set[Path] = set()
-    for name, manifest in manifests.items():
-        knowledge_root = resolve_manifest_path(vault_paths[name], manifest, "knowledge")
-        if knowledge_root and knowledge_root.exists():
+    if store_mode:
+        assert brain_store_root is not None
+        if brain_store_root.exists():
             known_existing_targets.update(
-                path.resolve() for path in knowledge_root.glob("**/*.md") if ".brain" not in path.parts
+                path.resolve() for path in brain_store_root.glob("**/*.md") if path.name != "index.md"
             )
+    else:
+        for name, manifest in manifests.items():
+            knowledge_root = resolve_manifest_path(vault_paths[name], manifest, "knowledge")
+            if knowledge_root and knowledge_root.exists():
+                known_existing_targets.update(
+                    path.resolve() for path in knowledge_root.glob("**/*.md") if ".brain" not in path.parts
+                )
 
     validated_targets = []
     for proposal in proposals_to_apply:
         try:
-            target = validate_article_write(
-                proposal, vault_paths, manifests, settings.brain_home, allowed_sources, known_existing_targets
-            )
+            if store_mode:
+                assert brain_store_root is not None
+                target = validate_store_article_write(
+                    proposal, brain_store_root, settings.brain_home, allowed_sources, known_existing_targets
+                )
+            else:
+                target = validate_article_write(
+                    proposal, vault_paths, manifests, settings.brain_home, allowed_sources, known_existing_targets
+                )
             validated_targets.append((proposal, target))
             if proposal.operation == "create":
                 known_existing_targets.add(target)
@@ -204,7 +249,11 @@ Available vaults:
         for proposal, target in validated_targets:
             try:
                 apply_article_write(target, proposal, request.dry_run)
-                update_directory_index(target, proposal.title, proposal.summary, request.dry_run)
+                if store_mode:
+                    assert brain_store_root is not None
+                    update_indexes_for_article(brain_store_root, target, proposal.title, proposal.summary, request.dry_run)
+                else:
+                    update_directory_index(target, proposal.title, proposal.summary, request.dry_run)
                 if not request.dry_run:
                     applied.append(
                         AppliedArticleWrite(

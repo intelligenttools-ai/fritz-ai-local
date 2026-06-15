@@ -111,3 +111,70 @@ def validate_article_write(
         raise PolicyError(f"Missing frontmatter fields: {', '.join(sorted(missing))}")
 
     return target
+
+
+def validate_store_article_write(
+    proposal: ArticleWriteProposal,
+    store_root: Path,
+    brain_home: Path,
+    allowed_sources: set[Path] | None = None,
+    known_existing_targets: set[Path] | None = None,
+) -> Path:
+    """Validate an article write proposal targeting the brain knowledge store.
+
+    Enforces the same safety checks as ``validate_article_write`` but operates
+    registry-free: no vault/manifest/exclude/identity logic applies.  The
+    proposal must set ``vault`` to ``"brain"`` and ``relative_path`` to a
+    ``<scope>/<section>/<slug>.md`` path inside ``store_root``.
+    """
+
+    if proposal.operation not in ("create", "update"):
+        raise PolicyError("Only create/update operations are allowed")
+
+    rel = Path(proposal.relative_path)
+    if rel.is_absolute() or ".." in rel.parts:
+        raise PolicyError(f"Unsafe relative_path: {proposal.relative_path}")
+    if any(part in FORBIDDEN_PARTS for part in rel.parts):
+        raise PolicyError(f"Forbidden target path: {proposal.relative_path}")
+    if rel.suffix != ".md":
+        raise PolicyError("Knowledge article target must be a markdown file")
+
+    target = (store_root / rel).resolve()
+    if not is_relative_to(target, store_root):
+        raise PolicyError(f"Target escapes store root: {proposal.relative_path}")
+
+    target_exists = target in known_existing_targets if known_existing_targets is not None else target.exists()
+    if proposal.operation == "update" and not target_exists:
+        raise PolicyError(f"Update target does not exist: {proposal.relative_path}")
+    if proposal.operation == "create" and target_exists:
+        raise PolicyError(f"Create target already exists: {proposal.relative_path}")
+
+    if not proposal.sources:
+        raise PolicyError("Knowledge article proposal must include at least one capture source")
+
+    capture_root = (brain_home / "capture").resolve()
+    for source in proposal.sources:
+        if source.startswith("~/.brain/"):
+            source_path = brain_home / source.removeprefix("~/.brain/")
+        else:
+            source_path = Path(source).expanduser()
+        if not source_path.is_absolute():
+            source_path = brain_home / source_path
+        source_path = source_path.resolve()
+        if not is_relative_to(source_path, capture_root):
+            raise PolicyError(f"Source is not in capture root: {source}")
+        if not source_path.exists():
+            raise PolicyError(f"Source does not exist: {source}")
+        if allowed_sources is not None and source_path not in allowed_sources:
+            raise PolicyError(f"Source was not provided to the compile agent: {source}")
+
+    proposal.frontmatter.setdefault("type", "article")
+    proposal.frontmatter.setdefault("title", proposal.title)
+    proposal.frontmatter.setdefault("sources", proposal.sources)
+
+    required = {"type", "title", "sources"}
+    missing = required - set(proposal.frontmatter)
+    if missing:
+        raise PolicyError(f"Missing frontmatter fields: {', '.join(sorted(missing))}")
+
+    return target
