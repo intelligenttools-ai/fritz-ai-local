@@ -10,12 +10,15 @@ from .agents.query_agent import BrainQueryAgent
 from .captures import list_queryable_captures
 from .config import Settings
 from .embeddings import embedding_index_unavailable_reason, ensure_embedding_index, search_embedding_index
+from .knowledge import store_root
 from .manifests import load_manifest, resolve_manifest_path
 from .models import QueryRunRequest, QueryRunResult
 from .paths import PathMapper
-from .registry import load_registry, registered_vault_paths
+from .registry import RegistryError, load_registry, registered_vault_paths
 from .security import is_excluded
 from .skill_loader import load_skill
+
+_BRAIN_VAULT_NAME = "brain"
 
 
 async def run_query(
@@ -29,33 +32,54 @@ async def run_query(
     errors: list[str] = []
     skipped: list[str] = []
     mapper = PathMapper(settings.path_map)
-    registry = load_registry(settings.brain_home)
-    vault_paths = registered_vault_paths(registry, mapper)
+    try:
+        registry = load_registry(settings.brain_home)
+        vault_paths = registered_vault_paths(registry, mapper)
+    except RegistryError:
+        vault_paths = {}
     capture_vault_name = "_captures"
     if capture_vault_name in vault_paths:
         errors.append(f"Reserved vault name is not allowed: {capture_vault_name}")
         vault_paths = {name: path for name, path in vault_paths.items() if name != capture_vault_name}
+
+    manifests = {
+        name: manifest
+        for name, path in vault_paths.items()
+        if (manifest := load_manifest(path)) is not None
+    }
+    store_mode = not manifests
+
     agent = BrainQueryAgent(skill_text=load_skill(settings.skills_dir, settings.query_skill_name))
     matches = []
 
-    for name, vault_path in vault_paths.items():
-        if request.vault and name != request.vault:
-            continue
-        manifest = load_manifest(vault_path)
-        if manifest is None:
-            skipped.append(f"{name}: missing manifest")
-            continue
+    if not store_mode:
+        for name, vault_path in vault_paths.items():
+            if request.vault and name != request.vault:
+                continue
+            manifest = manifests.get(name)
+            if manifest is None:
+                skipped.append(f"{name}: missing manifest")
+                continue
+            remaining = request.limit - len(matches)
+            if remaining <= 0:
+                break
+            matches.extend(agent.search_vault(name, vault_path, manifest, request.query, remaining))
+
+    if store_mode and (request.vault is None or request.vault == _BRAIN_VAULT_NAME):
+        brain_store_root = store_root(settings)
         remaining = request.limit - len(matches)
-        if remaining <= 0:
-            break
-        matches.extend(agent.search_vault(name, vault_path, manifest, request.query, remaining))
+        if remaining > 0:
+            matches.extend(agent.search_store(brain_store_root, request.query, remaining, scope=request.scope))
 
     if request.vault is None or request.vault == capture_vault_name:
         remaining = request.limit - len(matches)
         if remaining > 0:
             matches.extend(agent.search_captures(settings.brain_home, request.query, remaining))
 
-    if request.vault and request.vault not in vault_paths and request.vault != capture_vault_name:
+    known_vaults = set(vault_paths) | {capture_vault_name}
+    if store_mode:
+        known_vaults.add(_BRAIN_VAULT_NAME)
+    if request.vault and request.vault not in known_vaults:
         errors.append(f"Unknown vault: {request.vault}")
 
     if use_vector and not errors:
@@ -121,8 +145,29 @@ def _allowed_vector_paths(settings: Settings, vault_paths: dict[str, Path], capt
         except ValueError:
             continue
 
+    # Determine store mode: no usable vault manifests → brain store mode.
+    manifests = {
+        name: manifest
+        for name, path in vault_paths.items()
+        if (manifest := load_manifest(path)) is not None
+    }
+    if not manifests:
+        # Store mode: add brain-store articles as ("brain", relpath) keys.
+        brain_store_root = store_root(settings)
+        if brain_store_root.exists():
+            for path in brain_store_root.glob("**/*.md"):
+                if path.name == "index.md":
+                    continue
+                if not path.is_file() or path.is_symlink():
+                    continue
+                try:
+                    allowed.add((_BRAIN_VAULT_NAME, str(path.relative_to(brain_store_root))))
+                except ValueError:
+                    continue
+        return allowed
+
     for name, vault_path in vault_paths.items():
-        manifest = load_manifest(vault_path)
+        manifest = manifests.get(name)
         if manifest is None:
             continue
         knowledge_root = resolve_manifest_path(vault_path, manifest, "knowledge")

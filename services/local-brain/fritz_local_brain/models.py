@@ -181,6 +181,7 @@ class QueryRunRequest(BaseModel):
     query: str = Field(min_length=1)
     vault: str | None = None
     limit: int = Field(default=10, ge=1, le=50)
+    scope: str = "active"
 
 
 class QueryMatch(BaseModel):
