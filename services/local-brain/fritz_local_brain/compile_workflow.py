@@ -502,7 +502,7 @@ async def _reconcile_applied_articles(
             new_path=new_target,
             old_path=old_path,
             store_root=store_root,
-            dry_run=False,
+            dry_run=request.dry_run,
         )
         outcomes.append(outcome)
 
@@ -523,7 +523,7 @@ async def _reconcile_applied_articles(
                     "old_prior_status": outcome.prior_status,
                     "links_added": links_added,
                 },
-                dry_run=False,
+                dry_run=request.dry_run,
             )
 
     return outcomes

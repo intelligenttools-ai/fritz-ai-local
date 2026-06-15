@@ -167,3 +167,177 @@ def test_max_injection_chars_coerces_to_int(monkeypatch, tmp_path):
     """String values resolve and are coerced to int (historical behavior)."""
     _set_central(monkeypatch, tmp_path, {"max_injection_chars": "3000"})
     assert brain_common.get_max_injection_chars(None) == 3000
+
+
+# --- get_reconciliation_autonomy ------------------------------------------
+
+
+def test_get_reconciliation_autonomy_default(monkeypatch, tmp_path):
+    """Default is 'apply' when neither project nor central provides a value."""
+    _set_central(monkeypatch, tmp_path, {})
+    assert brain_common.get_reconciliation_autonomy() == "apply"
+
+
+def test_get_reconciliation_autonomy_project_wins(monkeypatch, tmp_path):
+    """Project value overrides central."""
+    _set_central(monkeypatch, tmp_path, {"reconciliation_autonomy": "apply"})
+    fritz_local = {"reconciliation_autonomy": "propose"}
+    assert brain_common.get_reconciliation_autonomy(fritz_local=fritz_local) == "propose"
+
+
+def test_get_reconciliation_autonomy_central_used_when_no_project(monkeypatch, tmp_path):
+    """Central value is used when no project file is present."""
+    _set_central(monkeypatch, tmp_path, {"reconciliation_autonomy": "propose"})
+    assert brain_common.get_reconciliation_autonomy() == "propose"
+
+
+def test_get_reconciliation_autonomy_invalid_falls_back(monkeypatch, tmp_path):
+    """Invalid value falls back to 'apply'."""
+    _set_central(monkeypatch, tmp_path, {"reconciliation_autonomy": "auto"})
+    assert brain_common.get_reconciliation_autonomy() == "apply"
+
+
+def test_get_reconciliation_autonomy_normalizes_case(monkeypatch, tmp_path):
+    """Value is normalized to lowercase."""
+    _set_central(monkeypatch, tmp_path, {})
+    fritz_local = {"reconciliation_autonomy": "PROPOSE"}
+    assert brain_common.get_reconciliation_autonomy(fritz_local=fritz_local) == "propose"
+
+
+def test_get_reconciliation_autonomy_cwd(monkeypatch, tmp_path):
+    """Project value loaded from cwd wins over central."""
+    _set_central(monkeypatch, tmp_path, {"reconciliation_autonomy": "apply"})
+    cwd = _write_fritz_local(tmp_path, {"reconciliation_autonomy": "propose"})
+    assert brain_common.get_reconciliation_autonomy(cwd=cwd) == "propose"
+
+
+# --- get_bulk_supersession_threshold --------------------------------------
+
+
+def test_get_bulk_supersession_threshold_default(monkeypatch, tmp_path):
+    """Default is 5."""
+    _set_central(monkeypatch, tmp_path, {})
+    assert brain_common.get_bulk_supersession_threshold() == 5
+
+
+def test_get_bulk_supersession_threshold_project_wins(monkeypatch, tmp_path):
+    """Project value overrides central."""
+    _set_central(monkeypatch, tmp_path, {"bulk_supersession_threshold": 10})
+    fritz_local = {"bulk_supersession_threshold": 3}
+    assert brain_common.get_bulk_supersession_threshold(fritz_local=fritz_local) == 3
+
+
+def test_get_bulk_supersession_threshold_central(monkeypatch, tmp_path):
+    """Central value is used when no project override."""
+    _set_central(monkeypatch, tmp_path, {"bulk_supersession_threshold": 7})
+    assert brain_common.get_bulk_supersession_threshold() == 7
+
+
+def test_get_bulk_supersession_threshold_coerces_string(monkeypatch, tmp_path):
+    """String value is coerced to int."""
+    _set_central(monkeypatch, tmp_path, {"bulk_supersession_threshold": "8"})
+    assert brain_common.get_bulk_supersession_threshold() == 8
+
+
+def test_get_bulk_supersession_threshold_floored_at_1(monkeypatch, tmp_path):
+    """Value below 1 is floored to 1."""
+    _set_central(monkeypatch, tmp_path, {})
+    fritz_local = {"bulk_supersession_threshold": 0}
+    assert brain_common.get_bulk_supersession_threshold(fritz_local=fritz_local) == 1
+
+
+def test_get_bulk_supersession_threshold_invalid_falls_back(monkeypatch, tmp_path):
+    """Non-numeric value returns the default 5."""
+    _set_central(monkeypatch, tmp_path, {"bulk_supersession_threshold": "bad"})
+    assert brain_common.get_bulk_supersession_threshold() == 5
+
+
+# --- get_merge_policy -----------------------------------------------------
+
+
+def test_get_merge_policy_default(monkeypatch, tmp_path):
+    """Default is 'brain-first'."""
+    _set_central(monkeypatch, tmp_path, {})
+    assert brain_common.get_merge_policy() == "brain-first"
+
+
+def test_get_merge_policy_project_wins(monkeypatch, tmp_path):
+    """Project value overrides central."""
+    _set_central(monkeypatch, tmp_path, {"merge_policy": "brain-first"})
+    fritz_local = {"merge_policy": "peer-ranked"}
+    assert brain_common.get_merge_policy(fritz_local=fritz_local) == "peer-ranked"
+
+
+def test_get_merge_policy_central(monkeypatch, tmp_path):
+    """Central value is used when no project override."""
+    _set_central(monkeypatch, tmp_path, {"merge_policy": "peer-ranked"})
+    assert brain_common.get_merge_policy() == "peer-ranked"
+
+
+def test_get_merge_policy_invalid_falls_back(monkeypatch, tmp_path):
+    """Invalid value falls back to 'brain-first'."""
+    _set_central(monkeypatch, tmp_path, {"merge_policy": "other-mode"})
+    assert brain_common.get_merge_policy() == "brain-first"
+
+
+def test_get_merge_policy_normalizes_case(monkeypatch, tmp_path):
+    """Value is normalized to lowercase."""
+    fritz_local = {"merge_policy": "Brain-First"}
+    _set_central(monkeypatch, tmp_path, {})
+    assert brain_common.get_merge_policy(fritz_local=fritz_local) == "brain-first"
+
+
+def test_get_merge_policy_cwd(monkeypatch, tmp_path):
+    """Project value loaded from cwd wins over central."""
+    _set_central(monkeypatch, tmp_path, {"merge_policy": "brain-first"})
+    cwd = _write_fritz_local(tmp_path, {"merge_policy": "peer-ranked"})
+    assert brain_common.get_merge_policy(cwd=cwd) == "peer-ranked"
+
+
+# --- get_query_scope_default ----------------------------------------------
+
+
+def test_get_query_scope_default_default(monkeypatch, tmp_path):
+    """Default is 'active'."""
+    _set_central(monkeypatch, tmp_path, {})
+    assert brain_common.get_query_scope_default() == "active"
+
+
+def test_get_query_scope_default_project_wins(monkeypatch, tmp_path):
+    """Project value overrides central."""
+    _set_central(monkeypatch, tmp_path, {"query_scope_default": "active"})
+    fritz_local = {"query_scope_default": "include_archive"}
+    assert brain_common.get_query_scope_default(fritz_local=fritz_local) == "include_archive"
+
+
+def test_get_query_scope_default_central(monkeypatch, tmp_path):
+    """Central value is used when no project override."""
+    _set_central(monkeypatch, tmp_path, {"query_scope_default": "all"})
+    assert brain_common.get_query_scope_default() == "all"
+
+
+def test_get_query_scope_default_invalid_falls_back(monkeypatch, tmp_path):
+    """Invalid value falls back to 'active'."""
+    _set_central(monkeypatch, tmp_path, {"query_scope_default": "unknown_scope"})
+    assert brain_common.get_query_scope_default() == "active"
+
+
+def test_get_query_scope_default_normalizes_case(monkeypatch, tmp_path):
+    """Value is normalized to lowercase."""
+    fritz_local = {"query_scope_default": "Include_Archive"}
+    _set_central(monkeypatch, tmp_path, {})
+    assert brain_common.get_query_scope_default(fritz_local=fritz_local) == "include_archive"
+
+
+def test_get_query_scope_default_cwd(monkeypatch, tmp_path):
+    """Project value loaded from cwd wins over central."""
+    _set_central(monkeypatch, tmp_path, {"query_scope_default": "active"})
+    cwd = _write_fritz_local(tmp_path, {"query_scope_default": "all"})
+    assert brain_common.get_query_scope_default(cwd=cwd) == "all"
+
+
+def test_get_query_scope_default_project_missing_key_falls_through(monkeypatch, tmp_path):
+    """Project file present but lacking the key falls through to central."""
+    _set_central(monkeypatch, tmp_path, {"query_scope_default": "include_archive"})
+    fritz_local = {"project": "demo"}
+    assert brain_common.get_query_scope_default(fritz_local=fritz_local) == "include_archive"

@@ -12,6 +12,7 @@ from .logs import append_global_log
 from .mirror import run_mirror
 from .models import CompileRunRequest
 from .operation_locks import OperationAlreadyRunning, compile_lock
+from .rereconciliation import run_rereconciliation_sweep
 from .run_history import record_compile, record_failure
 
 
@@ -51,3 +52,25 @@ async def mirror_scheduler_loop(settings: Settings) -> None:
         except Exception as exc:  # noqa: BLE001 - mirror loop must not crash on provider/filesystem failures.
             summary = f"Scheduler mirror failed: {exc}"
             append_global_log(settings.brain_home, "MIRROR", summary, settings.scheduler_dry_run)
+
+
+async def rereconciliation_scheduler_loop(settings: Settings) -> None:
+    """Optional background re-reconciliation sweep loop.
+
+    Gated by ``settings.rereconciliation_enabled`` (default ``False``), so
+    nothing runs unless explicitly enabled.  Sleeps
+    ``rereconciliation_interval_minutes`` (default 1440 = 24 h) between passes,
+    then calls :func:`run_rereconciliation_sweep` with ``dry_run`` drawn from
+    ``settings.rereconciliation_dry_run`` (default ``True``).
+
+    Failures in one pass are logged and the loop continues — it must never
+    crash or exit.  Not auto-started by any existing application entry point;
+    operators must wire it in explicitly.
+    """
+    while settings.rereconciliation_enabled:
+        await asyncio.sleep(settings.rereconciliation_interval_minutes * 60)
+        try:
+            await run_rereconciliation_sweep(settings, dry_run=settings.rereconciliation_dry_run)
+        except Exception as exc:  # noqa: BLE001 - sweep loop must not crash on provider/filesystem failures.
+            summary = f"Scheduler re-reconciliation sweep failed: {exc}"
+            append_global_log(settings.brain_home, "RERECONCILE", summary, settings.rereconciliation_dry_run)
