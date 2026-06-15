@@ -62,6 +62,8 @@ class Settings(BaseSettings):
     correlation_top_k: int = Field(default=5, ge=0, validation_alias=AliasChoices("LOCAL_BRAIN_CORRELATION_TOP_K", "CORRELATION_TOP_K"))
     correlation_max_chars: int = Field(default=4000, ge=0, validation_alias=AliasChoices("LOCAL_BRAIN_CORRELATION_MAX_CHARS", "CORRELATION_MAX_CHARS"))
     reconciliation_enabled: bool = Field(default=True, validation_alias=AliasChoices("LOCAL_BRAIN_RECONCILIATION_ENABLED", "RECONCILIATION_ENABLED"))
+    reconciliation_autonomy: str = Field(default="apply", validation_alias=AliasChoices("LOCAL_BRAIN_RECONCILIATION_AUTONOMY", "RECONCILIATION_AUTONOMY"))
+    bulk_supersession_threshold: int = Field(default=5, ge=1, validation_alias=AliasChoices("LOCAL_BRAIN_BULK_SUPERSESSION_THRESHOLD", "BULK_SUPERSESSION_THRESHOLD"))
 
     @field_validator("brain_store_path", mode="before")
     @classmethod
@@ -78,6 +80,18 @@ class Settings(BaseSettings):
         if isinstance(value, str) and value.strip().lower() in {"all", "unbounded"}:
             return None
         return value
+
+    @field_validator("reconciliation_autonomy", mode="before")
+    @classmethod
+    def validate_reconciliation_autonomy(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return "apply"
+        normalized = value.strip().lower()
+        if not normalized:
+            return "apply"
+        if normalized not in {"apply", "propose"}:
+            raise ValueError(f"reconciliation_autonomy must be 'apply' or 'propose', got: {value!r}")
+        return normalized
 
     def resolve_brain_store_path(self) -> Path:
         """Resolve the brain-owned knowledge store root.
