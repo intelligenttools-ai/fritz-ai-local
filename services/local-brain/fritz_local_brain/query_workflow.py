@@ -7,8 +7,9 @@ from pathlib import Path
 from uuid import uuid4
 
 from .agents.query_agent import BrainQueryAgent
-from .captures import list_queryable_captures
+from .captures import list_queryable_captures, read_capture_raw
 from .config import Settings
+from .live_fetch import live_fetch as _live_fetch
 from .embeddings import embedding_index_unavailable_reason, ensure_embedding_index, search_embedding_index
 from .knowledge import ARCHIVE_STATUSES, store_root
 from .agents.query_agent import _status_of as _qa_status_of
@@ -21,6 +22,131 @@ from .skill_loader import load_skill
 
 _BRAIN_VAULT_NAME = "brain"
 
+# Bound on live-fetched content folded into an enriched snippet.
+_LIVE_FETCH_SNIPPET_CAP = 600
+
+
+def merge_matches(
+    brain_matches: list[QueryMatch],
+    external_matches: list[QueryMatch],
+    *,
+    policy: str,
+    limit: int,
+) -> list[QueryMatch]:
+    """Merge brain and external matches under a retrieval-synthesis policy.
+
+    This is invoked during **live-fetch retrieval-synthesis** (``live_fetch=True``
+    in :func:`run_query`) to combine locally-assembled brain results with
+    live-fetched external content.  It is NOT called in the normal
+    ``live_fetch=False`` path, so existing query behaviour is unchanged.
+
+    Policies
+    --------
+    - ``"brain-first"`` (default, epic §10): brain matches are AUTHORITATIVE.
+      They always come first and win on dedup; external matches only FILL the
+      remaining slots up to *limit* and never displace a brain match.
+    - ``"peer-ranked"``: a flat append (brain then external) with dedup and no
+      authority — a simple alternative ranking.
+
+    Dedup key is ``(vault, path)`` when both are set, otherwise the title. The
+    result is deterministic and truncated to *limit*.
+    """
+
+    def _key(match: QueryMatch) -> tuple[str, str]:
+        if match.vault or match.path:
+            return (match.vault, match.path)
+        return ("", match.title)
+
+    merged: list[QueryMatch] = []
+    seen: set[tuple[str, str]] = set()
+
+    # Brain matches first in both policies (authoritative for brain-first;
+    # natural order for peer-ranked).
+    for match in brain_matches:
+        key = _key(match)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(match)
+        if len(merged) >= limit:
+            return merged[:limit]
+
+    for match in external_matches:
+        key = _key(match)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(match)
+        if len(merged) >= limit:
+            break
+
+    return merged[:limit]
+
+
+def _build_external_match(settings: Settings, match: "QueryMatch") -> "QueryMatch | None":
+    """Build an enriched external QueryMatch from a live-fetched index-only capture.
+
+    Returns a new :class:`~fritz_local_brain.models.QueryMatch` whose snippet is
+    replaced with (or extended by) the live-fetched full content, or ``None``
+    when the capture is not index-only, has no resolvable pointer, or the live
+    fetch fails.
+    """
+    if match.vault != "_captures":
+        return None
+    capture_path = settings.brain_home / match.path
+    try:
+        text = read_capture_raw(capture_path)
+    except (OSError, UnicodeDecodeError, ValueError):
+        return None
+    meta = _mirror_capture_meta(text)
+    if meta is None:
+        return None
+    mode, pointer = meta
+    if mode != "index-only" or not pointer:
+        return None
+    live = _live_fetch(settings, pointer)
+    if not live:
+        return None
+    enriched = " ".join(live.split())[:_LIVE_FETCH_SNIPPET_CAP]
+    return match.model_copy(
+        update={"snippet": f"{match.snippet} [live-fetch] {enriched}".strip()}
+    )
+
+
+def _enrich_index_only_matches(settings: Settings, matches: list[QueryMatch]) -> None:
+    """Enrich index-only mirrored capture matches in-place via live-fetch.
+
+    For each capture match whose front-matter declares ``mode: index-only`` with
+    a ``pointer``, resolve the live content and fold a bounded slice into the
+    match's snippet (retrieval-synthesis). Failures leave the match unchanged.
+    """
+    for index, match in enumerate(matches):
+        enriched_match = _build_external_match(settings, match)
+        if enriched_match is not None:
+            matches[index] = enriched_match
+
+
+def _mirror_capture_meta(text: str) -> tuple[str | None, str | None] | None:
+    """Parse ``mode`` and ``pointer`` from a capture's YAML front-matter.
+
+    Returns ``None`` when the text has no front-matter block; otherwise a
+    ``(mode, pointer)`` tuple where either element may be ``None`` if absent.
+    """
+    if not text.startswith("---"):
+        return None
+    end = text.find("\n---", 3)
+    if end == -1:
+        return None
+    mode: str | None = None
+    pointer: str | None = None
+    for raw_line in text[3:end].splitlines():
+        line = raw_line.strip()
+        if line.startswith("mode:"):
+            mode = line[len("mode:"):].strip().strip('"').strip("'")
+        elif line.startswith("pointer:"):
+            pointer = line[len("pointer:"):].strip().strip('"').strip("'")
+    return (mode, pointer)
+
 
 async def run_query(
     settings: Settings,
@@ -29,6 +155,26 @@ async def run_query(
     use_vector: bool = False,
     ensure_index: bool = False,
 ) -> QueryRunResult:
+    """Run a read-only query against all configured brain sources.
+
+    Retrieval-synthesis (live-fetch path)
+    --------------------------------------
+    When ``request.live_fetch`` is ``True`` the already-assembled LOCAL matches
+    (store / vault / vector / captures) are treated as the BRAIN (authoritative)
+    set.  For each index-only mirrored capture hit, the live-fetched full content
+    is used to produce an EXTERNAL :class:`~fritz_local_brain.models.QueryMatch`.
+    The brain and external sets are then combined via :func:`merge_matches` under
+    ``settings.merge_policy``:
+
+    - ``"brain-first"`` (default, epic §10): brain matches are authoritative and
+      always come first; external matches only fill remaining slots up to *limit*.
+    - ``"peer-ranked"``: flat append with dedup — an alternative ordering where
+      neither set is privileged.
+
+    When ``request.live_fetch`` is ``False`` (the default), the function returns
+    only locally-assembled matches in their natural order and :func:`merge_matches`
+    is never called, so all existing query tests are unaffected.
+    """
     started = datetime.now()
     errors: list[str] = []
     skipped: list[str] = []
@@ -127,6 +273,34 @@ async def run_query(
                 seen.add(key)
                 if len(matches) >= request.limit:
                     break
+
+    if request.live_fetch and not errors:
+        # Retrieval-synthesis: partition matches into brain (authoritative local)
+        # and external (live-fetched from index-only mirrored captures), then
+        # combine via merge_matches under the configured merge policy.
+        #
+        # Brain set  — everything assembled above EXCEPT index-only captures that
+        #              have a live-fetchable pointer (those become external).
+        # External set — enriched QueryMatch objects built from the live-fetched
+        #               full content of each index-only capture hit.
+        brain_matches: list[QueryMatch] = []
+        external_matches: list[QueryMatch] = []
+        for match in matches:
+            external = _build_external_match(settings, match)
+            if external is not None:
+                # Index-only mirror hit: the live-fetched version is external;
+                # the original in-brain stub is NOT included in the brain set
+                # (it would be a lower-quality duplicate of the external entry).
+                external_matches.append(external)
+            else:
+                brain_matches.append(match)
+        matches = merge_matches(
+            brain_matches,
+            external_matches,
+            policy=settings.merge_policy,
+            limit=request.limit,
+        )
+
     return QueryRunResult(
         run_id=str(uuid4()),
         started_at=started,

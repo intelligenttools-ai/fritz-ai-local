@@ -68,6 +68,19 @@ class ReconciliationOutcome(BaseModel):
     disposition: str = "applied"  # "applied" | "proposed" | "escalated"
 
 
+class MirrorSummary(BaseModel):
+    """Structured output from the mirror summarizer agent (WI12).
+
+    A faithful, concise summary of a single piece of EXTERNAL mirrored content,
+    produced for ingestion into the brain. No fabrication: it must preserve the
+    key facts of the source without inventing claims.
+    """
+
+    title: str
+    summary: str
+    key_points: list[str] = Field(default_factory=list)
+
+
 class CompileRunRequest(BaseModel):
     """Request body for a manual compile run."""
 
@@ -224,6 +237,10 @@ class QueryRunRequest(BaseModel):
     vault: str | None = None
     limit: int = Field(default=10, ge=1, le=50)
     scope: str = "active"
+    # WI12: when True, index-only mirrored hits are enriched in-place via a
+    # live-fetch of their stored ``pointer`` (retrieval-synthesis). Default off
+    # so existing query behaviour is unchanged.
+    live_fetch: bool = False
 
 
 class QueryMatch(BaseModel):
