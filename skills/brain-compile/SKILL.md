@@ -44,10 +44,32 @@ If service mode is disabled and `settings.local_brain_service.suggest_setup` is 
 
 If these instructions are being used inside the Local Brain service compile agent itself, do not call the service again. Continue with the workflow below and return the requested structured compile output.
 
-### 1. Read the vault registry
+### 1. Check for vault registry
 
-Read `~/.brain/registry.yaml` to get all available vaults and their domains.
-Each vault has a `.brain/manifest.yaml` mapping brain concepts to actual paths.
+Read `~/.brain/registry.yaml` if it exists.
+
+**If `registry.yaml` is present** and at least one vault with a `manifest.yaml` is configured, use the registry-backed path: read each vault's `.brain/manifest.yaml` to find its knowledge root, then continue from step 2 below, routing articles into vault knowledge directories.
+
+**If `registry.yaml` is absent** (or no vault manifests are found), compile into the **brain knowledge store** at `~/.brain/knowledge` instead.  Set `vault` to `"brain"` for every proposal and use the two-level layout:
+
+```
+~/.brain/knowledge/
+    index.md                  ← global MOC (maintained automatically)
+    common/
+        index.md              ← scope MOC
+        decisions/            ← architecture decisions, ADRs
+        lessons/              ← retrospective learnings, feedback
+        runbooks/             ← how-to, operational procedures
+        context/              ← background knowledge, glossaries
+    <project-slug>/
+        index.md
+        decisions/
+        lessons/
+        runbooks/
+        context/
+```
+
+Set `relative_path` to `<scope>/<section>/<slug>.md` where scope is `"common"` or a project slug, and section is one of `decisions`, `lessons`, `runbooks`, `context`.  The service maintains `index.md` MOC files automatically — do not write them manually.
 
 ### 2. Find unprocessed captures
 
