@@ -88,8 +88,11 @@ def test_binding_save_fact_delegates_via_subprocess():
     source = _binding_source()
     # writeBrainInboxFact must now spawn python3 against the save-fact hook and
     # parse the hook's stdout, rather than writing the file itself.
-    assert 'runCommand("python3"' in source, (
-        "binding must delegate to python3 via runCommand"
+    # Since fix/pi-binding-python3-spawn the call sites use the PYTHON constant
+    # (resolved via resolvePython()) rather than the bare literal "python3".
+    assert 'runCommand(PYTHON' in source, (
+        "binding must delegate to python3 via runCommand(PYTHON, …) "
+        "(bare 'python3' was replaced by the PYTHON resolved constant)"
     )
     assert "Saved to Fritz-Brain:" in source, (
         "binding must parse the save-fact hook's saved-path line"
