@@ -88,8 +88,8 @@ never restructures or migrates the brain store.
 
 ### External targets
 
-The registry now also carries an optional `external_targets:` block that
-lists off-brain systems the optional Docker mirror agent can pull data FROM:
+The registry also carries an optional `external_targets:` block that lists
+off-brain systems the optional Docker mirror agent can pull data FROM:
 
 | Kind | What it points to |
 |---|---|
@@ -100,13 +100,16 @@ lists off-brain systems the optional Docker mirror agent can pull data FROM:
 
 Each target has a `mirror_mode`:
 
-- `index-only` (default) — only a title/path index is mirrored in
-- `full-summary` — a full-text summary is mirrored in alongside the index
+- `index-only` (default) — only a title/path index is mirrored in; full
+  content is fetched live at query time via `live_fetch` when a query hits
+  an index-only capture
+- `full-summary` — a full-text summary produced by the mirror agent is
+  written as an inbox capture alongside the index entry
 
 External targets are **service mode only** and entirely additive. The brain
 store operates identically with or without them. Mirror execution (fetching
-and summarisation) is performed by the Docker mirror agent (WI11/WI12) and
-is not part of this schema definition.
+and summarisation) is performed by the Docker mirror agent and is triggered
+by the optional mirror scheduler or manually.
 
 ## Vault overlay — `<vault-path>/.brain/`
 
@@ -196,12 +199,46 @@ after saving. Default compile runs cap capture discovery to a safe batch size
 processor can run, Fritz Local writes `.compile-needed` and `.compile-failed`
 markers instead of silently piling up captures.
 
+## Brain knowledge store — `~/.brain/knowledge`
+
+The brain-owned durable knowledge store. Used in **registry-free local mode**
+(when no vault manifest is found) as the single target for compile output.
+Registry-free, relocatable: the store root comes from `brain_store_path`
+(config) or the `<brain_home>/knowledge` default — never from `registry.yaml`.
+The store is created automatically on first compile; no migration is required.
+
+Store layout:
+
+```
+~/.brain/knowledge/
+├── index.md                  ← global MOC (active articles only)
+├── archive.index.md          ← archive tier (superseded / historical)
+├── common/
+│   ├── index.md              ← scope MOC
+│   ├── decisions/            ← architecture decisions, ADRs
+│   ├── lessons/              ← retrospective learnings, feedback
+│   ├── runbooks/             ← how-to, operational procedures
+│   └── context/              ← background knowledge, glossaries
+└── <project-slug>/
+    ├── index.md
+    ├── decisions/
+    ├── lessons/
+    ├── runbooks/
+    └── context/
+```
+
+`common` holds cross-project knowledge. Each project slug is derived from the
+content routing decision made during compile. Index files (`index.md`) at each
+level are Maps of Content (MOCs) maintained automatically — do not write them
+manually. The global `archive.index.md` lists articles in archive-tier statuses
+(`superseded`, `historical`) separately from the active MOC.
+
 ## Knowledge articles
 
 The durable output. Markdown files under each vault's `knowledge` path
-(defined in its manifest). Written by `/fritz:brain-compile` and
-`/fritz:brain-ingest`, linted by `/fritz:brain-lint`, synced by
-`/fritz:brain-sync`.
+(defined in its manifest), or under `~/.brain/knowledge` in registry-free mode.
+Written by `/fritz:brain-compile` and `/fritz:brain-ingest`, linted by
+`/fritz:brain-lint`, synced by `/fritz:brain-sync`.
 
 Articles carry YAML frontmatter with at minimum a `type` field; see the
 schema for the full frontmatter spec.
@@ -216,13 +253,15 @@ required for existing articles, which default to `active`):
 | `active` | included (primary) | Default when field is absent |
 | `corroborated` | included (primary) | Confirmed by multiple sources |
 | `deprecated` | included (demoted) | Still visible but ranked after active/corroborated |
-| `superseded` | excluded | Hidden from default scope; reachable via `scope=all` |
-| `historical` | excluded | Hidden from default scope; reachable via `scope=all` |
+| `superseded` | excluded — archive tier | Hidden from default scope; reachable via `scope=include_archive` |
+| `historical` | excluded — archive tier | Hidden from default scope; reachable via `scope=include_archive` |
 
-The `scope` query parameter (`active` by default, or `all`) controls which
-articles are returned. In the `active` scope, `deprecated` matches appear after
-all `active`/`corroborated` matches; `superseded` and `historical` articles are
-never returned.
+The `scope` query parameter controls which articles are returned:
+
+- `active` (default) — primary matches (`active`, `corroborated`, no status)
+  followed by demoted (`deprecated`); archived articles are excluded
+- `include_archive` — same active results first, then archived articles appended
+- `all` — everything in natural order; no status filtering
 
 Articles may also carry optional bidirectional link lists:
 
@@ -231,6 +270,49 @@ Articles may also carry optional bidirectional link lists:
 
 Both fields are optional lists of strings. They are freeform references — no
 referential integrity is enforced at write time.
+
+### Reconciliation
+
+When a compile run produces a new store article in non-dry-run mode, the
+**reconciliation agent** compares it against related existing articles (found
+via the correlation feed — top-K related content by TF-IDF similarity). For
+each (new, old) pair it returns one of five verdicts:
+
+| Verdict | Effect |
+|---|---|
+| `corroborates` | old article promoted to `corroborated`; link added |
+| `refines` | no status change; bidirectional `refines`/`refined_by` links added |
+| `contradicts_supersedes` | old article demoted to `superseded`; old removed from active indexes, added to `archive.index.md` |
+| `context_split` | both articles gain a `scope` qualifier; no status change |
+| `orthogonal` | no changes |
+
+Only `contradicts_supersedes` moves an article to the archive tier.
+`context_split` retains both articles as active.
+
+**Autonomy** (`reconciliation_autonomy` setting):
+
+- `apply` (default) — verdicts are applied automatically; a bulk-supersession
+  safeguard escalates when the number of `contradicts_supersedes` verdicts in a
+  single run exceeds `bulk_supersession_threshold` (default 5) and no approval
+  token is supplied.
+- `propose` — verdicts are computed but not applied until an approval token is
+  provided.
+
+All status-mutating verdicts write a reversible record to
+`~/.brain/reconciliation-undo.jsonl`.
+
+### Archive and resurrection
+
+Articles with `superseded` or `historical` status live in the **archive tier**:
+they are excluded from the active `index.md` MOC files and from default
+(`active`) query results, but remain on disk and appear in `archive.index.md`.
+They are reachable via `scope=include_archive` or `scope=all`.
+
+An article that is superseded by an article that is itself later invalidated
+can be flagged for re-examination (`needs_rereconciliation: true` in
+frontmatter). The optional re-reconciliation sweep (`rereconciliation_enabled`,
+default off) processes these flagged articles, re-running the reconciliation
+agent to decide whether to restore active status.
 
 ## Project binding — `.fritz-local.json`
 

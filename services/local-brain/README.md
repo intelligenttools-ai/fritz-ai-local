@@ -2,16 +2,47 @@
 
 Optional Dockerized service-mode add-on for Fritz Local.
 
-The MVP starts with conservative compile and sync workflows. Compile loads
-`skills/brain-compile/SKILL.md` as the compile agent's task instructions,
-wraps all captures as untrusted data, asks a Pydantic AI agent for structured
-article write proposals, and applies only proposals that pass Python path and
-policy validation. Sync loads `skills/brain-sync/SKILL.md` as policy
-context, but execution is deterministic and limited to `none`, `local`, and
-guarded `git` targets.
+The service wraps the brain core — compile, reconciliation, mirror, query,
+sync, lint, and embeddings — behind a REST API (and an MCP server) with
+scheduled processing, optional vector indexing, and federation support.
 
-The compile agent can use one bounded read-only context tool to load captures,
-vaults, and existing article paths. It cannot write directly.
+**Brain store**: Compile writes to `~/.brain/knowledge` in registry-free
+(store) mode, or to registered vault manifests when configured. The typed
+layout is `<store>/<scope>/<section>/*.md` (scope = `common` or a project
+slug; sections = `decisions`, `lessons`, `runbooks`, `context`). Index
+files (`index.md` MOCs and `archive.index.md`) are maintained automatically.
+
+**Specialist-agent fleet**: Three Pydantic AI agents handle LLM-backed work.
+All writes pass through a Python security/validation layer before touching disk.
+
+| Agent | Role |
+|-------|------|
+| Compile agent | Reads captures, proposes article creates/updates |
+| Reconciliation agent | Compares new articles against related existing ones; returns a verdict applied per `reconciliation_autonomy` |
+| Mirror agent | Summarizes full-summary external targets; index-only targets get a stub capture with a `pointer` for live-fetch |
+
+**Federation (external targets)**: Defined in `registry.yaml`
+`external_targets:` and enabled with `MIRROR_ENABLED=true`. Supported kinds:
+`local-vault`, `mcp`, `drive`, `offsite`. Mirror modes: `index-only` (default,
+live-fetch at query time) or `full-summary` (agent summarizes into a capture).
+
+**Key config knobs** beyond LLM and embedding settings:
+
+| Setting | Default | What it controls |
+|---|---|---|
+| `RECONCILIATION_AUTONOMY` | `apply` | `apply` (auto) or `propose` (review-gate) |
+| `BULK_SUPERSESSION_THRESHOLD` | `5` | Max auto-supersessions before escalation |
+| `MIRROR_ENABLED` | `false` | Enable the mirror scheduler |
+| `MIRROR_INTERVAL_MINUTES` | `60` | Mirror scheduler interval |
+| `RERECONCILIATION_ENABLED` | `false` | Enable the re-reconciliation sweep |
+| `RERECONCILIATION_DRY_RUN` | `true` | Dry-run for the re-reconciliation sweep |
+| `MERGE_POLICY` | `brain-first` | How brain and live-fetched results are merged |
+
+Compile loads `skills/brain-compile/SKILL.md` as agent task instructions and
+wraps all captures as untrusted data; it cannot write directly. The compile
+agent uses one bounded read-only context tool. Sync loads `skills/brain-sync/SKILL.md`
+as policy context but execution is deterministic and limited to `none`, `local`,
+and guarded `git` targets.
 
 ## Agent Operating Mode
 

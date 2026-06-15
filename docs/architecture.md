@@ -3,12 +3,27 @@
 Fritz Local is deliberately small. It does three things:
 
 1. **Captures** every agent session and explicit fact into a single brain.
-2. **Compiles** those captures into per-vault knowledge articles.
+2. **Compiles** those captures into knowledge articles (in the brain store or
+   a registered vault).
 3. **Enforces** that agents consult the brain before planning and preserve new
    learnings before exit.
 
 Everything else — queries, ingest, sync, handovers, lint, update — sits around
 those three.
+
+## Two modes, one core
+
+Fritz Local runs in one of two modes depending on configuration:
+
+| Mode | When | Knowledge target |
+|------|------|-----------------|
+| **Local-only** | No Docker service, or service disabled | `~/.brain/knowledge` (brain store, registry-free) |
+| **Service (Docker)** | `local_brain_service.enabled: true`, service reachable | Same brain store + optional vault manifests + optional external targets + mirror |
+
+The **brain core** (capture → compile → store → query) is identical in both
+modes. The service adds a specialist-agent fleet, scheduled processing, optional
+vector embeddings, and federation via external targets. Switching modes never
+restructures or migrates the store.
 
 ## Contract-first, location-independent, four-platform model
 
@@ -114,27 +129,56 @@ All durable artifacts live under `~/.brain/capture/`:
   not facts — it makes auto-capture idempotent.
 - **log.md** is the append-only audit log.
 
-## Capture → compile flow
+## Capture → compile → store flow
 
 ```
-session → brain_capture.py → ~/.brain/capture/daily/YYYY-MM-DD.md
-explicit  → brain_save_fact / auto-capture → ~/.brain/capture/inbox/
-                                        │
-                                        │  (run /fritz:brain-compile)
-                                        ▼
-                      ┌─────────────────────────────────────┐
-                      │ Analyse content of each capture      │
-                      │ Route to the correct vault by topic  │
-                      └─────────────────────────────────────┘
-                                        │
-             ┌───────────────┬──────────┴──────────┬───────────────┐
-             ▼               ▼                     ▼               ▼
-         work vault    engineering vault      personal vault   research vault
+session     → brain_capture.py    → ~/.brain/capture/daily/YYYY-MM-DD.md
+explicit    → brain_save_fact     → ~/.brain/capture/inbox/
+auto        → brain_autocapture   → ~/.brain/capture/inbox/
+mirror      → run_mirror (Docker) → ~/.brain/capture/inbox/  (provenance-tagged)
+                                                │
+                                          (compile)
+                                                │
+                  ┌─────────────────────────────┴──────────────────────────┐
+                  │   Registry-free / local-only       Registry / service   │
+                  │                                                         │
+                  ▼                                                         ▼
+     ~/.brain/knowledge/<scope>/<section>/      <vault>/<knowledge-path>/
+          (brain store — default)                 (vault manifests)
+                  │                                        │
+           correlation                              correlation
+            (top-K TF-IDF)                          (not in vault mode)
+                  │
+          reconciliation agent
+          (compare new vs. related)
+                  │
+            verdict applied
+          (superseded → archive tier)
+                  │
+           index updated
+         (index.md + archive.index.md)
 ```
 
 The capture step is deliberately dumb — it does not care which directory the
 session ran in. Routing is the compile step's job: `/fritz:brain-compile` reads
-each capture, matches it to vault domains, and writes articles in the right vault.
+each capture and in registry-free mode writes articles directly to the brain
+store under `<scope>/<section>/`. In service mode with vault manifests, it
+routes to the appropriate registered vault instead.
+
+## Specialist-agent fleet (service mode)
+
+The service runs three specialist agents with deterministic validation:
+
+| Agent | Role |
+|-------|------|
+| **Compile agent** | Reads captures, proposes article creates/updates; output validated by Python security layer before write |
+| **Reconciliation agent** | Compares each new article against related existing content; returns a verdict that is applied (or proposed) automatically |
+| **Mirror agent** | Summarizes full-summary external targets into inbox captures; index-only targets generate minimal stub captures for live-fetch enrichment at query time |
+
+The query path is **deterministic** (no LLM): `BrainQueryAgent.search_store`
+does case-insensitive text scan with scope-aware status filtering, then
+`merge_matches` combines brain results with any live-fetched external content
+under the configured `merge_policy` (default `brain-first`).
 
 ## Skills: plain source → per-platform variants
 

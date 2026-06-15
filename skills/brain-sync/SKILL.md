@@ -33,7 +33,12 @@ If these instructions are being used inside the Local Brain service sync agent i
 
 ### 1. Identify what to sync
 
-Read `~/.brain/registry.yaml`. For each vault where `sync` is not `local` or `none`:
+Read `~/.brain/registry.yaml`. **Note**: the registry is optional — if it is
+absent the brain store (`~/.brain/knowledge`) operates normally without sync
+targets. Sync requires at least one registered vault with a `sync` target other
+than `local` or `none`.
+
+For each vault where `sync` is not `local` or `none`:
 1. Read the vault's `.brain/manifest.yaml` to find the `knowledge` path
 2. Read the vault's `.brain/log.md` to find the last SYNC operation timestamp
 3. Find all knowledge articles newer than the last sync (by file modification time or `updated` frontmatter)
