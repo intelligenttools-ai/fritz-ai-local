@@ -22,6 +22,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=(".env", "../../.env"), extra="ignore")
 
     brain_home: Path = Field(default=Path("/data/brain"), validation_alias=AliasChoices("LOCAL_BRAIN_HOME", "BRAIN_HOME"))
+    brain_store_path: Path | None = Field(default=None, validation_alias=AliasChoices("LOCAL_BRAIN_STORE_PATH", "BRAIN_STORE_PATH"))
     skills_dir: Path = Field(default=Path("/app/skills"), validation_alias=AliasChoices("LOCAL_BRAIN_SKILLS_DIR", "SKILLS_DIR"))
     path_map: str = Field(default="", validation_alias=AliasChoices("LOCAL_BRAIN_PATH_MAP", "BRAIN_PATH_MAP"))
 
@@ -59,6 +60,13 @@ class Settings(BaseSettings):
     capture_max_chars: int = Field(default=4000, ge=500, validation_alias=AliasChoices("LOCAL_BRAIN_CAPTURE_MAX_CHARS", "CAPTURE_MAX_CHARS"))
     compile_max_captures: int | None = Field(default=DEFAULT_COMPILE_MAX_CAPTURES, ge=1, validation_alias=AliasChoices("LOCAL_BRAIN_COMPILE_MAX_CAPTURES", "COMPILE_MAX_CAPTURES"))
 
+    @field_validator("brain_store_path", mode="before")
+    @classmethod
+    def empty_brain_store_path_is_unset(cls, value: object) -> object:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
     @field_validator("compile_max_captures", mode="before")
     @classmethod
     def empty_compile_max_captures_is_unset(cls, value: object) -> object:
@@ -67,6 +75,19 @@ class Settings(BaseSettings):
         if isinstance(value, str) and value.strip().lower() in {"all", "unbounded"}:
             return None
         return value
+
+    def resolve_brain_store_path(self) -> Path:
+        """Resolve the brain-owned knowledge store root.
+
+        The store is decoupled from the registry/vaults: when
+        ``brain_store_path`` is set it wins (relocatable, ``~`` expanded);
+        otherwise the store defaults to ``<brain_home>/knowledge``. No
+        registry is consulted to locate the store.
+        """
+
+        if self.brain_store_path is not None:
+            return Path(self.brain_store_path).expanduser()
+        return Path(self.brain_home).expanduser() / "knowledge"
 
     def normalized_api_key(self) -> str | None:
         if self.llm_api_key and self.llm_api_key.strip():

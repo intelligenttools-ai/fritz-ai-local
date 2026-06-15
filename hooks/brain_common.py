@@ -213,6 +213,41 @@ def get_setting(
     return default
 
 
+def get_brain_store_path(
+    *,
+    fritz_local: dict | None = None,
+    cwd: str | None = None,
+) -> Path:
+    """Resolve the brain-owned knowledge store root (registry-free).
+
+    Precedence (via :func:`get_setting`): project ``.fritz-local.json`` >
+    central ``registry.yaml`` ``settings:`` > default ``<BRAIN_HOME>/knowledge``.
+    The configured path is ``~``-expanded so the store is relocatable to any
+    folder. Locating the store never requires a registry: with an absent or
+    empty ``registry.yaml`` the default applies.
+    """
+
+    raw = get_setting("brain_store_path", default=None, fritz_local=fritz_local, cwd=cwd)
+    if raw:
+        return Path(str(raw)).expanduser()
+    return BRAIN_HOME / "knowledge"
+
+
+def ensure_brain_store_path(
+    *,
+    fritz_local: dict | None = None,
+    cwd: str | None = None,
+) -> Path:
+    """Resolve the store root and ensure its directory exists.
+
+    Structured sub-layout and indexes are introduced in later work items.
+    """
+
+    root = get_brain_store_path(fritz_local=fritz_local, cwd=cwd)
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
 def get_local_brain_service_config() -> dict:
     """Return optional Local Brain service config from registry settings."""
 

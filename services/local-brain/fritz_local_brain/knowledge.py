@@ -8,7 +8,30 @@ from typing import Any
 
 import yaml
 
+from .config import Settings
 from .models import ArticleWriteProposal
+
+
+def store_root(settings: Settings) -> Path:
+    """Resolve the brain-owned knowledge store root from settings.
+
+    Registry-free: the store location comes from ``brain_store_path`` (or the
+    ``<brain_home>/knowledge`` default), never from ``registry.yaml``.
+    """
+
+    return settings.resolve_brain_store_path()
+
+
+def ensure_store_root(settings: Settings) -> Path:
+    """Resolve the store root and ensure its directory exists.
+
+    Works with an absent or empty ``registry.yaml`` — no registry is read.
+    Structured sub-layout and indexes are introduced in later work items.
+    """
+
+    root = store_root(settings)
+    root.mkdir(parents=True, exist_ok=True)
+    return root
 
 
 def render_article(proposal: ArticleWriteProposal) -> str:
