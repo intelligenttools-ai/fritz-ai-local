@@ -50,6 +50,30 @@ def test_binding_invokes_python_core_hooks():
     )
 
 
+def test_runtime_hooks_resolved_from_brain_home_not_repo_path():
+    """Regression: the binding must resolve the runtime save/auto-capture hooks
+    from the install-managed ``~/.brain/hooks/`` (via ``brainHook``), NOT from a
+    computed ``<FRITZ_REPO>/hooks/`` path. When the extension is installed/loaded
+    from outside the repo (e.g. symlinked into pi's extensions dir), FRITZ_REPO
+    resolves wrong and the repo-path form fails with 'No such file or directory'.
+    """
+    source = _binding_source()
+    # A brainHook() helper resolves runtime scripts, preferring BRAIN_HOME/hooks.
+    assert "function brainHook(" in source, "expected a brainHook() resolver"
+    assert 'join(BRAIN_HOME, "hooks", name)' in source, (
+        "brainHook must prefer ~/.brain/hooks/<name>"
+    )
+    # The runtime calls go through brainHook, not a direct FRITZ_REPO hook path.
+    assert 'brainHook("brain_save_fact.py")' in source
+    assert 'brainHook("brain_autocapture.py")' in source
+    assert 'join(FRITZ_REPO, "hooks", "brain_save_fact.py")' not in source, (
+        "save-fact must not resolve directly from FRITZ_REPO/hooks"
+    )
+    assert 'join(FRITZ_REPO, "hooks", "brain_autocapture.py")' not in source, (
+        "auto-capture must not resolve directly from FRITZ_REPO/hooks"
+    )
+
+
 def test_binding_has_no_inline_frontmatter_duplication():
     source = _binding_source()
     # The `type: capture` frontmatter is now built only in Python
