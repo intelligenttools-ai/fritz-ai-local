@@ -10,8 +10,9 @@ from uuid import uuid4
 from pydantic_ai.usage import UsageLimits
 
 from .agents.compile_agent import CompileDeps, build_compile_agent
-from .captures import archive_processed_inbox_captures, capture_hash, list_all_captures, mark_captures_processed
+from .captures import archive_processed_inbox_captures, capture_hash, list_all_captures, mark_captures_processed, read_capture
 from .config import Settings
+from .correlation import find_related_articles
 from .indexes import update_directory_index, update_indexes_for_article
 from .knowledge import apply_article_write, ensure_store_root
 from .logs import append_global_log
@@ -158,12 +159,27 @@ async def run_compile(settings: Settings, request: CompileRunRequest) -> Compile
                         | simulated_article_paths.get(name, set())
                     )
 
+        if store_mode:
+            query_text = "\n\n".join(
+                read_capture(path, settings.capture_max_chars) for path in batch_paths
+            )
+            related = await find_related_articles(
+                settings,
+                query_text,
+                store_root=brain_store_root,
+                top_k=settings.correlation_top_k,
+                char_budget=settings.correlation_max_chars,
+            )
+        else:
+            related = []
+
         agent = build_compile_agent(settings, skill_text)
         deps = CompileDeps(
             capture_paths=batch_paths,
             vault_names=["brain"] if store_mode else sorted(manifests),
             article_paths=article_paths,
             capture_max_chars=settings.capture_max_chars,
+            related_articles=related,
         )
         if store_mode:
             prompt = f"""
