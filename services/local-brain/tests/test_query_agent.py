@@ -6,7 +6,7 @@ from fritz_local_brain import embeddings
 from fritz_local_brain.agents.query_agent import BrainQueryAgent
 from fritz_local_brain.config import Settings
 from fritz_local_brain.models import EmbeddingIndexResult, QueryRunRequest
-from fritz_local_brain.query_workflow import run_query
+from fritz_local_brain.query_workflow import _allowed_vector_paths, run_query
 
 
 def test_query_agent_skips_symlinked_knowledge_file(tmp_path) -> None:
@@ -586,3 +586,154 @@ def test_query_workflow_store_mode_excludes_historical_articles_by_default(tmp_p
     assert "common/context/hist-fact.md" not in active_paths
     assert "common/context/active-fact.md" in all_paths
     assert "common/context/hist-fact.md" in all_paths
+
+
+# ---------------------------------------------------------------------------
+# WI9: include_archive scope + vector allow-set (issue #94)
+# ---------------------------------------------------------------------------
+
+
+def test_query_workflow_store_mode_include_archive_returns_superseded_after_active(tmp_path) -> None:
+    """include_archive scope: superseded articles appear AFTER active results."""
+    brain_home = tmp_path / "brain"
+    skill_path = tmp_path / "skills" / "brain-query" / "SKILL.md"
+    store = brain_home / "knowledge"
+    active_article = store / "common" / "context" / "active-fact.md"
+    active_article.parent.mkdir(parents=True)
+    active_article.write_text("# Active Fact\n\nshared content needle\n", encoding="utf-8")
+    superseded_article = store / "common" / "context" / "old-fact.md"
+    superseded_article.write_text(
+        "---\nstatus: superseded\n---\n\n# Old Fact\n\nshared content needle\n", encoding="utf-8"
+    )
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Query Skill\n", encoding="utf-8")
+
+    # Default active scope: superseded excluded.
+    result_active = asyncio.run(
+        run_query(
+            Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills"),
+            QueryRunRequest(query="shared content needle", scope="active"),
+        )
+    )
+    active_paths = [m.path for m in result_active.matches if m.vault == "brain"]
+    assert "common/context/active-fact.md" in active_paths
+    assert "common/context/old-fact.md" not in active_paths
+
+    # include_archive: superseded RETURNED, AFTER the active article.
+    result_archive = asyncio.run(
+        run_query(
+            Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills"),
+            QueryRunRequest(query="shared content needle", scope="include_archive"),
+        )
+    )
+    archive_brain = [m.path for m in result_archive.matches if m.vault == "brain"]
+    assert "common/context/active-fact.md" in archive_brain
+    assert "common/context/old-fact.md" in archive_brain
+    # Active must come BEFORE superseded.
+    active_idx = archive_brain.index("common/context/active-fact.md")
+    superseded_idx = archive_brain.index("common/context/old-fact.md")
+    assert active_idx < superseded_idx, "superseded must appear after active in include_archive scope"
+
+
+def test_query_workflow_store_mode_include_archive_includes_historical(tmp_path) -> None:
+    """include_archive scope includes historical articles (after active)."""
+    brain_home = tmp_path / "brain"
+    skill_path = tmp_path / "skills" / "brain-query" / "SKILL.md"
+    store = brain_home / "knowledge"
+    active = store / "active.md"
+    active.parent.mkdir(parents=True)
+    active.write_text("# Active\n\nneedle-ia\n", encoding="utf-8")
+    historical = store / "hist.md"
+    historical.write_text("---\nstatus: historical\n---\n\n# Historical\n\nneedle-ia\n", encoding="utf-8")
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Query Skill\n", encoding="utf-8")
+
+    result = asyncio.run(
+        run_query(
+            Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills"),
+            QueryRunRequest(query="needle-ia", scope="include_archive"),
+        )
+    )
+    brain_paths = [m.path for m in result.matches if m.vault == "brain"]
+    assert "active.md" in brain_paths
+    assert "hist.md" in brain_paths
+    assert brain_paths.index("active.md") < brain_paths.index("hist.md")
+
+
+def test_query_workflow_store_mode_all_scope_includes_archived_in_natural_order(tmp_path) -> None:
+    """all scope includes everything in natural (sorted) order."""
+    brain_home = tmp_path / "brain"
+    skill_path = tmp_path / "skills" / "brain-query" / "SKILL.md"
+    store = brain_home / "knowledge"
+    (store / "a-superseded.md").parent.mkdir(parents=True)
+    (store / "a-superseded.md").write_text(
+        "---\nstatus: superseded\n---\n\n# Superseded\n\nneedle-all\n", encoding="utf-8"
+    )
+    (store / "b-active.md").write_text("# Active\n\nneedle-all\n", encoding="utf-8")
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Query Skill\n", encoding="utf-8")
+
+    result = asyncio.run(
+        run_query(
+            Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills"),
+            QueryRunRequest(query="needle-all", scope="all"),
+        )
+    )
+    brain_paths = [m.path for m in result.matches if m.vault == "brain"]
+    assert "a-superseded.md" in brain_paths
+    assert "b-active.md" in brain_paths
+
+
+def test_allowed_vector_paths_excludes_archive_in_active_scope(tmp_path) -> None:
+    """_allowed_vector_paths with scope='active' excludes superseded store articles."""
+    brain_home = tmp_path / "brain"
+    store = brain_home / "knowledge"
+    active = store / "active.md"
+    active.parent.mkdir(parents=True)
+    active.write_text("# Active\n\nContent.\n", encoding="utf-8")
+    superseded = store / "old.md"
+    superseded.write_text("---\nstatus: superseded\n---\n\n# Old\n\nContent.\n", encoding="utf-8")
+    # No registry → store mode.
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home)
+
+    active_keys = _allowed_vector_paths(settings, {}, "_captures", scope="active")
+    archive_keys = _allowed_vector_paths(settings, {}, "_captures", scope="include_archive")
+
+    # Active scope: superseded excluded.
+    assert ("brain", "active.md") in active_keys
+    assert ("brain", "old.md") not in active_keys
+
+    # include_archive: superseded included.
+    assert ("brain", "active.md") in archive_keys
+    assert ("brain", "old.md") in archive_keys
+
+
+def test_allowed_vector_paths_excludes_historical_in_active_scope(tmp_path) -> None:
+    """_allowed_vector_paths with scope='active' excludes historical store articles."""
+    brain_home = tmp_path / "brain"
+    store = brain_home / "knowledge"
+    store.mkdir(parents=True)
+    (store / "active.md").write_text("# Active\n\nContent.\n", encoding="utf-8")
+    (store / "hist.md").write_text("---\nstatus: historical\n---\n\n# Hist\n\nContent.\n", encoding="utf-8")
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home)
+
+    active_keys = _allowed_vector_paths(settings, {}, "_captures", scope="active")
+    all_keys = _allowed_vector_paths(settings, {}, "_captures", scope="all")
+
+    assert ("brain", "active.md") in active_keys
+    assert ("brain", "hist.md") not in active_keys
+    assert ("brain", "hist.md") in all_keys
+
+
+def test_allowed_vector_paths_all_scope_includes_archive(tmp_path) -> None:
+    """_allowed_vector_paths with scope='all' includes archive-status articles."""
+    brain_home = tmp_path / "brain"
+    store = brain_home / "knowledge"
+    store.mkdir(parents=True)
+    (store / "superseded.md").write_text(
+        "---\nstatus: superseded\n---\n\n# Old\n\nContent.\n", encoding="utf-8"
+    )
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home)
+
+    keys = _allowed_vector_paths(settings, {}, "_captures", scope="all")
+    assert ("brain", "superseded.md") in keys

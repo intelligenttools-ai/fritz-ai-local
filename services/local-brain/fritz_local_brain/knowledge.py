@@ -25,10 +25,25 @@ DEFAULT_VISIBLE_STATUSES: frozenset[str] = frozenset({"active", "corroborated", 
 # Statuses that are visible but ranked AFTER primary (active/corroborated) matches.
 DEMOTED_STATUSES: frozenset[str] = frozenset({"deprecated"})
 
+# Statuses that drop OUT of the default retrieval scope into the archive tier.
+# These articles are still stored + indexed in a separate archive scope and are
+# reachable via the ``include_archive`` query scope.
+ARCHIVE_STATUSES: frozenset[str] = frozenset({"superseded", "historical"})
+
 
 def normalize_status(value: str) -> str:
     """Lowercase and strip a status string."""
     return value.lower().strip()
+
+
+def is_archived_status(status: str | None) -> bool:
+    """Return True when *status* is an archive-tier status (superseded / historical).
+
+    ``None`` or empty string ⇒ not archived (forward-compatible default: active).
+    """
+    if not status:
+        return False
+    return normalize_status(status) in ARCHIVE_STATUSES
 
 
 def store_root(settings: Settings) -> Path:
@@ -112,6 +127,7 @@ def apply_frontmatter_update(
     append_links: dict[str, list[str]] | None = None,
     remove_links: dict[str, list[str]] | None = None,
     scope_qualifier: str | None = None,
+    set_fields: dict[str, Any] | None = None,
     dry_run: bool = False,
 ) -> None:
     """Apply a frontmatter mutation to an EXISTING store article file in place.
@@ -122,7 +138,8 @@ def apply_frontmatter_update(
       ``append_links`` ensures a list and appends missing entries (dedup, stable
       order); for each key in ``remove_links`` removes the listed entries from the
       named list-valued key (prunes the key if it becomes empty); sets ``scope``
-      from ``scope_qualifier`` if given; bumps ``updated``.
+      from ``scope_qualifier`` if given; merges any arbitrary ``set_fields``
+      key-value pairs (raw, last-write wins); bumps ``updated``.
     - Re-renders ``---\\n<yaml>\\n---\\n\\n<body>`` preserving the body.
     - No-op on ``dry_run``.
     """
@@ -162,6 +179,10 @@ def apply_frontmatter_update(
     if scope_qualifier is not None:
         frontmatter["scope"] = scope_qualifier
 
+    if set_fields:
+        for key, value in set_fields.items():
+            frontmatter[key] = value
+
     frontmatter["updated"] = datetime.now().strftime("%Y-%m-%d")
 
     yaml_text = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=False).strip()
@@ -179,6 +200,49 @@ def _current_status(path: Path) -> str:
     if isinstance(raw, str) and raw.strip():
         return normalize_status(raw)
     return DEFAULT_STATUS
+
+
+def mark_for_rereconciliation(path: Path, *, store_root: Path, dry_run: bool = False) -> None:
+    """Set ``needs_rereconciliation: true`` on a store article in place.
+
+    Used to flag archived predecessors whose superseder has itself been
+    invalidated — so their knowledge may be worth revisiting.  Path-safe:
+    *path* must resolve inside *store_root*.  No-op on ``dry_run``.
+    """
+    apply_frontmatter_update(
+        path,
+        store_root=store_root,
+        set_fields={"needs_rereconciliation": True},
+        dry_run=dry_run,
+    )
+
+
+def find_rereconciliation_flagged(store_root: Path) -> list[str]:
+    """Return relative paths of store articles flagged ``needs_rereconciliation: true``.
+
+    Scans all markdown files under *store_root* (excluding ``index.md`` and
+    symlinks).  Returns paths relative to *store_root* in sorted order.
+    Returns an empty list when *store_root* does not exist.
+    """
+    if not store_root.exists():
+        return []
+    flagged: list[str] = []
+    for path in sorted(store_root.rglob("*.md")):
+        if path.name == "index.md":
+            continue
+        if not path.is_file() or path.is_symlink():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        frontmatter, _body = _split_front_matter(text)
+        if frontmatter.get("needs_rereconciliation") is True:
+            try:
+                flagged.append(str(path.relative_to(store_root)))
+            except ValueError:
+                continue
+    return flagged
 
 
 def apply_reconciliation_verdict(
@@ -239,6 +303,31 @@ def apply_reconciliation_verdict(
         actions.append(f"old refined_by += {new_rel}; new refines += {old_rel}")
 
     elif verdict.verdict == "contradicts_supersedes":
+        # --- Resurrection flagging: OLD previously superseded predecessors ---
+        # OLD's superseder (OLD itself) is now being invalidated, so any
+        # articles that OLD previously superseded should be flagged for
+        # re-reconciliation (their superseder is no longer authoritative).
+        resurrection_flagged: list[str] = []
+        try:
+            old_text = old_path.read_text(encoding="utf-8", errors="replace")
+            old_fm, _body = _split_front_matter(old_text)
+            old_supersedes = old_fm.get("supersedes")
+            if isinstance(old_supersedes, list):
+                predecessor_relpaths = old_supersedes
+            elif isinstance(old_supersedes, str) and old_supersedes.strip():
+                predecessor_relpaths = [old_supersedes.strip()]
+            else:
+                predecessor_relpaths = []
+            for pred_rel in predecessor_relpaths:
+                pred_abs = (store_root / pred_rel).resolve()
+                if not is_relative_to(pred_abs, store_root.resolve()):
+                    continue
+                if not pred_abs.exists():
+                    continue
+                mark_for_rereconciliation(pred_abs, store_root=store_root, dry_run=dry_run)
+                resurrection_flagged.append(pred_rel)
+        except OSError:
+            pass
         apply_frontmatter_update(
             old_path,
             store_root=store_root,
@@ -252,7 +341,10 @@ def apply_reconciliation_verdict(
             append_links={"supersedes": [old_rel]},
             dry_run=dry_run,
         )
-        actions.append(f"old status -> superseded; superseded_by += {new_rel}; new supersedes += {old_rel}")
+        action_str = f"old status -> superseded; superseded_by += {new_rel}; new supersedes += {old_rel}"
+        if resurrection_flagged:
+            action_str += f"; needs_rereconciliation flagged on predecessors: {resurrection_flagged}"
+        actions.append(action_str)
 
     elif verdict.verdict == "context_split":
         scope = verdict.scope_qualifier or "scope-specific"
