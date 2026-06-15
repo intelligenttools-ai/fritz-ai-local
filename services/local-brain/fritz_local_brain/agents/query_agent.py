@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from ..captures import list_queryable_captures, read_capture_raw
-from ..knowledge import DEFAULT_VISIBLE_STATUSES, DEMOTED_STATUSES, normalize_status
+from ..knowledge import ARCHIVE_STATUSES, DEFAULT_VISIBLE_STATUSES, DEMOTED_STATUSES, normalize_status
 from ..manifests import resolve_manifest_path
 from ..models import QueryMatch
 from ..security import is_excluded
@@ -71,10 +71,12 @@ class BrainQueryAgent:
         - ``"active"`` (default): INCLUDE active/corroborated/no-status
           (primary), INCLUDE deprecated (demoted — appended after primary),
           EXCLUDE superseded and historical.
+        - ``"include_archive"``: same active results FIRST (primary + demoted),
+          then archived (superseded/historical) appended after.
         - ``"all"``: include everything, natural order.
 
-        The result is primary matches followed by demoted matches, truncated
-        to *remaining* total.
+        The result is primary matches followed by demoted then (for
+        ``include_archive``) archived matches, truncated to *remaining* total.
         """
 
         if store_root is None or not store_root.exists():
@@ -85,6 +87,7 @@ class BrainQueryAgent:
         needle = query.casefold()
         primary: list[QueryMatch] = []
         demoted: list[QueryMatch] = []
+        archived: list[QueryMatch] = []
         for path in sorted(store_root.glob("**/*.md")):
             if path.name == "index.md":
                 continue
@@ -94,12 +97,27 @@ class BrainQueryAgent:
                 text = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            if scope != "all":
-                # Compute status once and reuse for both visibility and demotion checks.
-                status = _status_of(text)
-                effective = status if status is not None else "active"
-                if effective not in DEFAULT_VISIBLE_STATUSES:
-                    continue
+            # Compute status once; reuse for all routing decisions.
+            status = _status_of(text)
+            effective = status if status is not None else "active"
+
+            if scope == "all":
+                position = text.casefold().find(needle)
+                if position >= 0:
+                    primary.append(QueryMatch(
+                        vault="brain",
+                        path=str(path.relative_to(store_root)),
+                        title=_title_for(path, text),
+                        snippet=_snippet(text, position),
+                    ))
+                continue
+
+            # Active and include_archive: route by status tier.
+            is_archive = effective in ARCHIVE_STATUSES
+            if scope == "active" and is_archive:
+                # Exclude archived articles from default active scope.
+                continue
+            # For include_archive, archived articles are collected separately.
             position = text.casefold().find(needle)
             if position < 0:
                 continue
@@ -109,15 +127,19 @@ class BrainQueryAgent:
                 title=_title_for(path, text),
                 snippet=_snippet(text, position),
             )
-            if scope != "all":
-                if effective in DEMOTED_STATUSES:
-                    demoted.append(match)
-                else:
-                    primary.append(match)
+            if is_archive:
+                # Only reachable when scope == "include_archive"
+                archived.append(match)
+            elif effective in DEMOTED_STATUSES:
+                demoted.append(match)
             else:
                 primary.append(match)
+
         # Demoted (deprecated) matches never consume the primary budget: active/
         # corroborated matches fill the budget first; deprecated fills leftover slots.
+        # Archived (superseded/historical) are appended last for include_archive.
+        if scope == "include_archive":
+            return (primary + demoted + archived)[:remaining]
         return (primary + demoted)[:remaining]
 
     def search_captures(self, brain_home: Path, query: str, remaining: int) -> list[QueryMatch]:

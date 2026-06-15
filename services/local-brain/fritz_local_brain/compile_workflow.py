@@ -14,8 +14,8 @@ from .agents.reconciliation_agent import ReconciliationDeps, build_reconciliatio
 from .captures import archive_processed_inbox_captures, capture_hash, list_all_captures, mark_captures_processed, read_capture
 from .config import Settings
 from .correlation import find_related_articles
-from .indexes import update_directory_index, update_indexes_for_article
-from .knowledge import _current_status, apply_article_write, apply_reconciliation_verdict, ensure_store_root
+from .indexes import backfill_indexes, update_directory_index, update_indexes_for_article
+from .knowledge import ARCHIVE_STATUSES, _current_status, apply_article_write, apply_reconciliation_verdict, ensure_store_root
 from .logs import append_global_log, append_reconciliation_undo
 from .manifests import load_manifest, resolve_manifest_path
 from .models import AppliedArticleWrite, ArticleWriteProposal, CompileRunRequest, CompileRunResult, ReconciliationOutcome
@@ -332,6 +332,15 @@ Available vaults:
                 f"Reconciled {len(reconciliations)} pairs across {len(applied_store_targets)} new articles ({summary}; {disposition_note})",
                 request.dry_run,
             )
+            # Rebuild active + archive indexes when reconciliation moved any
+            # article into an archive status (contradicts_supersedes applied).
+            archived_by_reconciliation = any(
+                o.applied and o.verdict == "contradicts_supersedes"
+                for o in reconciliations
+            )
+            if archived_by_reconciliation:
+                assert brain_store_root is not None
+                backfill_indexes(brain_store_root, dry_run=False)
 
     for warning in nonfatal_warnings:
         append_global_log(settings.brain_home, "COMPILE", warning, request.dry_run)

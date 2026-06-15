@@ -208,7 +208,17 @@ class EmbeddingRefreshScheduleResult(BaseModel):
 
 
 class QueryRunRequest(BaseModel):
-    """Request body for a read-only brain query."""
+    """Request body for a read-only brain query.
+
+    Scope semantics for brain-store retrieval:
+
+    - ``"active"`` (default): primary results (active/corroborated/no-status)
+      followed by demoted (deprecated).  Archived (superseded/historical)
+      articles are EXCLUDED.
+    - ``"include_archive"``: same as active, but archived articles are appended
+      AFTER the active+demoted results.
+    - ``"all"``: everything in natural (sorted) order; no status filtering.
+    """
 
     query: str = Field(min_length=1)
     vault: str | None = None

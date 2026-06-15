@@ -10,7 +10,8 @@ from .agents.query_agent import BrainQueryAgent
 from .captures import list_queryable_captures
 from .config import Settings
 from .embeddings import embedding_index_unavailable_reason, ensure_embedding_index, search_embedding_index
-from .knowledge import store_root
+from .knowledge import ARCHIVE_STATUSES, store_root
+from .agents.query_agent import _status_of as _qa_status_of
 from .manifests import load_manifest, resolve_manifest_path
 from .models import QueryRunRequest, QueryRunResult
 from .paths import PathMapper
@@ -97,7 +98,7 @@ async def run_query(
                     skipped.append(f"vector search: {unavailable_reason}")
                     vector_search_available = False
             seen = {(match.vault, match.path) for match in matches}
-            allowed_vector_paths = _allowed_vector_paths(settings, vault_paths, capture_vault_name)
+            allowed_vector_paths = _allowed_vector_paths(settings, vault_paths, capture_vault_name, scope=request.scope)
             if request.vault:
                 allowed_vector_paths = {key for key in allowed_vector_paths if key[0] == request.vault}
             try:
@@ -137,7 +138,22 @@ async def run_query(
     )
 
 
-def _allowed_vector_paths(settings: Settings, vault_paths: dict[str, Path], capture_vault_name: str) -> set[tuple[str, str]]:
+def _allowed_vector_paths(
+    settings: Settings,
+    vault_paths: dict[str, Path],
+    capture_vault_name: str,
+    scope: str = "active",
+) -> set[tuple[str, str]]:
+    """Compute the set of (vault, relpath) keys allowed in vector search.
+
+    Scope filtering for STORE keys:
+    - ``"active"`` (default): exclude store articles whose status ∈
+      ARCHIVE_STATUSES (superseded/historical).
+    - ``"include_archive"`` or ``"all"``: include all store articles regardless
+      of status.
+
+    Capture keys and registry-vault keys are unaffected by scope.
+    """
     allowed: set[tuple[str, str]] = set()
     for capture in list_queryable_captures(settings.brain_home).paths:
         try:
@@ -152,14 +168,25 @@ def _allowed_vector_paths(settings: Settings, vault_paths: dict[str, Path], capt
         if (manifest := load_manifest(path)) is not None
     }
     if not manifests:
-        # Store mode: add brain-store articles as ("brain", relpath) keys.
+        # Store mode: add brain-store articles as ("brain", relpath) keys,
+        # filtering by scope for archive-status articles.
         brain_store_root = store_root(settings)
+        exclude_archive = scope == "active"
         if brain_store_root.exists():
             for path in brain_store_root.glob("**/*.md"):
                 if path.name == "index.md":
                     continue
                 if not path.is_file() or path.is_symlink():
                     continue
+                if exclude_archive:
+                    try:
+                        text = path.read_text(encoding="utf-8", errors="replace")
+                    except OSError:
+                        continue
+                    status = _qa_status_of(text)
+                    effective = status if status is not None else "active"
+                    if effective in ARCHIVE_STATUSES:
+                        continue
                 try:
                     allowed.add((_BRAIN_VAULT_NAME, str(path.relative_to(brain_store_root))))
                 except ValueError:

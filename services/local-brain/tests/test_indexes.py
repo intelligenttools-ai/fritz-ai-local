@@ -19,6 +19,7 @@ import pytest
 from fritz_local_brain.indexes import (
     COMMON_SCOPE,
     SECTIONS,
+    _ensure_scope_index,
     backfill_indexes,
     build_global_moc,
     update_directory_index,
@@ -130,6 +131,9 @@ class TestBuildGlobalMoc:
         myproject.mkdir(parents=True)
         _make_article(myproject, "b.md")
 
+        # Scope indexes must exist for build_global_moc to link them (Fix 3).
+        _ensure_scope_index(tmp_path, COMMON_SCOPE, dry_run=False)
+        _ensure_scope_index(tmp_path, "myproject", dry_run=False)
         build_global_moc(tmp_path, dry_run=False)
 
         moc = tmp_path / "index.md"
@@ -154,6 +158,8 @@ class TestBuildGlobalMoc:
         (tmp_path / COMMON_SCOPE / "decisions").mkdir(parents=True)
         _make_article(tmp_path / COMMON_SCOPE / "decisions", "x.md")
 
+        # Scope index must exist for build_global_moc to link it (Fix 3).
+        _ensure_scope_index(tmp_path, COMMON_SCOPE, dry_run=False)
         build_global_moc(tmp_path, dry_run=False)
         content_first = (tmp_path / "index.md").read_text(encoding="utf-8")
 
@@ -402,3 +408,306 @@ def test_sections_constant_contains_expected_names() -> None:
 
 def test_common_scope_constant() -> None:
     assert COMMON_SCOPE == "common"
+
+
+# ---------------------------------------------------------------------------
+# WI9: Archive-aware index building (issue #94)
+# ---------------------------------------------------------------------------
+
+
+def _make_article_with_status(directory: Path, filename: str, title: str, status: str | None = None) -> Path:
+    """Create a minimal markdown file with optional status frontmatter."""
+    directory.mkdir(parents=True, exist_ok=True)
+    article = directory / filename
+    if status:
+        fm = f"---\ntitle: {title}\nstatus: {status}\nsummary: summary for {title}\n---\n\nBody.\n"
+    else:
+        fm = f"---\ntitle: {title}\nsummary: summary for {title}\n---\n\nBody.\n"
+    article.write_text(fm, encoding="utf-8")
+    return article
+
+
+class TestArchiveAwareBackfill:
+    def test_backfill_excludes_superseded_from_active_leaf_index(self, tmp_path: Path) -> None:
+        store = tmp_path / "store"
+        d = store / COMMON_SCOPE / "context"
+        active = _make_article_with_status(d, "active.md", "Active Article")
+        superseded = _make_article_with_status(d, "old.md", "Old Article", status="superseded")
+
+        backfill_indexes(store, dry_run=False)
+
+        leaf_index = d / "index.md"
+        assert leaf_index.exists()
+        content = leaf_index.read_text(encoding="utf-8")
+        assert "Active Article" in content
+        assert "Old Article" not in content
+
+    def test_backfill_excludes_historical_from_active_leaf_index(self, tmp_path: Path) -> None:
+        store = tmp_path / "store"
+        d = store / COMMON_SCOPE / "lessons"
+        _make_article_with_status(d, "active.md", "Active Lesson")
+        _make_article_with_status(d, "hist.md", "Historical Lesson", status="historical")
+
+        backfill_indexes(store, dry_run=False)
+
+        leaf_content = (d / "index.md").read_text(encoding="utf-8")
+        assert "Active Lesson" in leaf_content
+        assert "Historical Lesson" not in leaf_content
+
+    def test_backfill_creates_archive_index_with_archived_article(self, tmp_path: Path) -> None:
+        store = tmp_path / "store"
+        d = store / COMMON_SCOPE / "context"
+        _make_article_with_status(d, "active.md", "Active Article")
+        _make_article_with_status(d, "old.md", "Old Article", status="superseded")
+
+        backfill_indexes(store, dry_run=False)
+
+        archive_index = store / "archive.index.md"
+        assert archive_index.exists(), "archive.index.md should be created when archived articles exist"
+        archive_content = archive_index.read_text(encoding="utf-8")
+        assert "Old Article" in archive_content
+        assert "superseded" in archive_content
+        # Active article must NOT appear in the archive index.
+        assert "Active Article" not in archive_content
+
+    def test_backfill_archive_index_lists_both_superseded_and_historical(self, tmp_path: Path) -> None:
+        store = tmp_path / "store"
+        d = store / COMMON_SCOPE / "context"
+        _make_article_with_status(d, "sup.md", "Superseded Article", status="superseded")
+        _make_article_with_status(d, "hist.md", "Historical Article", status="historical")
+        _make_article_with_status(d, "active.md", "Active Article")
+
+        backfill_indexes(store, dry_run=False)
+
+        archive_content = (store / "archive.index.md").read_text(encoding="utf-8")
+        assert "Superseded Article" in archive_content
+        assert "Historical Article" in archive_content
+        assert "Active Article" not in archive_content
+
+    def test_backfill_no_archive_index_when_no_archived_articles(self, tmp_path: Path) -> None:
+        store = tmp_path / "store"
+        d = store / COMMON_SCOPE / "context"
+        _make_article_with_status(d, "active.md", "Active Article")
+
+        backfill_indexes(store, dry_run=False)
+
+        assert not (store / "archive.index.md").exists(), "archive.index.md should not be created when no archived articles exist"
+
+    def test_backfill_active_index_and_archive_index_are_disjoint(self, tmp_path: Path) -> None:
+        store = tmp_path / "store"
+        d = store / COMMON_SCOPE / "decisions"
+        _make_article_with_status(d, "active.md", "Active Decision")
+        _make_article_with_status(d, "old.md", "Old Decision", status="superseded")
+
+        backfill_indexes(store, dry_run=False)
+
+        # Global MOC should not include the superseded article directly.
+        global_moc = store / "index.md"
+        assert global_moc.exists()
+        # The archive index should exist.
+        archive_index = store / "archive.index.md"
+        assert archive_index.exists()
+        archive_content = archive_index.read_text(encoding="utf-8")
+        leaf_content = (d / "index.md").read_text(encoding="utf-8")
+        assert "Old Decision" in archive_content
+        assert "Old Decision" not in leaf_content
+
+    def test_backfill_idempotent_with_archive(self, tmp_path: Path) -> None:
+        store = tmp_path / "store"
+        d = store / COMMON_SCOPE / "context"
+        _make_article_with_status(d, "active.md", "Active Article")
+        _make_article_with_status(d, "old.md", "Old Article", status="superseded")
+
+        backfill_indexes(store, dry_run=False)
+        snap1 = {p: p.read_text(encoding="utf-8") for p in store.rglob("*.md") if "index" in p.name}
+        backfill_indexes(store, dry_run=False)
+        snap2 = {p: p.read_text(encoding="utf-8") for p in store.rglob("*.md") if "index" in p.name}
+
+        assert snap1 == snap2
+
+    def test_backfill_dry_run_does_not_write_archive_index(self, tmp_path: Path) -> None:
+        store = tmp_path / "store"
+        d = store / COMMON_SCOPE / "context"
+        _make_article_with_status(d, "old.md", "Old Article", status="superseded")
+
+        backfill_indexes(store, dry_run=True)
+
+        assert not (store / "archive.index.md").exists()
+
+
+# ---------------------------------------------------------------------------
+# Disjointness regression tests (Fix 1 / Fix 2 / Fix 3 — issue #94)
+# ---------------------------------------------------------------------------
+
+
+class TestArchiveDisjointness:
+    """Verify that active and archive indexes are strictly disjoint when a
+    section or scope becomes 100 % archived."""
+
+    # -- Fix 1 / Fix 2: all-archived section ----------------------------------
+
+    def test_all_archived_section_no_dangling_leaf_index(self, tmp_path: Path) -> None:
+        """When every article in a section is archived, backfill_indexes must
+        remove the section leaf index.md (no dangling link)."""
+        store = tmp_path / "store"
+        d = store / COMMON_SCOPE / "decisions"
+        _make_article_with_status(d, "adr-old.md", "Old ADR", status="superseded")
+
+        backfill_indexes(store, dry_run=False)
+
+        # No leaf index should exist for the all-archived section.
+        assert not (d / "index.md").exists(), (
+            "decisions/index.md must not exist when all articles are archived"
+        )
+
+    def test_all_archived_section_not_in_scope_moc(self, tmp_path: Path) -> None:
+        """The scope MOC must NOT link the all-archived section (Fix 1 / Fix 2)."""
+        store = tmp_path / "store"
+        d = store / COMMON_SCOPE / "decisions"
+        _make_article_with_status(d, "adr-old.md", "Old ADR", status="superseded")
+        # Add an active article in a different section so the scope MOC is created.
+        _make_article_with_status(
+            store / COMMON_SCOPE / "lessons", "lesson.md", "Active Lesson"
+        )
+
+        backfill_indexes(store, dry_run=False)
+
+        scope_moc = store / COMMON_SCOPE / "index.md"
+        assert scope_moc.exists(), "scope index must exist (has active lessons)"
+        content = scope_moc.read_text(encoding="utf-8")
+        assert "decisions" not in content, (
+            "scope MOC must not link decisions when all its articles are archived"
+        )
+        assert "lessons" in content
+
+    def test_all_archived_section_article_in_archive_index(self, tmp_path: Path) -> None:
+        """Archived articles in an all-archived section appear in archive.index.md."""
+        store = tmp_path / "store"
+        d = store / COMMON_SCOPE / "decisions"
+        _make_article_with_status(d, "adr-old.md", "Old ADR", status="superseded")
+
+        backfill_indexes(store, dry_run=False)
+
+        archive = store / "archive.index.md"
+        assert archive.exists()
+        assert "Old ADR" in archive.read_text(encoding="utf-8")
+
+    # -- Fix 3: all-archived scope --------------------------------------------
+
+    def test_all_archived_scope_not_in_global_moc(self, tmp_path: Path) -> None:
+        """A scope whose every article is archived must not appear in the
+        global active index.md (Fix 3)."""
+        store = tmp_path / "store"
+        # proj-x: all articles historical → scope must be absent from global MOC.
+        _make_article_with_status(
+            store / "proj-x" / "decisions", "adr.md", "Old ADR", status="historical"
+        )
+        # common: has an active article → must still appear.
+        _make_article_with_status(
+            store / COMMON_SCOPE / "lessons", "lesson.md", "Active Lesson"
+        )
+
+        backfill_indexes(store, dry_run=False)
+
+        global_moc = store / "index.md"
+        assert global_moc.exists(), "global MOC should exist (common has active content)"
+        content = global_moc.read_text(encoding="utf-8")
+        assert "common" in content
+        assert "proj-x" not in content, (
+            "global MOC must not link proj-x when all its articles are archived"
+        )
+
+    def test_all_archived_scope_article_in_archive_index(self, tmp_path: Path) -> None:
+        """The archived article from an all-archived scope appears in archive.index.md."""
+        store = tmp_path / "store"
+        _make_article_with_status(
+            store / "proj-x" / "decisions", "adr.md", "Old ADR", status="historical"
+        )
+
+        backfill_indexes(store, dry_run=False)
+
+        archive = store / "archive.index.md"
+        assert archive.exists()
+        assert "Old ADR" in archive.read_text(encoding="utf-8")
+
+    # -- Fix 2: stale scope index cleanup -------------------------------------
+
+    def test_stale_scope_index_removed_when_scope_goes_all_archived(
+        self, tmp_path: Path
+    ) -> None:
+        """When a scope transitions from active to all-archived, the stale
+        scope index.md must be removed on the next backfill_indexes run."""
+        store = tmp_path / "store"
+        d = store / COMMON_SCOPE / "decisions"
+        active_article = _make_article_with_status(d, "adr-001.md", "Active ADR")
+
+        # First run: scope is active → scope index.md should exist.
+        backfill_indexes(store, dry_run=False)
+        scope_index = store / COMMON_SCOPE / "index.md"
+        assert scope_index.exists(), "scope index must exist while articles are active"
+
+        # Transition: mark the only article as superseded.
+        active_article.write_text(
+            "---\ntitle: Active ADR\nstatus: superseded\nsummary: now archived\n---\n\nBody.\n",
+            encoding="utf-8",
+        )
+
+        # Second run: scope is now all-archived → stale scope index.md removed.
+        backfill_indexes(store, dry_run=False)
+        assert not scope_index.exists(), (
+            "stale scope index.md must be removed when scope goes all-archived"
+        )
+
+    def test_idempotency_all_archived_section(self, tmp_path: Path) -> None:
+        """Running backfill_indexes twice yields identical files even when a
+        section is 100 % archived."""
+        store = tmp_path / "store"
+        _make_article_with_status(
+            store / COMMON_SCOPE / "decisions", "adr.md", "Old ADR", status="superseded"
+        )
+        _make_article_with_status(
+            store / COMMON_SCOPE / "lessons", "lesson.md", "Active Lesson"
+        )
+
+        backfill_indexes(store, dry_run=False)
+        snap1 = {p: p.read_text(encoding="utf-8") for p in store.rglob("*.md") if "index" in p.name}
+
+        backfill_indexes(store, dry_run=False)
+        snap2 = {p: p.read_text(encoding="utf-8") for p in store.rglob("*.md") if "index" in p.name}
+
+        assert set(snap1.keys()) == set(snap2.keys()), "Set of index files must be stable"
+        for p in snap1:
+            assert snap1[p] == snap2[p], f"Content changed for {p}"
+
+    # -- Mixed content: active + archived in same section ---------------------
+
+    def test_mixed_section_links_correctly_and_excludes_archived(
+        self, tmp_path: Path
+    ) -> None:
+        """A section with both active and archived articles must link only the
+        active ones in the leaf index and still appear in the scope MOC."""
+        store = tmp_path / "store"
+        d = store / COMMON_SCOPE / "decisions"
+        _make_article_with_status(d, "adr-active.md", "Active ADR")
+        _make_article_with_status(d, "adr-old.md", "Superseded ADR", status="superseded")
+
+        backfill_indexes(store, dry_run=False)
+
+        leaf_index = d / "index.md"
+        assert leaf_index.exists(), "leaf index must exist (section has active articles)"
+        leaf_content = leaf_index.read_text(encoding="utf-8")
+        assert "Active ADR" in leaf_content
+        assert "Superseded ADR" not in leaf_content
+
+        scope_moc = store / COMMON_SCOPE / "index.md"
+        assert scope_moc.exists()
+        scope_content = scope_moc.read_text(encoding="utf-8")
+        assert "decisions" in scope_content
+
+        global_moc = store / "index.md"
+        assert global_moc.exists()
+        assert "common" in global_moc.read_text(encoding="utf-8")
+
+        archive = store / "archive.index.md"
+        assert archive.exists()
+        assert "Superseded ADR" in archive.read_text(encoding="utf-8")

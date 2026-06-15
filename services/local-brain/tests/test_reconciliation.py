@@ -12,6 +12,8 @@ from fritz_local_brain.config import Settings
 from fritz_local_brain.knowledge import (
     apply_frontmatter_update,
     apply_reconciliation_verdict,
+    find_rereconciliation_flagged,
+    mark_for_rereconciliation,
     revert_reconciliation,
 )
 from fritz_local_brain.logs import read_reconciliation_undo
@@ -932,3 +934,200 @@ def test_bulk_escalation_with_approval_applies_all(
 
     records = read_reconciliation_undo(brain_home)
     assert len(records) == 2
+
+
+# ---------------------------------------------------------------------------
+# WI9: Resurrection flagging (issue #94)
+# ---------------------------------------------------------------------------
+
+
+def test_mark_for_rereconciliation_sets_flag(tmp_path: Path) -> None:
+    store_root = tmp_path / "knowledge"
+    article = store_root / "predecessor.md"
+    _write_article(article, {"title": "Predecessor", "status": "superseded"})
+
+    mark_for_rereconciliation(article, store_root=store_root)
+
+    fm = _read_frontmatter(article)
+    assert fm.get("needs_rereconciliation") is True
+
+
+def test_mark_for_rereconciliation_dry_run_is_noop(tmp_path: Path) -> None:
+    store_root = tmp_path / "knowledge"
+    article = store_root / "predecessor.md"
+    _write_article(article, {"title": "Predecessor", "status": "superseded"})
+    before = article.read_text(encoding="utf-8")
+
+    mark_for_rereconciliation(article, store_root=store_root, dry_run=True)
+
+    assert article.read_text(encoding="utf-8") == before
+
+
+def test_find_rereconciliation_flagged_returns_flagged_paths(tmp_path: Path) -> None:
+    store_root = tmp_path / "knowledge"
+    flagged_a = store_root / "a.md"
+    _write_article(flagged_a, {"title": "A", "status": "superseded", "needs_rereconciliation": True})
+    not_flagged = store_root / "b.md"
+    _write_article(not_flagged, {"title": "B", "status": "active"})
+    # flagged but value is not True (should not be returned)
+    flagged_wrong = store_root / "c.md"
+    _write_article(flagged_wrong, {"title": "C", "needs_rereconciliation": False})
+
+    result = find_rereconciliation_flagged(store_root)
+
+    assert result == ["a.md"]
+
+
+def test_find_rereconciliation_flagged_empty_when_none_flagged(tmp_path: Path) -> None:
+    store_root = tmp_path / "knowledge"
+    _write_article(store_root / "a.md", {"title": "A", "status": "active"})
+
+    result = find_rereconciliation_flagged(store_root)
+
+    assert result == []
+
+
+def test_find_rereconciliation_flagged_returns_empty_for_missing_store(tmp_path: Path) -> None:
+    result = find_rereconciliation_flagged(tmp_path / "no-such-store")
+    assert result == []
+
+
+def test_contradicts_supersedes_flags_predecessors_of_old(tmp_path: Path) -> None:
+    """When B supersedes A and C supersedes B, A gets needs_rereconciliation: true."""
+    store_root = tmp_path / "knowledge"
+    # A: an old article that was previously superseded by B.
+    article_a = store_root / "a.md"
+    _write_article(article_a, {"title": "A", "status": "superseded", "superseded_by": ["b.md"]})
+    # B: an article that superseded A and is now being superseded by C.
+    article_b = store_root / "b.md"
+    _write_article(article_b, {"title": "B", "status": "active", "supersedes": ["a.md"]})
+    # C: the new article that supersedes B.
+    article_c = store_root / "c.md"
+    _write_article(article_c, {"title": "C", "status": "active"})
+
+    # Apply contradicts_supersedes to B (B is the OLD, C is the NEW).
+    outcome = apply_reconciliation_verdict(
+        _verdict("contradicts_supersedes"),
+        new_path=article_c,
+        old_path=article_b,
+        store_root=store_root,
+        dry_run=False,
+    )
+
+    # B should now be superseded by C.
+    b_fm = _read_frontmatter(article_b)
+    assert b_fm["status"] == "superseded"
+    assert "c.md" in b_fm["superseded_by"]
+
+    # A (B's predecessor) should be flagged for re-reconciliation.
+    a_fm = _read_frontmatter(article_a)
+    assert a_fm.get("needs_rereconciliation") is True, "A must be flagged because its superseder (B) was invalidated"
+
+    # find_rereconciliation_flagged should return A.
+    flagged = find_rereconciliation_flagged(store_root)
+    assert "a.md" in flagged
+
+    # The action record should mention the resurrection flagging.
+    assert any("needs_rereconciliation" in action or "a.md" in action for action in outcome.actions)
+
+
+def test_contradicts_supersedes_no_predecessor_flagging_when_no_supersedes_list(tmp_path: Path) -> None:
+    """When OLD has no supersedes list, no predecessor is flagged."""
+    store_root = tmp_path / "knowledge"
+    old = store_root / "old.md"
+    new = store_root / "new.md"
+    _write_article(old, {"title": "Old", "status": "active"})
+    _write_article(new, {"title": "New", "status": "active"})
+
+    apply_reconciliation_verdict(
+        _verdict("contradicts_supersedes"),
+        new_path=new,
+        old_path=old,
+        store_root=store_root,
+        dry_run=False,
+    )
+
+    flagged = find_rereconciliation_flagged(store_root)
+    assert flagged == []
+
+
+def test_contradicts_supersedes_dry_run_does_not_flag_predecessors(tmp_path: Path) -> None:
+    """dry_run=True: no predecessor flagging written to disk."""
+    store_root = tmp_path / "knowledge"
+    article_a = store_root / "a.md"
+    _write_article(article_a, {"title": "A", "status": "superseded"})
+    article_b = store_root / "b.md"
+    _write_article(article_b, {"title": "B", "status": "active", "supersedes": ["a.md"]})
+    article_c = store_root / "c.md"
+    _write_article(article_c, {"title": "C", "status": "active"})
+
+    before = article_a.read_text(encoding="utf-8")
+
+    apply_reconciliation_verdict(
+        _verdict("contradicts_supersedes"),
+        new_path=article_c,
+        old_path=article_b,
+        store_root=store_root,
+        dry_run=True,
+    )
+
+    assert article_a.read_text(encoding="utf-8") == before
+
+
+# ---------------------------------------------------------------------------
+# WI9: Compile index rebuild after reconciliation archives an article
+# ---------------------------------------------------------------------------
+
+
+def test_compile_rebuilds_indexes_after_supersession(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """After a compile run that produces a supersession, backfill_indexes is called to
+    update the archive index.  The superseded article appears in archive.index.md."""
+    settings = _store_mode_settings(tmp_path)
+    brain_home = settings.brain_home
+    store_root = brain_home / "knowledge"
+
+    existing = store_root / "common" / "decisions" / "color.md"
+    _write_article(
+        existing,
+        {"type": "article", "title": "Project Color", "status": "active"},
+        body="Project color is blue.",
+    )
+
+    capture_path = brain_home / "capture" / "inbox" / "fact.md"
+    capture_path.write_text("# Capture\n\nProject color is now green.\n", encoding="utf-8")
+
+    proposal = ArticleWriteProposal(
+        vault="brain",
+        relative_path="common/decisions/color-new.md",
+        operation="create",
+        title="Project Color Updated",
+        summary="Color changed.",
+        sources=[str(capture_path)],
+        body="Project color is green.",
+    )
+
+    monkeypatch.setattr(
+        compile_workflow,
+        "build_compile_agent",
+        lambda settings, skill_text: FakeCompileAgent(CompileAgentOutput(proposals=[proposal])),
+    )
+    fake = FakeReconciliationAgent(
+        ReconciliationVerdict(verdict="contradicts_supersedes", reasoning="newer green wins")
+    )
+    monkeypatch.setattr(compile_workflow, "build_reconciliation_agent", lambda settings: fake)
+
+    result = asyncio.run(
+        compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False, max_captures=1))
+    )
+
+    assert result.errors == []
+    superseded_outcomes = [o for o in result.reconciliations if o.verdict == "contradicts_supersedes" and o.applied]
+    assert superseded_outcomes, "expected an applied supersession"
+
+    # The archive index should exist and list the superseded article.
+    archive_index = store_root / "archive.index.md"
+    assert archive_index.exists(), "archive.index.md must exist after supersession"
+    archive_content = archive_index.read_text(encoding="utf-8")
+    assert "color.md" in archive_content or "Project Color" in archive_content
