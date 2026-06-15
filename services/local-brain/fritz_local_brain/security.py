@@ -6,6 +6,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from typing import Any
 
+from .knowledge import DEFAULT_STATUS, STATUS_VALUES, normalize_status
 from .manifests import resolve_manifest_path
 from .models import ArticleWriteProposal
 from .paths import is_relative_to
@@ -17,6 +18,22 @@ class PolicyError(RuntimeError):
 
 FORBIDDEN_PARTS = {"registry.yaml", "manifest.yaml", "schema.md"}
 IDENTITY_PATH_KEYS = {"soul", "user", "memory"}
+
+
+def _validate_frontmatter_lifecycle(frontmatter: dict[str, Any]) -> None:
+    """Apply lifecycle defaults and validate status / link fields in-place."""
+    frontmatter.setdefault("status", DEFAULT_STATUS)
+    raw_status = frontmatter["status"]
+    if isinstance(raw_status, str):
+        normalized = normalize_status(raw_status)
+        if normalized not in STATUS_VALUES:
+            raise PolicyError(f"Invalid status: {raw_status}")
+        frontmatter["status"] = normalized
+    else:
+        raise PolicyError(f"Invalid status: {raw_status!r}")
+    for link_key in ("supersedes", "superseded_by"):
+        if link_key in frontmatter and not isinstance(frontmatter[link_key], list):
+            raise PolicyError(f"{link_key} must be a list")
 
 
 def is_excluded(path: Path, vault_path: Path, manifest: dict[str, Any]) -> bool:
@@ -110,6 +127,8 @@ def validate_article_write(
     if missing:
         raise PolicyError(f"Missing frontmatter fields: {', '.join(sorted(missing))}")
 
+    _validate_frontmatter_lifecycle(proposal.frontmatter)
+
     return target
 
 
@@ -176,5 +195,7 @@ def validate_store_article_write(
     missing = required - set(proposal.frontmatter)
     if missing:
         raise PolicyError(f"Missing frontmatter fields: {', '.join(sorted(missing))}")
+
+    _validate_frontmatter_lifecycle(proposal.frontmatter)
 
     return target

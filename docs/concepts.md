@@ -176,6 +176,32 @@ The durable output. Markdown files under each vault's `knowledge` path
 Articles carry YAML frontmatter with at minimum a `type` field; see the
 schema for the full frontmatter spec.
 
+### Knowledge lifecycle
+
+Articles carry an optional `status` field (freeform frontmatter — no migration
+required for existing articles, which default to `active`):
+
+| Status | Default retrieval | Notes |
+|---|---|---|
+| `active` | included (primary) | Default when field is absent |
+| `corroborated` | included (primary) | Confirmed by multiple sources |
+| `deprecated` | included (demoted) | Still visible but ranked after active/corroborated |
+| `superseded` | excluded | Hidden from default scope; reachable via `scope=all` |
+| `historical` | excluded | Hidden from default scope; reachable via `scope=all` |
+
+The `scope` query parameter (`active` by default, or `all`) controls which
+articles are returned. In the `active` scope, `deprecated` matches appear after
+all `active`/`corroborated` matches; `superseded` and `historical` articles are
+never returned.
+
+Articles may also carry optional bidirectional link lists:
+
+- `supersedes: [<path>, ...]` — this article replaces the listed articles
+- `superseded_by: [<path>, ...]` — this article has been replaced by the listed articles
+
+Both fields are optional lists of strings. They are freeform references — no
+referential integrity is enforced at write time.
+
 ## Project binding — `.fritz-local.json`
 
 An optional file at the root of a source-code project that links the

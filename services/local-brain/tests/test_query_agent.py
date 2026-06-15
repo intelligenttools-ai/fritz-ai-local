@@ -456,10 +456,6 @@ def test_query_workflow_store_mode_includes_corroborated_articles_in_active_scop
     corroborated_article.write_text(
         "---\nstatus: corroborated\n---\n\n# Corroborated Fact\n\nThis is confirmed content.\n", encoding="utf-8"
     )
-    deprecated_article = store / "common" / "context" / "old-deprecated.md"
-    deprecated_article.write_text(
-        "---\nstatus: deprecated\n---\n\n# Deprecated Fact\n\nThis is confirmed content.\n", encoding="utf-8"
-    )
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("# Query Skill\n", encoding="utf-8")
 
@@ -472,4 +468,121 @@ def test_query_workflow_store_mode_includes_corroborated_articles_in_active_scop
 
     brain_paths = [m.path for m in result.matches if m.vault == "brain"]
     assert "common/context/corroborated-fact.md" in brain_paths
-    assert "common/context/old-deprecated.md" not in brain_paths
+
+
+def test_query_workflow_store_mode_deprecated_is_demoted_below_active(tmp_path) -> None:
+    """Active scope: deprecated matches appear AFTER active/corroborated matches (demoted)."""
+    brain_home = tmp_path / "brain"
+    skill_path = tmp_path / "skills" / "brain-query" / "SKILL.md"
+    store = brain_home / "knowledge"
+    # Use alphabetical names so sorted() would normally put deprecated first.
+    deprecated_article = store / "common" / "context" / "a-deprecated.md"
+    deprecated_article.parent.mkdir(parents=True)
+    deprecated_article.write_text(
+        "---\nstatus: deprecated\n---\n\n# Deprecated Fact\n\nshared-needle\n", encoding="utf-8"
+    )
+    active_article = store / "common" / "context" / "b-active.md"
+    active_article.write_text("# Active Fact\n\nshared-needle\n", encoding="utf-8")
+    corroborated_article = store / "common" / "context" / "c-corroborated.md"
+    corroborated_article.write_text(
+        "---\nstatus: corroborated\n---\n\n# Corroborated Fact\n\nshared-needle\n", encoding="utf-8"
+    )
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Query Skill\n", encoding="utf-8")
+
+    result = asyncio.run(
+        run_query(
+            Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills"),
+            QueryRunRequest(query="shared-needle", scope="active"),
+        )
+    )
+
+    brain_matches = [m for m in result.matches if m.vault == "brain"]
+    brain_paths = [m.path for m in brain_matches]
+    # All three are visible.
+    assert "common/context/a-deprecated.md" in brain_paths
+    assert "common/context/b-active.md" in brain_paths
+    assert "common/context/c-corroborated.md" in brain_paths
+    # deprecated must come AFTER both active and corroborated.
+    deprecated_idx = brain_paths.index("common/context/a-deprecated.md")
+    active_idx = brain_paths.index("common/context/b-active.md")
+    corroborated_idx = brain_paths.index("common/context/c-corroborated.md")
+    assert deprecated_idx > active_idx
+    assert deprecated_idx > corroborated_idx
+
+
+def test_query_workflow_store_mode_deprecated_does_not_crowd_out_active_within_limit(tmp_path) -> None:
+    """Regression: deprecated files sorted before active must NOT consume the result budget.
+
+    With limit=2, two deprecated articles (alphabetically first) and one active article all
+    matching the query: the active article must be retained and appear first; one deprecated
+    article fills the remaining slot.  The active article must never be dropped.
+    """
+    brain_home = tmp_path / "brain"
+    skill_path = tmp_path / "skills" / "brain-query" / "SKILL.md"
+    store = brain_home / "knowledge"
+    # 'a-dep' and 'b-dep' sort before 'c-active' alphabetically.
+    dep_a = store / "a-dep.md"
+    dep_a.parent.mkdir(parents=True)
+    dep_a.write_text("---\nstatus: deprecated\n---\n\n# Dep A\n\nshared-marker\n", encoding="utf-8")
+    dep_b = store / "b-dep.md"
+    dep_b.write_text("---\nstatus: deprecated\n---\n\n# Dep B\n\nshared-marker\n", encoding="utf-8")
+    active_c = store / "c-active.md"
+    active_c.write_text("# Active C\n\nshared-marker\n", encoding="utf-8")
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Query Skill\n", encoding="utf-8")
+
+    result = asyncio.run(
+        run_query(
+            Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills"),
+            QueryRunRequest(query="shared-marker", scope="active", limit=2),
+        )
+    )
+
+    brain_matches = [m for m in result.matches if m.vault == "brain"]
+    brain_paths = [m.path for m in brain_matches]
+    # The active article must always be retained.
+    assert "c-active.md" in brain_paths, f"active article was crowded out; got {brain_paths}"
+    # The active article must appear first (demoted articles rank below primary).
+    assert brain_paths[0] == "c-active.md", f"active article must be first; got {brain_paths}"
+    # Total results are capped at limit=2.
+    assert len(brain_paths) == 2
+    # The remaining slot is filled by one deprecated article.
+    assert brain_paths[1] in ("a-dep.md", "b-dep.md")
+
+
+def test_query_workflow_store_mode_excludes_historical_articles_by_default(tmp_path) -> None:
+    """Active scope (default) excludes articles with status: historical; 'all' includes them."""
+    brain_home = tmp_path / "brain"
+    skill_path = tmp_path / "skills" / "brain-query" / "SKILL.md"
+    store = brain_home / "knowledge"
+    active_article = store / "common" / "context" / "active-fact.md"
+    active_article.parent.mkdir(parents=True)
+    active_article.write_text("# Active Fact\n\nThis is searchable content.\n", encoding="utf-8")
+    historical_article = store / "common" / "context" / "hist-fact.md"
+    historical_article.write_text(
+        "---\nstatus: historical\n---\n\n# Historical Fact\n\nThis is searchable content.\n", encoding="utf-8"
+    )
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Query Skill\n", encoding="utf-8")
+
+    result_active = asyncio.run(
+        run_query(
+            Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills"),
+            QueryRunRequest(query="searchable content", scope="active"),
+        )
+    )
+
+    result_all = asyncio.run(
+        run_query(
+            Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills"),
+            QueryRunRequest(query="searchable content", scope="all"),
+        )
+    )
+
+    active_paths = [m.path for m in result_active.matches if m.vault == "brain"]
+    all_paths = [m.path for m in result_all.matches if m.vault == "brain"]
+    assert "common/context/active-fact.md" in active_paths
+    assert "common/context/hist-fact.md" not in active_paths
+    assert "common/context/active-fact.md" in all_paths
+    assert "common/context/hist-fact.md" in all_paths

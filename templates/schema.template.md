@@ -47,7 +47,9 @@ sources: []
 related: []
 tags: []
 confidence: high | medium | low
-status: draft | active | archived
+status: active | corroborated | deprecated | superseded | historical
+supersedes: []
+superseded_by: []
 created: YYYY-MM-DD
 updated: YYYY-MM-DD
 promoted_from: ~/.brain/capture/daily/YYYY-MM-DD.md
