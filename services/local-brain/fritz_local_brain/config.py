@@ -72,6 +72,12 @@ class Settings(BaseSettings):
     mirror_enabled: bool = Field(default=False, validation_alias=AliasChoices("LOCAL_BRAIN_MIRROR_ENABLED", "MIRROR_ENABLED"))
     mirror_interval_minutes: int = Field(default=60, ge=1, validation_alias=AliasChoices("LOCAL_BRAIN_MIRROR_INTERVAL_MINUTES", "MIRROR_INTERVAL_MINUTES"))
 
+    # WI13: re-reconciliation sweep (disabled by default; dry-run by default so
+    # nothing is written until an operator explicitly enables apply mode).
+    rereconciliation_enabled: bool = Field(default=False, validation_alias=AliasChoices("LOCAL_BRAIN_RERECONCILIATION_ENABLED", "RERECONCILIATION_ENABLED"))
+    rereconciliation_interval_minutes: int = Field(default=1440, ge=1, validation_alias=AliasChoices("LOCAL_BRAIN_RERECONCILIATION_INTERVAL_MINUTES", "RERECONCILIATION_INTERVAL_MINUTES"))
+    rereconciliation_dry_run: bool = Field(default=True, validation_alias=AliasChoices("LOCAL_BRAIN_RERECONCILIATION_DRY_RUN", "RERECONCILIATION_DRY_RUN"))
+
     @field_validator("brain_store_path", mode="before")
     @classmethod
     def empty_brain_store_path_is_unset(cls, value: object) -> object:

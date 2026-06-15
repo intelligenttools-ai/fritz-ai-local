@@ -759,6 +759,76 @@ def get_max_injection_chars(fritz_local: dict | None) -> int:
     return int(get_setting("max_injection_chars", 8000, fritz_local=fritz_local))
 
 
+def get_reconciliation_autonomy(
+    *,
+    fritz_local: dict | None = None,
+    cwd: str | None = None,
+) -> str:
+    """Resolve the reconciliation autonomy mode (project > central > default).
+
+    Default is ``"apply"`` (matches the service ``Settings.reconciliation_autonomy``
+    default). Normalises to lowercase; invalid values fall back to ``"apply"``.
+    """
+    raw = get_setting("reconciliation_autonomy", default="apply", fritz_local=fritz_local, cwd=cwd)
+    value = str(raw).strip().lower() if raw is not None else "apply"
+    return value if value in {"apply", "propose"} else "apply"
+
+
+def get_bulk_supersession_threshold(
+    *,
+    fritz_local: dict | None = None,
+    cwd: str | None = None,
+) -> int:
+    """Resolve the bulk-supersession approval threshold (project > central > default).
+
+    Default is ``5`` (matches the service default). Coerced to ``int``; floored
+    at ``1`` so a bad value never disables the gate entirely.
+    """
+    raw = get_setting("bulk_supersession_threshold", default=5, fritz_local=fritz_local, cwd=cwd)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return 5
+    return max(1, value)
+
+
+def get_merge_policy(
+    *,
+    fritz_local: dict | None = None,
+    cwd: str | None = None,
+) -> str:
+    """Resolve the retrieval-synthesis merge policy (project > central > default).
+
+    Default is ``"brain-first"`` (brain knowledge is authoritative; external
+    mirror matches only fill remaining gaps).  Normalises to lowercase; invalid
+    values fall back to ``"brain-first"``.
+    """
+    raw = get_setting("merge_policy", default="brain-first", fritz_local=fritz_local, cwd=cwd)
+    value = str(raw).strip().lower() if raw is not None else "brain-first"
+    return value if value in {"brain-first", "peer-ranked"} else "brain-first"
+
+
+def get_query_scope_default(
+    *,
+    fritz_local: dict | None = None,
+    cwd: str | None = None,
+) -> str:
+    """Resolve the default query scope (project > central > default).
+
+    Default is ``"active"`` (matches ``QueryRunRequest.scope`` default).
+    Normalises to lowercase; invalid values fall back to ``"active"``.
+
+    Valid scopes: ``active``, ``include_archive``, ``all``.
+    """
+    raw = get_setting("query_scope_default", default="active", fritz_local=fritz_local, cwd=cwd)
+    value = str(raw).strip().lower() if raw is not None else "active"
+    return value if value in {"active", "include_archive", "all"} else "active"
+
+
+# Note: mirror mode is PER-TARGET in the registry ``external_targets:`` block —
+# it is NOT a global setting and therefore has no global resolver here.
+
+
 def get_fritz_version() -> str | None:
     """Read VERSION from the fritz-ai-local repo."""
     version_path = FRITZ_REPO / "VERSION"
