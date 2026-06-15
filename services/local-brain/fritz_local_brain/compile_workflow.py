@@ -15,8 +15,8 @@ from .captures import archive_processed_inbox_captures, capture_hash, list_all_c
 from .config import Settings
 from .correlation import find_related_articles
 from .indexes import update_directory_index, update_indexes_for_article
-from .knowledge import apply_article_write, apply_reconciliation_verdict, ensure_store_root
-from .logs import append_global_log
+from .knowledge import _current_status, apply_article_write, apply_reconciliation_verdict, ensure_store_root
+from .logs import append_global_log, append_reconciliation_undo
 from .manifests import load_manifest, resolve_manifest_path
 from .models import AppliedArticleWrite, ArticleWriteProposal, CompileRunRequest, CompileRunResult, ReconciliationOutcome
 from .paths import PathMapper
@@ -311,17 +311,25 @@ Available vaults:
     ):
         assert brain_store_root is not None
         reconciliations.extend(
-            await _reconcile_applied_articles(settings, brain_store_root, applied_store_targets)
+            await _reconcile_applied_articles(settings, brain_store_root, applied_store_targets, request)
         )
         if reconciliations:
+            applied_count = sum(1 for o in reconciliations if o.applied)
+            proposed_count = sum(1 for o in reconciliations if o.disposition == "proposed")
+            escalated_count = sum(1 for o in reconciliations if o.disposition == "escalated")
             verdict_counts: dict[str, int] = {}
             for outcome in reconciliations:
                 verdict_counts[outcome.verdict] = verdict_counts.get(outcome.verdict, 0) + 1
             summary = ", ".join(f"{verdict}={count}" for verdict, count in sorted(verdict_counts.items()))
+            disposition_note = f"applied={applied_count}"
+            if proposed_count:
+                disposition_note += f", proposed={proposed_count}"
+            if escalated_count:
+                disposition_note += f", escalated={escalated_count}"
             append_global_log(
                 settings.brain_home,
                 "RECONCILE",
-                f"Reconciled {len(reconciliations)} pairs across {len(applied_store_targets)} new articles ({summary})",
+                f"Reconciled {len(reconciliations)} pairs across {len(applied_store_targets)} new articles ({summary}; {disposition_note})",
                 request.dry_run,
             )
 
@@ -359,15 +367,34 @@ async def _reconcile_applied_articles(
     settings: Settings,
     store_root: Path,
     applied_targets: list[Path],
+    request: CompileRunRequest,
 ) -> list[ReconciliationOutcome]:
     """Run the reconciliation agent for each (new article, related-old article) pair.
 
-    For each applied NEW store article, find related EXISTING store articles
-    (excluding the new article itself), get a structured verdict per pair, and
-    apply the deterministic outcome to the store files.
+    Two-phase approach:
+    - Phase A: compute verdicts only (no writes).
+    - Phase B: gate on autonomy/approval/bulk-threshold, then apply.
+
+    Autonomy rules
+    ~~~~~~~~~~~~~~
+    ``propose`` mode:
+        Apply ONLY if ``settings.approval_matches(request.approval_token)``.
+        Otherwise all verdicts are emitted with ``applied=False, disposition="proposed"``.
+
+    ``apply`` mode (default):
+        If ``contradicts_supersedes`` count > ``settings.bulk_supersession_threshold``
+        AND NOT approved → ESCALATE supersessions (``disposition="escalated"``, not applied)
+        but DO apply all non-supersession verdicts.
+        If approved OR count within threshold → apply everything.
+
+    After applying a ``contradicts_supersedes`` (or ``corroborates``) verdict an undo
+    record is written via ``append_reconciliation_undo``.
     """
 
-    outcomes: list[ReconciliationOutcome] = []
+    # ---- Phase A: collect (new_target, old_path, verdict) without writing ----
+
+    pending: list[tuple] = []
+
     agent = build_reconciliation_agent(settings)
 
     for new_target in applied_targets:
@@ -403,14 +430,92 @@ async def _reconcile_applied_articles(
                 deps=deps,
                 usage_limits=UsageLimits(request_limit=3),
             )
-            outcome = apply_reconciliation_verdict(
-                result.output,
-                new_path=new_target,
-                old_path=old_path,
-                store_root=store_root,
+            pending.append((new_target, old_path, result.output))
+
+    # ---- Phase B: gate + apply ----
+
+    autonomy = settings.reconciliation_autonomy
+    approved = settings.approval_matches(request.approval_token)
+    supersession_count = sum(1 for _, _, v in pending if v.verdict == "contradicts_supersedes")
+
+    # Determine which verdicts to block.
+    block_supersessions = False
+    global_block = False
+
+    if autonomy == "propose":
+        if not approved:
+            global_block = True
+    else:  # "apply" mode
+        if supersession_count > settings.bulk_supersession_threshold and not approved:
+            block_supersessions = True
+
+    outcomes: list[ReconciliationOutcome] = []
+
+    for new_target, old_path, verdict in pending:
+        new_rel = str(new_target.resolve().relative_to(store_root.resolve()))
+        old_rel = str(old_path.resolve().relative_to(store_root.resolve()))
+
+        is_supersession = verdict.verdict == "contradicts_supersedes"
+
+        if global_block:
+            outcomes.append(
+                ReconciliationOutcome(
+                    new_path=new_rel,
+                    old_path=old_rel,
+                    verdict=verdict.verdict,
+                    actions=[],
+                    reasoning=verdict.reasoning,
+                    applied=False,
+                    prior_status=_current_status(old_path),
+                    disposition="proposed",
+                )
+            )
+            continue
+
+        if block_supersessions and is_supersession:
+            outcomes.append(
+                ReconciliationOutcome(
+                    new_path=new_rel,
+                    old_path=old_rel,
+                    verdict=verdict.verdict,
+                    actions=[],
+                    reasoning=verdict.reasoning,
+                    applied=False,
+                    prior_status=_current_status(old_path),
+                    disposition="escalated",
+                )
+            )
+            continue
+
+        # Apply the verdict.
+        outcome = apply_reconciliation_verdict(
+            verdict,
+            new_path=new_target,
+            old_path=old_path,
+            store_root=store_root,
+            dry_run=False,
+        )
+        outcomes.append(outcome)
+
+        # Write reversible undo log for status-mutating verdicts.
+        if verdict.verdict in {"contradicts_supersedes", "corroborates"}:
+            links_added: dict[str, list[str]] = {}
+            if verdict.verdict == "contradicts_supersedes":
+                links_added = {"superseded_by": [new_rel], "supersedes": [old_rel]}
+            elif verdict.verdict == "corroborates":
+                links_added = {"corroborated_by": [new_rel]}
+            append_reconciliation_undo(
+                settings.brain_home,
+                {
+                    "ts": datetime.now().isoformat(),
+                    "verdict": verdict.verdict,
+                    "new_path": new_rel,
+                    "old_path": old_rel,
+                    "old_prior_status": outcome.prior_status,
+                    "links_added": links_added,
+                },
                 dry_run=False,
             )
-            outcomes.append(outcome)
 
     return outcomes
 

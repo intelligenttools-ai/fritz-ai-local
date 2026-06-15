@@ -12,7 +12,9 @@ from fritz_local_brain.config import Settings
 from fritz_local_brain.knowledge import (
     apply_frontmatter_update,
     apply_reconciliation_verdict,
+    revert_reconciliation,
 )
+from fritz_local_brain.logs import read_reconciliation_undo
 from fritz_local_brain.models import (
     ArticleWriteProposal,
     CompileAgentOutput,
@@ -389,3 +391,544 @@ def test_store_mode_compile_reconciliation_topk_zero_does_nothing(
     assert result.errors == []
     assert result.reconciliations == []
     assert _read_frontmatter(existing)["status"] == "active"
+
+
+# ---------------------------------------------------------------------------
+# WI8: Config validators
+# ---------------------------------------------------------------------------
+
+
+def test_reconciliation_autonomy_defaults_to_apply(tmp_path: Path) -> None:
+    settings = Settings(_env_file=None, LOCAL_BRAIN_HOME=tmp_path)
+    assert settings.reconciliation_autonomy == "apply"
+
+
+def test_reconciliation_autonomy_accepts_propose(tmp_path: Path) -> None:
+    settings = Settings(_env_file=None, LOCAL_BRAIN_HOME=tmp_path, RECONCILIATION_AUTONOMY="propose")
+    assert settings.reconciliation_autonomy == "propose"
+
+
+def test_reconciliation_autonomy_normalizes_case_and_whitespace(tmp_path: Path) -> None:
+    settings = Settings(_env_file=None, LOCAL_BRAIN_HOME=tmp_path, RECONCILIATION_AUTONOMY="  Apply  ")
+    assert settings.reconciliation_autonomy == "apply"
+
+
+def test_reconciliation_autonomy_rejects_invalid_value(tmp_path: Path) -> None:
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, LOCAL_BRAIN_HOME=tmp_path, RECONCILIATION_AUTONOMY="auto")
+
+
+def test_reconciliation_autonomy_empty_string_coerces_to_apply(tmp_path: Path) -> None:
+    settings = Settings(_env_file=None, LOCAL_BRAIN_HOME=tmp_path, RECONCILIATION_AUTONOMY="")
+    assert settings.reconciliation_autonomy == "apply"
+
+
+def test_bulk_supersession_threshold_default(tmp_path: Path) -> None:
+    settings = Settings(_env_file=None, LOCAL_BRAIN_HOME=tmp_path)
+    assert settings.bulk_supersession_threshold == 5
+
+
+def test_bulk_supersession_threshold_configurable(tmp_path: Path) -> None:
+    settings = Settings(_env_file=None, LOCAL_BRAIN_HOME=tmp_path, BULK_SUPERSESSION_THRESHOLD="3")
+    assert settings.bulk_supersession_threshold == 3
+
+
+# ---------------------------------------------------------------------------
+# WI8: remove_links in apply_frontmatter_update
+# ---------------------------------------------------------------------------
+
+
+def test_apply_frontmatter_update_remove_links_removes_entries(tmp_path: Path) -> None:
+    store_root = tmp_path / "knowledge"
+    article = store_root / "a.md"
+    _write_article(article, {
+        "type": "article",
+        "title": "A",
+        "status": "superseded",
+        "superseded_by": ["b.md", "c.md"],
+    })
+
+    apply_frontmatter_update(
+        article,
+        store_root=store_root,
+        remove_links={"superseded_by": ["b.md"]},
+    )
+
+    fm = _read_frontmatter(article)
+    assert fm["superseded_by"] == ["c.md"]
+
+
+def test_apply_frontmatter_update_remove_links_prunes_empty_list(tmp_path: Path) -> None:
+    store_root = tmp_path / "knowledge"
+    article = store_root / "a.md"
+    _write_article(article, {
+        "type": "article",
+        "title": "A",
+        "status": "superseded",
+        "superseded_by": ["b.md"],
+    })
+
+    apply_frontmatter_update(
+        article,
+        store_root=store_root,
+        remove_links={"superseded_by": ["b.md"]},
+    )
+
+    fm = _read_frontmatter(article)
+    assert "superseded_by" not in fm
+
+
+def test_apply_frontmatter_update_remove_links_noop_if_key_absent(tmp_path: Path) -> None:
+    store_root = tmp_path / "knowledge"
+    article = store_root / "a.md"
+    _write_article(article, {"type": "article", "title": "A", "status": "active"})
+
+    apply_frontmatter_update(
+        article,
+        store_root=store_root,
+        remove_links={"superseded_by": ["x.md"]},
+    )
+    fm = _read_frontmatter(article)
+    assert "superseded_by" not in fm
+
+
+def test_apply_frontmatter_update_remove_links_dry_run_is_noop(tmp_path: Path) -> None:
+    store_root = tmp_path / "knowledge"
+    article = store_root / "a.md"
+    _write_article(article, {
+        "type": "article",
+        "title": "A",
+        "status": "superseded",
+        "superseded_by": ["b.md"],
+    })
+    before = article.read_text(encoding="utf-8")
+
+    apply_frontmatter_update(
+        article,
+        store_root=store_root,
+        remove_links={"superseded_by": ["b.md"]},
+        dry_run=True,
+    )
+    assert article.read_text(encoding="utf-8") == before
+
+
+# ---------------------------------------------------------------------------
+# WI8: apply_reconciliation_verdict captures prior_status
+# ---------------------------------------------------------------------------
+
+
+def test_apply_reconciliation_verdict_captures_prior_status_on_supersedes(tmp_path: Path) -> None:
+    store_root = tmp_path / "knowledge"
+    old = store_root / "old.md"
+    new = store_root / "new.md"
+    _write_article(old, {"title": "Old", "status": "active"})
+    _write_article(new, {"title": "New", "status": "active"})
+
+    outcome = apply_reconciliation_verdict(
+        _verdict("contradicts_supersedes"), new_path=new, old_path=old, store_root=store_root, dry_run=False
+    )
+
+    assert outcome.prior_status == "active"
+    assert outcome.applied is True
+    assert outcome.disposition == "applied"
+
+
+def test_apply_reconciliation_verdict_captures_prior_status_on_corroborates(tmp_path: Path) -> None:
+    store_root = tmp_path / "knowledge"
+    old = store_root / "old.md"
+    new = store_root / "new.md"
+    _write_article(old, {"title": "Old", "status": "active"})
+    _write_article(new, {"title": "New", "status": "active"})
+
+    outcome = apply_reconciliation_verdict(
+        _verdict("corroborates"), new_path=new, old_path=old, store_root=store_root, dry_run=False
+    )
+
+    assert outcome.prior_status == "active"
+    assert outcome.applied is True
+    assert outcome.disposition == "applied"
+
+
+# ---------------------------------------------------------------------------
+# WI8: revert_reconciliation (undo affordance)
+# ---------------------------------------------------------------------------
+
+
+def test_revert_reconciliation_restores_status_and_removes_links(tmp_path: Path) -> None:
+    store_root = tmp_path / "knowledge"
+    old = store_root / "old.md"
+    new = store_root / "new.md"
+    _write_article(old, {"title": "Old", "status": "active"})
+    _write_article(new, {"title": "New", "status": "active"})
+
+    outcome = apply_reconciliation_verdict(
+        _verdict("contradicts_supersedes"), new_path=new, old_path=old, store_root=store_root, dry_run=False
+    )
+    assert _read_frontmatter(old)["status"] == "superseded"
+    assert "new.md" in _read_frontmatter(old).get("superseded_by", [])
+    assert "old.md" in _read_frontmatter(new).get("supersedes", [])
+
+    revert_reconciliation(outcome, store_root=store_root, dry_run=False)
+
+    old_fm = _read_frontmatter(old)
+    new_fm = _read_frontmatter(new)
+    assert old_fm["status"] == "active"
+    assert "superseded_by" not in old_fm
+    assert "supersedes" not in new_fm
+
+
+def test_revert_reconciliation_dry_run_does_not_write(tmp_path: Path) -> None:
+    store_root = tmp_path / "knowledge"
+    old = store_root / "old.md"
+    new = store_root / "new.md"
+    _write_article(old, {"title": "Old", "status": "active"})
+    _write_article(new, {"title": "New", "status": "active"})
+
+    outcome = apply_reconciliation_verdict(
+        _verdict("contradicts_supersedes"), new_path=new, old_path=old, store_root=store_root, dry_run=False
+    )
+    state_before_revert = old.read_text(encoding="utf-8")
+
+    revert_reconciliation(outcome, store_root=store_root, dry_run=True)
+
+    assert old.read_text(encoding="utf-8") == state_before_revert
+
+
+def test_revert_reconciliation_corroborates(tmp_path: Path) -> None:
+    store_root = tmp_path / "knowledge"
+    old = store_root / "old.md"
+    new = store_root / "new.md"
+    _write_article(old, {"title": "Old", "status": "active"})
+    _write_article(new, {"title": "New", "status": "active"})
+
+    outcome = apply_reconciliation_verdict(
+        _verdict("corroborates"), new_path=new, old_path=old, store_root=store_root, dry_run=False
+    )
+    assert _read_frontmatter(old)["status"] == "corroborated"
+
+    revert_reconciliation(outcome, store_root=store_root, dry_run=False)
+
+    old_fm = _read_frontmatter(old)
+    assert old_fm["status"] == "active"
+    assert "corroborated_by" not in old_fm
+
+
+# ---------------------------------------------------------------------------
+# WI8: undo log (logs.py)
+# ---------------------------------------------------------------------------
+
+
+def test_append_and_read_reconciliation_undo(tmp_path: Path) -> None:
+    from fritz_local_brain.logs import append_reconciliation_undo
+
+    record = {
+        "ts": "2026-06-15T10:00:00",
+        "verdict": "contradicts_supersedes",
+        "new_path": "common/decisions/new.md",
+        "old_path": "common/decisions/old.md",
+        "old_prior_status": "active",
+        "links_added": {"superseded_by": ["common/decisions/new.md"]},
+    }
+    append_reconciliation_undo(tmp_path, record, dry_run=False)
+
+    records = read_reconciliation_undo(tmp_path)
+    assert len(records) == 1
+    assert records[0]["verdict"] == "contradicts_supersedes"
+    assert records[0]["old_prior_status"] == "active"
+
+
+def test_append_reconciliation_undo_dry_run_writes_nothing(tmp_path: Path) -> None:
+    from fritz_local_brain.logs import append_reconciliation_undo
+
+    append_reconciliation_undo(tmp_path, {"ts": "x", "verdict": "v"}, dry_run=True)
+
+    assert not (tmp_path / "reconciliation-undo.jsonl").exists()
+
+
+def test_read_reconciliation_undo_returns_empty_when_file_absent(tmp_path: Path) -> None:
+    records = read_reconciliation_undo(tmp_path)
+    assert records == []
+
+
+# ---------------------------------------------------------------------------
+# WI8: Autonomy + gate integration tests via run_compile
+# ---------------------------------------------------------------------------
+
+
+def _store_mode_settings_wi8(tmp_path: Path, **kwargs) -> Settings:
+    brain_home = tmp_path / "brain"
+    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
+    (brain_home / "capture" / "inbox").mkdir(parents=True)
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Compile Skill\n", encoding="utf-8")
+    return Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills", **kwargs)
+
+
+def _make_compile_run_setup(tmp_path: Path, settings: Settings, monkeypatch: pytest.MonkeyPatch,
+                             verdict_kind: str = "contradicts_supersedes") -> tuple:
+    """Set up a store-mode compile run with one existing article."""
+    brain_home = settings.brain_home
+    store_root = brain_home / "knowledge"
+
+    existing = store_root / "common" / "decisions" / "color.md"
+    _write_article(existing, {"title": "Project Color", "status": "active"}, body="Project color is blue.")
+
+    capture_path = brain_home / "capture" / "inbox" / "fact.md"
+    capture_path.write_text("# Capture\n\nProject color is now green.\n", encoding="utf-8")
+
+    proposal = ArticleWriteProposal(
+        vault="brain",
+        relative_path="common/decisions/color-new.md",
+        operation="create",
+        title="Project Color Updated",
+        summary="Color changed.",
+        sources=[str(capture_path)],
+        body="Project color is green.",
+    )
+
+    monkeypatch.setattr(
+        compile_workflow,
+        "build_compile_agent",
+        lambda s, st: FakeCompileAgent(CompileAgentOutput(proposals=[proposal])),
+    )
+
+    fake = FakeReconciliationAgent(
+        ReconciliationVerdict(verdict=verdict_kind, reasoning="test")
+    )
+    monkeypatch.setattr(compile_workflow, "build_reconciliation_agent", lambda s: fake)
+
+    return brain_home, existing
+
+
+def test_apply_mode_within_threshold_applies_and_writes_undo_log(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """apply mode, supersession within threshold → applied + undo-log written."""
+    settings = _store_mode_settings_wi8(
+        tmp_path,
+        LOCAL_BRAIN_RECONCILIATION_AUTONOMY="apply",
+        LOCAL_BRAIN_BULK_SUPERSESSION_THRESHOLD=5,
+    )
+    brain_home, existing = _make_compile_run_setup(tmp_path, settings, monkeypatch)
+
+    result = asyncio.run(
+        compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False, max_captures=1))
+    )
+
+    assert result.errors == []
+    superseded_outcomes = [o for o in result.reconciliations if o.verdict == "contradicts_supersedes"]
+    assert superseded_outcomes, "expected a supersession outcome"
+    outcome = superseded_outcomes[0]
+    assert outcome.applied is True
+    assert outcome.disposition == "applied"
+    assert outcome.prior_status == "active"
+
+    assert _read_frontmatter(existing)["status"] == "superseded"
+
+    records = read_reconciliation_undo(brain_home)
+    assert len(records) >= 1
+    assert records[0]["verdict"] == "contradicts_supersedes"
+    assert records[0]["old_prior_status"] == "active"
+
+
+def test_propose_mode_no_token_does_not_apply(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """propose mode without approval token → supersession NOT applied, disposition=proposed."""
+    settings = _store_mode_settings_wi8(
+        tmp_path,
+        LOCAL_BRAIN_RECONCILIATION_AUTONOMY="propose",
+        LOCAL_BRAIN_APPROVAL_TOKEN="secret",
+    )
+    brain_home, existing = _make_compile_run_setup(tmp_path, settings, monkeypatch)
+
+    result = asyncio.run(
+        compile_workflow.run_compile(
+            settings, CompileRunRequest(dry_run=False, max_captures=1, approval_token=None)
+        )
+    )
+
+    assert result.errors == []
+    superseded_outcomes = [o for o in result.reconciliations if o.verdict == "contradicts_supersedes"]
+    assert superseded_outcomes
+    outcome = superseded_outcomes[0]
+    assert outcome.applied is False
+    assert outcome.disposition == "proposed"
+
+    assert _read_frontmatter(existing)["status"] == "active"
+    assert read_reconciliation_undo(brain_home) == []
+
+
+def test_propose_mode_with_matching_token_applies(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """propose mode WITH matching approval token → supersession applied."""
+    settings = _store_mode_settings_wi8(
+        tmp_path,
+        LOCAL_BRAIN_RECONCILIATION_AUTONOMY="propose",
+        LOCAL_BRAIN_APPROVAL_TOKEN="secret",
+    )
+    brain_home, existing = _make_compile_run_setup(tmp_path, settings, monkeypatch)
+
+    result = asyncio.run(
+        compile_workflow.run_compile(
+            settings, CompileRunRequest(dry_run=False, max_captures=1, approval_token="secret")
+        )
+    )
+
+    assert result.errors == []
+    superseded_outcomes = [o for o in result.reconciliations if o.verdict == "contradicts_supersedes"]
+    assert superseded_outcomes
+    outcome = superseded_outcomes[0]
+    assert outcome.applied is True
+    assert outcome.disposition == "applied"
+    assert _read_frontmatter(existing)["status"] == "superseded"
+
+
+def test_bulk_escalation_without_approval_blocks_supersessions_but_applies_others(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """apply mode, supersession_count > threshold without approval → supersessions escalated, others applied."""
+    settings = _store_mode_settings_wi8(
+        tmp_path,
+        LOCAL_BRAIN_RECONCILIATION_AUTONOMY="apply",
+        LOCAL_BRAIN_BULK_SUPERSESSION_THRESHOLD=1,
+        LOCAL_BRAIN_APPROVAL_TOKEN="secret",
+    )
+    brain_home = settings.brain_home
+    store_root = brain_home / "knowledge"
+
+    existing1 = store_root / "common" / "decisions" / "color.md"
+    existing2 = store_root / "common" / "decisions" / "shade.md"
+    extra_corr = store_root / "common" / "decisions" / "extra.md"
+    _write_article(existing1, {"title": "Color", "status": "active"}, body="Color is blue.")
+    _write_article(existing2, {"title": "Shade", "status": "active"}, body="Shade is dark.")
+    _write_article(extra_corr, {"title": "Extra", "status": "active"}, body="Extra corr.")
+
+    capture_path = brain_home / "capture" / "inbox" / "fact.md"
+    capture_path.write_text("# Capture\n\nColor is green, shade is light.\n", encoding="utf-8")
+
+    proposal = ArticleWriteProposal(
+        vault="brain",
+        relative_path="common/decisions/color-new.md",
+        operation="create",
+        title="Project Color Updated",
+        summary="Color changed.",
+        sources=[str(capture_path)],
+        body="Color is green, shade is light.",
+    )
+
+    monkeypatch.setattr(
+        compile_workflow,
+        "build_compile_agent",
+        lambda s, st: FakeCompileAgent(CompileAgentOutput(proposals=[proposal])),
+    )
+
+    # Return: supersede, supersede, corroborate (non-supersession).
+    verdicts = [
+        ReconciliationVerdict(verdict="contradicts_supersedes", reasoning="sup1"),
+        ReconciliationVerdict(verdict="contradicts_supersedes", reasoning="sup2"),
+        ReconciliationVerdict(verdict="corroborates", reasoning="corr1"),
+    ]
+    verdict_iter = iter(verdicts)
+
+    class MultiVerdict:
+        async def run(self, prompt, *, deps, usage_limits):
+            try:
+                v = next(verdict_iter)
+            except StopIteration:
+                v = ReconciliationVerdict(verdict="orthogonal", reasoning="no more")
+            return SimpleNamespace(output=v)
+
+    monkeypatch.setattr(compile_workflow, "build_reconciliation_agent", lambda s: MultiVerdict())
+
+    result = asyncio.run(
+        compile_workflow.run_compile(
+            settings, CompileRunRequest(dry_run=False, max_captures=1, approval_token=None)
+        )
+    )
+
+    assert result.errors == []
+
+    escalated = [o for o in result.reconciliations if o.disposition == "escalated"]
+    applied_outcomes = [o for o in result.reconciliations if o.disposition == "applied"]
+    assert len(escalated) == 2, f"Expected 2 escalated, got {escalated}"
+    assert len(applied_outcomes) >= 1, f"Expected at least 1 applied (the corroborate), got {applied_outcomes}"
+
+    assert _read_frontmatter(existing1)["status"] == "active"
+    assert _read_frontmatter(existing2)["status"] == "active"
+
+    undo_records = read_reconciliation_undo(brain_home)
+    supersession_undo = [r for r in undo_records if r["verdict"] == "contradicts_supersedes"]
+    assert supersession_undo == [], "No undo log for escalated verdicts"
+
+
+def test_bulk_escalation_with_approval_applies_all(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """apply mode, supersession_count > threshold WITH approval → all applied."""
+    settings = _store_mode_settings_wi8(
+        tmp_path,
+        LOCAL_BRAIN_RECONCILIATION_AUTONOMY="apply",
+        LOCAL_BRAIN_BULK_SUPERSESSION_THRESHOLD=1,
+        LOCAL_BRAIN_APPROVAL_TOKEN="secret",
+    )
+    brain_home = settings.brain_home
+    store_root = brain_home / "knowledge"
+
+    existing1 = store_root / "common" / "decisions" / "color.md"
+    existing2 = store_root / "common" / "decisions" / "shade.md"
+    _write_article(existing1, {"title": "Color", "status": "active"}, body="Color is blue.")
+    _write_article(existing2, {"title": "Shade", "status": "active"}, body="Shade is dark.")
+
+    capture_path = brain_home / "capture" / "inbox" / "fact.md"
+    capture_path.write_text("# Capture\n\nUpdated colors.\n", encoding="utf-8")
+
+    proposal = ArticleWriteProposal(
+        vault="brain",
+        relative_path="common/decisions/new.md",
+        operation="create",
+        title="New",
+        summary="New.",
+        sources=[str(capture_path)],
+        body="Updated.",
+    )
+
+    monkeypatch.setattr(
+        compile_workflow,
+        "build_compile_agent",
+        lambda s, st: FakeCompileAgent(CompileAgentOutput(proposals=[proposal])),
+    )
+
+    verdicts = [
+        ReconciliationVerdict(verdict="contradicts_supersedes", reasoning="sup1"),
+        ReconciliationVerdict(verdict="contradicts_supersedes", reasoning="sup2"),
+    ]
+    verdict_iter = iter(verdicts)
+
+    class MultiVerdict:
+        async def run(self, prompt, *, deps, usage_limits):
+            try:
+                v = next(verdict_iter)
+            except StopIteration:
+                v = ReconciliationVerdict(verdict="orthogonal", reasoning="done")
+            return SimpleNamespace(output=v)
+
+    monkeypatch.setattr(compile_workflow, "build_reconciliation_agent", lambda s: MultiVerdict())
+
+    result = asyncio.run(
+        compile_workflow.run_compile(
+            settings, CompileRunRequest(dry_run=False, max_captures=1, approval_token="secret")
+        )
+    )
+
+    assert result.errors == []
+    applied_outcomes = [o for o in result.reconciliations if o.applied is True]
+    assert len(applied_outcomes) == 2, f"Expected 2 applied, got {applied_outcomes}"
+
+    assert _read_frontmatter(existing1)["status"] == "superseded"
+    assert _read_frontmatter(existing2)["status"] == "superseded"
+
+    records = read_reconciliation_undo(brain_home)
+    assert len(records) == 2

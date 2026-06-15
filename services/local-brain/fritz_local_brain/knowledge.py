@@ -110,6 +110,7 @@ def apply_frontmatter_update(
     store_root: Path,
     status: str | None = None,
     append_links: dict[str, list[str]] | None = None,
+    remove_links: dict[str, list[str]] | None = None,
     scope_qualifier: str | None = None,
     dry_run: bool = False,
 ) -> None:
@@ -119,7 +120,9 @@ def apply_frontmatter_update(
     - Reads the file, parses YAML front matter (missing/malformed handled
       gracefully), then applies: normalized ``status`` if given; for each key in
       ``append_links`` ensures a list and appends missing entries (dedup, stable
-      order); sets ``scope`` from ``scope_qualifier`` if given; bumps ``updated``.
+      order); for each key in ``remove_links`` removes the listed entries from the
+      named list-valued key (prunes the key if it becomes empty); sets ``scope``
+      from ``scope_qualifier`` if given; bumps ``updated``.
     - Re-renders ``---\\n<yaml>\\n---\\n\\n<body>`` preserving the body.
     - No-op on ``dry_run``.
     """
@@ -145,6 +148,16 @@ def apply_frontmatter_update(
                 if value not in existing:
                     existing.append(value)
             frontmatter[key] = existing
+
+    if remove_links:
+        for key, values in remove_links.items():
+            existing = frontmatter.get(key)
+            if isinstance(existing, list):
+                pruned = [v for v in existing if v not in values]
+                if pruned:
+                    frontmatter[key] = pruned
+                else:
+                    frontmatter.pop(key, None)
 
     if scope_qualifier is not None:
         frontmatter["scope"] = scope_qualifier
@@ -186,10 +199,13 @@ def apply_reconciliation_verdict(
     old_rel = str(old_path.resolve().relative_to(store_root.resolve())) if is_relative_to(old_path.resolve(), store_root.resolve()) else str(old_path)
     actions: list[str] = []
 
+    # Capture the old article's status BEFORE any mutation for undo / audit.
+    prior_status = _current_status(old_path)
+
     if verdict.verdict == "corroborates":
         # Only mark corroborated when the OLD article is currently active/absent;
         # never downgrade an already-superseded (or otherwise demoted) article.
-        if _current_status(old_path) in {"active", DEFAULT_STATUS}:
+        if prior_status in {"active", DEFAULT_STATUS}:
             apply_frontmatter_update(
                 old_path,
                 store_root=store_root,
@@ -262,4 +278,65 @@ def apply_reconciliation_verdict(
         verdict=verdict.verdict,
         actions=actions,
         reasoning=verdict.reasoning,
+        applied=True,
+        prior_status=prior_status,
+        disposition="applied",
     )
+
+
+def revert_reconciliation(
+    outcome: "ReconciliationOutcome",
+    *,
+    store_root: Path,
+    dry_run: bool = False,
+) -> None:
+    """Reverse an APPLIED ``contradicts_supersedes`` (or ``corroborates``) outcome.
+
+    Restores the OLD article's status to ``outcome.prior_status`` and removes
+    the link entries that were added by the original application. Also removes
+    the NEW article's ``supersedes`` / ``refines`` back-link.
+
+    Only meaningful for verdicts that mutated status/links; no-ops for
+    ``orthogonal`` and ``context_split``.  Path-safe: both resolved paths must
+    lie inside ``store_root``.
+    """
+    old_abs = (store_root / outcome.old_path).resolve()
+    new_abs = (store_root / outcome.new_path).resolve()
+
+    root = store_root.resolve()
+    if not is_relative_to(old_abs, root):
+        raise ValueError(f"old_path escapes store root: {outcome.old_path}")
+    if not is_relative_to(new_abs, root):
+        raise ValueError(f"new_path escapes store root: {outcome.new_path}")
+
+    old_rel = outcome.old_path
+    new_rel = outcome.new_path
+
+    if outcome.verdict == "contradicts_supersedes":
+        # Restore old article: status back to prior, remove superseded_by link.
+        restore_status = outcome.prior_status or DEFAULT_STATUS
+        apply_frontmatter_update(
+            old_abs,
+            store_root=store_root,
+            status=restore_status,
+            remove_links={"superseded_by": [new_rel]},
+            dry_run=dry_run,
+        )
+        # Remove new article's supersedes back-link.
+        apply_frontmatter_update(
+            new_abs,
+            store_root=store_root,
+            remove_links={"supersedes": [old_rel]},
+            dry_run=dry_run,
+        )
+
+    elif outcome.verdict == "corroborates":
+        # Restore old article: status back to prior, remove corroborated_by link.
+        restore_status = outcome.prior_status or DEFAULT_STATUS
+        apply_frontmatter_update(
+            old_abs,
+            store_root=store_root,
+            status=restore_status,
+            remove_links={"corroborated_by": [new_rel]},
+            dry_run=dry_run,
+        )

@@ -63,6 +63,9 @@ class ReconciliationOutcome(BaseModel):
     verdict: str
     actions: list[str] = Field(default_factory=list)
     reasoning: str = ""
+    applied: bool = True
+    prior_status: str | None = None
+    disposition: str = "applied"  # "applied" | "proposed" | "escalated"
 
 
 class CompileRunRequest(BaseModel):
