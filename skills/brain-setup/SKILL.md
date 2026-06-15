@@ -224,6 +224,14 @@ vaults:
     sync: local
 ```
 
+**Note on the registry**: `~/.brain/registry.yaml` is **optional**. The brain
+store (`~/.brain/knowledge`) and all core workflows (compile, query, captures,
+lint) work fully without it. Adding a vault to the registry is only needed when
+you want vault-scoped knowledge directories, external sync targets, or Docker
+service federation. External targets (`external_targets:` block in the
+registry) are service-only and list off-brain systems the optional Docker
+mirror agent can pull data from; they are never required for local-only mode.
+
 If the human specified a context injection level in Question 6, record it in
 each `.fritz-local.json` file (per-project), NOT in the registry vault entry.
 For global injection, add it to the `settings:` block in the registry instead:

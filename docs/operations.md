@@ -117,6 +117,103 @@ for vaults that have a sync target configured. Vaults set to `sync: local`
 or `sync: none` skip the push — their preservation path is the local
 capture → compile pipeline that runs earlier in handover.
 
+## Registry-free local compile and query
+
+When no vault manifest is found (no `registry.yaml`, or no configured vault
+has a `.brain/manifest.yaml`), Fritz Local operates in **store mode**:
+
+- Compile writes articles to `~/.brain/knowledge/<scope>/<section>/<slug>.md`
+  where scope is `common` or a project slug, and section is one of `decisions`,
+  `lessons`, `runbooks`, `context`.
+- Query reads from the same store. The default scope (`active`) returns
+  `active`, `corroborated`, and `deprecated` articles (deprecated ones ranked
+  last). Articles with `superseded` or `historical` status are in the archive
+  tier and returned only when `scope=include_archive` or `scope=all`.
+- Index files (`index.md` at each level, `archive.index.md` at the store root)
+  are maintained automatically after each compile or reconciliation run.
+
+No registry entry, no manifest, and no migration are needed for store mode.
+The store root defaults to `~/.brain/knowledge`; override with
+`BRAIN_STORE_PATH` or the `brain_store_path` setting.
+
+## Lifecycle knobs
+
+### `reconciliation_autonomy`
+
+Controls how the reconciliation agent applies verdicts after a non-dry-run
+compile:
+
+```yaml
+# in ~/.brain/registry.yaml under settings:, or as an env var
+settings:
+  reconciliation_autonomy: apply   # apply (default) or propose
+```
+
+- `apply` (default) — verdicts are written automatically. If a single compile
+  run would produce more `contradicts_supersedes` verdicts than
+  `bulk_supersession_threshold` (default `5`) without an `approval_token`,
+  the surplus supersessions are escalated (not applied) and reported.
+- `propose` — all verdicts are computed but not applied; they are returned in
+  the compile result for human review. Apply-mode requires an `approval_token`.
+
+### Bulk-supersession threshold
+
+When `reconciliation_autonomy: apply`, the service escalates supersession
+batches that exceed `bulk_supersession_threshold` (default `5`). Set via `BULK_SUPERSESSION_THRESHOLD`
+or the `bulk_supersession_threshold` setting.
+
+### Undo log
+
+Every status-mutating reconciliation verdict (`contradicts_supersedes`,
+`corroborates`) writes a reversible record to
+`~/.brain/reconciliation-undo.jsonl`. Keep this file to enable manual undo of
+reconciliation decisions.
+
+## Optional schedulers (default off / dry-run)
+
+Both additional schedulers are **disabled by default** and operate in
+**dry-run mode** even when enabled. Set `SCHEDULER_DRY_RUN=false` (or
+`MIRROR_DRY_RUN=false` / `RERECONCILIATION_DRY_RUN=false`) to opt in to
+apply-mode.
+
+### Mirror scheduler
+
+Fetches external targets defined in `registry.yaml` `external_targets:` and
+writes provenance-tagged inbox captures. Enabled by `MIRROR_ENABLED=true`.
+Configure interval with `MIRROR_INTERVAL_MINUTES` (default `60`).
+
+External targets have a `mirror_mode`:
+
+- `index-only` (default) — a minimal stub capture with a `pointer` field is
+  written. At query time, if the query hits this capture, `live_fetch`
+  resolves the current content from the source on demand.
+- `full-summary` — the mirror agent summarizes the full content and writes
+  the summary as the capture body.
+
+### Re-reconciliation sweep
+
+Processes articles flagged `needs_rereconciliation: true` (set when a
+superseder is itself later superseded). Enabled by
+`RERECONCILIATION_ENABLED=true`; interval via
+`RERECONCILIATION_INTERVAL_MINUTES` (default `1440`, i.e. once per day).
+Dry-run by default (`RERECONCILIATION_DRY_RUN=true`); set `false` to apply
+verdicts automatically.
+
+## Relevant settings reference
+
+| Setting / env var | Default | What it controls |
+|---|---|---|
+| `BRAIN_HOME` | `~/.brain` | Brain home directory |
+| `BRAIN_STORE_PATH` | `<brain_home>/knowledge` | Brain-owned knowledge store root |
+| `RECONCILIATION_AUTONOMY` | `apply` | Whether reconciliation verdicts are applied or proposed |
+| `BULK_SUPERSESSION_THRESHOLD` | `5` | Max automatic supersessions per compile run |
+| `MIRROR_ENABLED` | `false` | Enable the mirror scheduler |
+| `MIRROR_INTERVAL_MINUTES` | `60` | Mirror scheduler interval |
+| `RERECONCILIATION_ENABLED` | `false` | Enable the re-reconciliation sweep |
+| `RERECONCILIATION_INTERVAL_MINUTES` | `1440` | Re-reconciliation sweep interval |
+| `RERECONCILIATION_DRY_RUN` | `true` | Dry-run mode for the re-reconciliation sweep |
+| `MERGE_POLICY` | `brain-first` | How brain and live-fetched external matches are merged |
+
 ## Troubleshooting
 
 ### The session-start hook does not inject context

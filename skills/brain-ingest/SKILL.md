@@ -30,15 +30,13 @@ Determine the source type and obtain the content:
 
 ### 2. Save raw source to inbox
 
-Write the raw content to `capture/inbox/` (path from manifest):
-- Filename: `YYYY-MM-DD-<source-slug>.md`
-- Include frontmatter:
+Write the raw content to `~/.brain/capture/inbox/` as a provenance-tagged
+capture. Filename: `YYYY-MM-DD-<source-slug>.md`. Include frontmatter:
 
 ```yaml
 ---
 type: capture
 title: "<source title>"
-domain: <from manifest>
 sources:
   - <original URL or path>
 created: <today>
@@ -46,18 +44,35 @@ agent_last_edit: <agent>
 ---
 ```
 
+For content mirrored from an external system (e.g. via the service's mirror
+agent), the frontmatter also carries provenance fields written by the mirror
+pipeline:
+
+```yaml
+---
+type: capture
+title: "<entry title>"
+source: "<target-name> (<target-kind>)"
+mirrored_at: "<ISO-8601 timestamp>"
+mode: "full" | "index-only"
+pointer: "<target-name>:<relpath-or-id>"
+---
+```
+
+Do not write these provenance fields manually when ingesting from a URL or
+file — they are reserved for the service mirror path.
+
 ### 3. Trigger live processing when enabled
 
 After writing the inbox capture, call the configured Fritz Local processing path:
 
 - If `settings.local_brain_service.enabled: true` and `auto_compile_on_ingest` is not `false`, trigger the Local Brain compile path (service first, local fallback) so the capture does not silently pile up.
-- If processing is not active, leave the raw capture in `capture/inbox/` and report that compile is pending/manual.
+- If processing is not active, leave the raw capture in `~/.brain/capture/inbox/` and report that compile is pending/manual.
 
-If live processing is unavailable and manual compile is needed, read the raw source and create a compiled knowledge article:
+If live processing is unavailable and manual compile is needed, read the raw source and create a compiled knowledge article. In registry-free mode, write to `~/.brain/knowledge/<scope>/<section>/<slug>.md` (scope = `common` or project slug; section = `decisions`, `lessons`, `runbooks`, or `context`). In vault mode, write to the appropriate `knowledge/` subfolder. Either way:
 
 - Extract key concepts, facts, and insights
 - Structure as a clear, scannable article
-- Place in the appropriate `knowledge/` subfolder based on topic
 - Cross-reference with existing articles where relevant
 - Include full frontmatter with `sources` pointing to the inbox file
 
