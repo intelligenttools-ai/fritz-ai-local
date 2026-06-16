@@ -610,6 +610,109 @@ def local_brain_service_available(timeout: float = 0.4) -> bool:
         return False
 
 
+def get_local_brain_service_desired(
+    *,
+    cwd: str | None = None,
+    fritz_local: dict | None = None,
+) -> str:
+    """Return the operator's declared desired runtime for the Local Brain service.
+
+    Valid values: ``"docker"`` | ``"local"``.
+
+    Precedence (project > central > default):
+    1. ``.fritz-local.json`` ``local_brain_service_desired`` flat key (project
+       override) — resolved by walking up from ``cwd``, or supplied directly via
+       ``fritz_local``.
+    2. ``settings.local_brain_service.desired`` in ``registry.yaml`` (central).
+    3. Default: ``"local"``.
+
+    The ``cwd`` (or ``fritz_local``) parameter MUST be supplied for the project
+    layer to take effect.  Without it, only the central registry is consulted.
+
+    Rationale for a conservative default: absent or unknown config must NEVER
+    produce unsolicited nag prompts.  Only an explicit ``desired: docker``
+    declaration triggers the forcing instruction in session-start.
+
+    Note: the ``desired`` key lives *inside* the ``local_brain_service`` block in
+    the registry (alongside ``enabled``, ``base_url``, etc.).  The
+    ``.fritz-local.json`` override uses the flat key ``local_brain_service_desired``
+    to remain consistent with the project-layer naming convention.
+    """
+    # Check .fritz-local.json project layer via the flat key
+    # (project file cannot nest arbitrary YAML; it uses dot-separated flat keys).
+    # Pass cwd/fritz_local through so get_setting can resolve the project layer.
+    project_value = get_setting("local_brain_service_desired", default=None, cwd=cwd, fritz_local=fritz_local)
+    if project_value is not None:
+        raw = str(project_value).strip().lower()
+        if raw in {"docker", "local"}:
+            return raw
+
+    # Check the central registry nested key inside local_brain_service block.
+    config = get_local_brain_service_config()
+    raw = config.get("desired")
+    if raw is not None:
+        value = str(raw).strip().lower()
+        if value in {"docker", "local"}:
+            return value
+
+    # Conservative default: never nag when config is absent.
+    return "local"
+
+
+def local_brain_service_operational(timeout: float = 0.5) -> bool:
+    """Return True when the Local Brain service is healthy and reachable.
+
+    This probe is INDEPENDENT of ``enabled``.  It tests reachability directly
+    so that the forcing-injection logic in session-start can distinguish between:
+    - desired==docker and NOT operational → inject the forcing instruction
+    - desired==docker and IS operational → inject nothing (service is fine)
+
+    The probe hits ``/v1/status`` (same endpoint as
+    :func:`local_brain_service_available`) but does NOT gate on
+    ``local_brain_service_enabled()``.  This is intentional: we need to know
+    whether the Docker service is *actually* up regardless of the ``enabled``
+    flag, because ``enabled: false`` is precisely the suppression bug being fixed.
+
+    Any error, connection refusal, or timeout → returns False (never raises).
+    """
+    base_url = _validated_local_brain_base_url()
+    if base_url is None:
+        # Fall back to the default URL when the config has no valid base_url
+        # (e.g. when local_brain_service block is absent entirely).
+        base_url = "http://127.0.0.1:8765"
+
+    try:
+        headers = {"accept": "application/json"}
+        token = get_local_brain_api_token()
+        if token:
+            headers["authorization"] = f"Bearer {token}"
+        req = request.Request(f"{base_url}/v1/status", headers=headers, method="GET")
+        with request.urlopen(req, timeout=timeout) as response:
+            return response.status == 200
+    except Exception:
+        return False
+
+
+def local_brain_service_setup_forcing_instruction() -> str:
+    """Return the imperative instruction injected when desired==docker but NOT operational.
+
+    This text MUST contain ``/fritz:brain-service-setup`` so tests can assert its
+    presence, and must be unambiguous that the agent cannot proceed without it.
+    """
+    return (
+        "## REQUIRED ACTION: Local Brain Docker Service Not Running\n\n"
+        "The registry declares `local_brain_service.desired: docker`, meaning the "
+        "Dockerized Local Brain service is the REQUIRED runtime for this install, "
+        "but the service is NOT currently operational.\n\n"
+        "You MUST run `/fritz:brain-service-setup` before proceeding with any "
+        "brain-related work. Do NOT skip this step, do NOT attempt to work around "
+        "it by using local slash-skills, and do NOT ask the user for permission — "
+        "the desired state has already been declared in the registry.\n\n"
+        "After `/fritz:brain-service-setup` completes successfully and the service "
+        "responds at its configured URL, continue with the original task."
+    )
+
+
 def local_brain_service_instructions() -> str:
     """Context block that makes service-backed brain workflows the default."""
 
