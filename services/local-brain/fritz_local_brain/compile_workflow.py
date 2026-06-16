@@ -11,7 +11,7 @@ from pydantic_ai.usage import UsageLimits
 
 from .agents.compile_agent import CompileDeps, build_compile_agent
 from .agents.reconciliation_agent import ReconciliationDeps, build_reconciliation_agent
-from .captures import archive_processed_inbox_captures, capture_hash, list_all_captures, mark_captures_processed, read_capture
+from .captures import _load_processed_captures, archive_processed_inbox_captures, capture_hash, list_all_captures, mark_captures_processed, read_capture
 from .config import Settings
 from .correlation import find_related_articles
 from .indexes import backfill_indexes, update_directory_index, update_indexes_for_article
@@ -244,17 +244,24 @@ Available vaults:
                     path.resolve() for path in knowledge_root.glob("**/*.md") if ".brain" not in path.parts
                 )
 
+    processed_capture_record = _load_processed_captures(settings.brain_home)
+    processed_sources: set[Path] = {
+        _resolve_capture_source(settings.brain_home, key) for key in processed_capture_record
+    }
+
     validated_targets = []
     for proposal in proposals_to_apply:
         try:
             if store_mode:
                 assert brain_store_root is not None
                 target = validate_store_article_write(
-                    proposal, brain_store_root, settings.brain_home, allowed_sources, known_existing_targets
+                    proposal, brain_store_root, settings.brain_home, allowed_sources, known_existing_targets,
+                    processed_sources=processed_sources,
                 )
             else:
                 target = validate_article_write(
-                    proposal, vault_paths, manifests, settings.brain_home, allowed_sources, known_existing_targets
+                    proposal, vault_paths, manifests, settings.brain_home, allowed_sources, known_existing_targets,
+                    processed_sources=processed_sources,
                 )
             validated_targets.append((proposal, target))
             if proposal.operation == "create":

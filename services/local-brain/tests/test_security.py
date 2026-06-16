@@ -299,3 +299,130 @@ def test_validate_store_article_write_rejects_superseded_by_non_list(tmp_path) -
     proposal.frontmatter["superseded_by"] = "common/decisions/new.md"
     with pytest.raises(PolicyError, match="superseded_by must be a list"):
         validate_store_article_write(proposal, store_root, brain_home, allowed_sources=allowed)
+
+
+# ---------------------------------------------------------------------------
+# Issue #123: processed_sources relaxation for update ops
+# ---------------------------------------------------------------------------
+
+
+def test_validate_store_article_write_update_accepts_processed_archived_source(tmp_path) -> None:
+    """update + processed_sources: archived source (not on disk, not in allowed) passes."""
+    brain_home = tmp_path / "brain"
+    store_root = tmp_path / "store"
+    # Build a source path inside capture root that does NOT exist on disk.
+    archived_source = brain_home / "capture" / "inbox" / "archived.md"
+    (brain_home / "capture" / "inbox").mkdir(parents=True)
+    store_root.mkdir(parents=True)
+
+    # Article target must exist for update.
+    target_file = store_root / "common" / "decisions" / "foo.md"
+    target_file.parent.mkdir(parents=True)
+    target_file.write_text("existing content", encoding="utf-8")
+    known = {target_file.resolve()}
+
+    proposal = _make_store_proposal(
+        operation="update",
+        sources=[str(archived_source)],
+    )
+    # Source is NOT on disk, NOT in allowed_sources — but IS in processed_sources.
+    processed = {archived_source.resolve()}
+    # Must not raise.
+    result = validate_store_article_write(
+        proposal,
+        store_root,
+        brain_home,
+        allowed_sources=set(),
+        known_existing_targets=known,
+        processed_sources=processed,
+    )
+    assert result == target_file.resolve()
+
+
+def test_validate_store_article_write_create_still_rejects_processed_archived_source(tmp_path) -> None:
+    """create + processed_sources: archived source that is not on disk still raises."""
+    brain_home = tmp_path / "brain"
+    store_root = tmp_path / "store"
+    archived_source = brain_home / "capture" / "inbox" / "archived.md"
+    (brain_home / "capture" / "inbox").mkdir(parents=True)
+    store_root.mkdir(parents=True)
+
+    proposal = _make_store_proposal(
+        operation="create",
+        sources=[str(archived_source)],
+    )
+    processed = {archived_source.resolve()}
+    # For create, processed relaxation must NOT apply — source must exist.
+    with pytest.raises(PolicyError, match="Source does not exist"):
+        validate_store_article_write(
+            proposal,
+            store_root,
+            brain_home,
+            allowed_sources=set(),
+            known_existing_targets=set(),
+            processed_sources=processed,
+        )
+
+
+def test_validate_store_article_write_update_rejects_unknown_nonexistent_source(tmp_path) -> None:
+    """update + processed_sources: source neither on disk nor processed still raises."""
+    brain_home = tmp_path / "brain"
+    store_root = tmp_path / "store"
+    ghost_source = brain_home / "capture" / "inbox" / "ghost.md"
+    (brain_home / "capture" / "inbox").mkdir(parents=True)
+    store_root.mkdir(parents=True)
+
+    target_file = store_root / "common" / "decisions" / "foo.md"
+    target_file.parent.mkdir(parents=True)
+    target_file.write_text("existing content", encoding="utf-8")
+    known = {target_file.resolve()}
+
+    proposal = _make_store_proposal(
+        operation="update",
+        sources=[str(ghost_source)],
+    )
+    # processed_sources is empty — the ghost source is not recorded anywhere.
+    with pytest.raises(PolicyError, match="Source does not exist"):
+        validate_store_article_write(
+            proposal,
+            store_root,
+            brain_home,
+            allowed_sources=set(),
+            known_existing_targets=known,
+            processed_sources=set(),
+        )
+
+
+def test_validate_store_article_write_capture_root_check_preserved_for_update_processed(tmp_path) -> None:
+    """capture_root containment check fires even when source is in processed_sources."""
+    brain_home = tmp_path / "brain"
+    store_root = tmp_path / "store"
+    # A source path OUTSIDE the capture root — even if we listed it in
+    # processed_sources the containment guard must still reject it.
+    outside_source = tmp_path / "outside" / "secret.md"
+    outside_source.parent.mkdir(parents=True)
+    outside_source.write_text("secret", encoding="utf-8")
+    (brain_home / "capture" / "inbox").mkdir(parents=True)
+    store_root.mkdir(parents=True)
+
+    target_file = store_root / "common" / "decisions" / "foo.md"
+    target_file.parent.mkdir(parents=True)
+    target_file.write_text("existing content", encoding="utf-8")
+    known = {target_file.resolve()}
+
+    proposal = _make_store_proposal(
+        operation="update",
+        sources=[str(outside_source)],
+    )
+    # Even with the out-of-root path listed in processed_sources the
+    # containment check must fire first and reject it.
+    processed = {outside_source.resolve()}
+    with pytest.raises(PolicyError, match="not in capture root"):
+        validate_store_article_write(
+            proposal,
+            store_root,
+            brain_home,
+            allowed_sources=processed,
+            known_existing_targets=known,
+            processed_sources=processed,
+        )
