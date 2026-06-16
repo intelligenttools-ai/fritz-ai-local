@@ -204,7 +204,7 @@ _SCRIPT = str(Path(__file__).resolve().parents[1] / "scripts" / "local-brain-ser
 
 
 def test_provision_help_exits_0_and_prints_expected_flags() -> None:
-    """provision --help must exit 0 and list the LLM/embedding flags."""
+    """provision --help must exit 0 and list the LLM/embedding flags including --approval-token."""
     result = subprocess.run(
         [sys.executable, _SCRIPT, "provision", "--help"],
         capture_output=True,
@@ -214,7 +214,7 @@ def test_provision_help_exits_0_and_prints_expected_flags() -> None:
         f"provision --help exited {result.returncode}.\nstdout: {result.stdout}\nstderr: {result.stderr}"
     )
     help_text = result.stdout + result.stderr
-    for flag in ("--llm-protocol", "--llm-endpoint", "--llm-model", "--api-token"):
+    for flag in ("--llm-protocol", "--llm-endpoint", "--llm-model", "--api-token", "--approval-token"):
         assert flag in help_text, f"Expected flag {flag!r} missing from provision --help output"
 
 

@@ -43,7 +43,7 @@ Activate when the user asks to:
 ## Phase 1: Question set
 
 Work through this ordered checklist. Show progress after each answer
-(e.g., `[3/9 answered]`). Do not bundle questions.
+(e.g., `[3/10 answered]`). Do not bundle questions.
 
 ---
 
@@ -153,7 +153,28 @@ Record `scheduler_dry_run = (answer == "propose")`.
 
 ---
 
-**Q8 — One-time backlog drain (optional)**
+**Q8 — Persistent scheduler approval token (optional)**
+
+> "The scheduler uses an approval token to gate large-batch compiles. Should a
+> persistent APPROVAL_TOKEN be written to `.env` now?
+>
+>   - Enter a token string to set it, OR
+>   - Leave blank to skip (the scheduler will run without large-batch gating
+>     unless you edit `.env` manually later)
+>
+>   enter a token string / leave blank"
+
+Map a provided token to `--approval-token <token>`.
+
+**Important — persistent vs. one-time:**
+- `--approval-token <token>` writes `APPROVAL_TOKEN` to `.env` permanently.
+  The running scheduler reads it on every large-batch compile decision.
+- This is **completely separate** from `--drain-approval-token`, which is only
+  forwarded in the single one-time backlog-drain POST and is never persisted.
+
+---
+
+**Q9 — One-time backlog drain (optional)**
 
 > "Do you want to trigger a one-time apply-mode compile immediately after
 > provisioning, to drain any pending captures from the backlog?
@@ -162,7 +183,7 @@ Record `scheduler_dry_run = (answer == "propose")`.
 
 If yes, ask one follow-up sub-question:
 
-**Q8a — Drain approval token** (only if Q8 = yes)
+**Q9a — Drain approval token** (only if Q9 = yes)
 
 > "If the backlog is large (above the service's batch threshold), the compile
 > will require an approval token to proceed. Enter a token string now, or leave
@@ -177,14 +198,11 @@ If yes, ask one follow-up sub-question:
 - `--drain-approval-token <token>` is included in **that one POST request only**.
   It is **not** written to `.env`, it is **not** persisted anywhere, and it has
   **no effect if `--drain-backlog` is omitted**.
-- The persistent `APPROVAL_TOKEN` used by the running scheduler for future
-  large-batch gating is **not configurable via the provision CLI**. It must be
-  set separately (e.g., by editing `.env` directly after provisioning). Do NOT
-  claim this provisioning call configures a standing approval token.
+- The persistent `APPROVAL_TOKEN` is set via `--approval-token` (Q8), not here.
 
 ---
 
-**Q9 — API token**
+**Q10 — API token**
 
 > "The service exposes a local REST API protected by a Bearer token.
 >
@@ -195,7 +213,7 @@ If yes, ask one follow-up sub-question:
 
 ---
 
-After all nine questions (plus sub-questions) are answered, proceed to Phase 2.
+After all ten questions (plus sub-questions) are answered, proceed to Phase 2.
 
 ---
 
@@ -273,6 +291,7 @@ python scripts/local-brain-service.py provision \
   --api-port 8765 \
   [--install-autostart] \
   [--api-token <token>] \
+  [--approval-token <token>] \
   [--drain-backlog [--drain-approval-token <token>]]
 ```
 
@@ -286,17 +305,19 @@ safe to re-run to reconfigure. Pass flags that match the confirmed answers:
 | scheduler yes + propose mode | `--scheduler-enabled` (dry-run is the default) |
 | autostart yes | `--install-autostart` |
 | API token provided | `--api-token <token>` (omit to auto-generate) |
+| persistent approval token provided (Q8) | `--approval-token <token>` |
 | drain backlog yes | `--drain-backlog` |
-| drain backlog yes + approval token provided | `--drain-backlog --drain-approval-token <token>` |
+| drain backlog yes + one-time approval token | `--drain-backlog --drain-approval-token <token>` |
 
-**`--drain-backlog` / `--drain-approval-token` semantics:**
-`--drain-backlog` triggers a single apply-mode compile POST at the end of
-provisioning. `--drain-approval-token <token>` is forwarded in that one request
-only; it is **not written to `.env`** and is **not a persistent standing
-approval token**. Omitting `--drain-backlog` makes `--drain-approval-token`
-completely inert. The persistent `APPROVAL_TOKEN` env var (used by the scheduler
-for ongoing large-batch gating) is **not set by the provision CLI** and must be
-configured separately by editing `.env` after provisioning.
+**Token flag semantics — keep these distinct:**
+- `--approval-token <token>` writes `APPROVAL_TOKEN` **persistently to `.env`**.
+  The running scheduler reads it on every large-batch compile decision. This is
+  the persistent setting that gates ongoing scheduler runs.
+- `--drain-approval-token <token>` is forwarded in the **single one-time
+  backlog-drain POST** only; it is **not written to `.env`** and has no effect
+  outside that one request. Omitting `--drain-backlog` makes this flag inert.
+- These two flags are independent and serve different purposes. Do not conflate
+  them. `reconciliation_autonomy` is **not settable** via the provision CLI.
 
 The `provision` sub-command is also aliased as `setup`, so
 `python scripts/local-brain-service.py setup …` is equivalent.
