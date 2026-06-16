@@ -798,6 +798,68 @@ class TestInstallAutostart:
         assert autostart_step.status == "ok"
         assert install_calls == ["install"]
 
+    # ------------------------------------------------------------------
+    # approval_token written to .env
+    # ------------------------------------------------------------------
+
+    def test_approval_token_written_to_env(self, tmp_path):
+        """--approval-token value must appear as APPROVAL_TOKEN in the written .env."""
+        mod = load_engine()
+        cfg = mod.ProvisionConfig(
+            api_token="tok-appr-001",
+            base_url="http://127.0.0.1:8765",
+            approval_token="SECRET123",
+        )
+        env_path = tmp_path / ".env"
+        reg_path = tmp_path / ".brain" / "registry.yaml"
+
+        docker_gw, http_gw = self._make_provision_components(mod)
+
+        with patch("urllib.request.urlopen", return_value=self._urlopen_ok()):
+            with patch.object(mod, "_run_preflight", return_value=mod.StepResult("preflight", "ok", "ok")):
+                result = mod.provision(
+                    cfg,
+                    env_path=env_path,
+                    registry_path=reg_path,
+                    docker=docker_gw,
+                    http=http_gw,
+                )
+
+        assert result.overall in {"ok", "already_provisioned", "partial"}
+        text = env_path.read_text()
+        assert "APPROVAL_TOKEN=SECRET123" in text
+
+    def test_approval_token_empty_by_default(self, tmp_path):
+        """When no approval_token is supplied, APPROVAL_TOKEN in .env must be empty."""
+        mod = load_engine()
+        cfg = mod.ProvisionConfig(
+            api_token="tok-appr-002",
+            base_url="http://127.0.0.1:8765",
+        )
+        env_path = tmp_path / ".env"
+        reg_path = tmp_path / ".brain" / "registry.yaml"
+
+        docker_gw, http_gw = self._make_provision_components(mod)
+
+        with patch("urllib.request.urlopen", return_value=self._urlopen_ok()):
+            with patch.object(mod, "_run_preflight", return_value=mod.StepResult("preflight", "ok", "ok")):
+                mod.provision(
+                    cfg,
+                    env_path=env_path,
+                    registry_path=reg_path,
+                    docker=docker_gw,
+                    http=http_gw,
+                )
+
+        text = env_path.read_text()
+        # Key must be present but empty (the env-map always writes it)
+        assert "APPROVAL_TOKEN=" in text
+        # Must not accidentally carry any value
+        for line in text.splitlines():
+            if line.startswith("APPROVAL_TOKEN="):
+                assert line == "APPROVAL_TOKEN=", f"Expected empty APPROVAL_TOKEN, got: {line!r}"
+                break
+
     def test_autostart_true_idempotent_second_run_skips(self, tmp_path):
         """Second provision() with autostart=True and already installed → step skipped, no error."""
         mod = load_engine()
