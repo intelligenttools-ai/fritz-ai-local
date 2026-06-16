@@ -61,6 +61,7 @@ def validate_article_write(
     brain_home: Path,
     allowed_sources: set[Path] | None = None,
     known_existing_targets: set[Path] | None = None,
+    processed_sources: set[Path] | None = None,
 ) -> Path:
     if proposal.vault not in vault_paths:
         raise PolicyError(f"Unknown vault: {proposal.vault}")
@@ -113,6 +114,9 @@ def validate_article_write(
         source_path = source_path.resolve()
         if not is_relative_to(source_path, capture_root):
             raise PolicyError(f"Source is not in capture root: {source}")
+        is_known_processed = processed_sources is not None and source_path in processed_sources
+        if proposal.operation == "update" and is_known_processed:
+            continue  # archived/already-processed source is legitimate for an update
         if not source_path.exists():
             raise PolicyError(f"Source does not exist: {source}")
         if allowed_sources is not None and source_path not in allowed_sources:
@@ -138,6 +142,7 @@ def validate_store_article_write(
     brain_home: Path,
     allowed_sources: set[Path] | None = None,
     known_existing_targets: set[Path] | None = None,
+    processed_sources: set[Path] | None = None,
 ) -> Path:
     """Validate an article write proposal targeting the brain knowledge store.
 
@@ -182,6 +187,9 @@ def validate_store_article_write(
         source_path = source_path.resolve()
         if not is_relative_to(source_path, capture_root):
             raise PolicyError(f"Source is not in capture root: {source}")
+        is_known_processed = processed_sources is not None and source_path in processed_sources
+        if proposal.operation == "update" and is_known_processed:
+            continue  # archived/already-processed source is legitimate for an update
         if not source_path.exists():
             raise PolicyError(f"Source does not exist: {source}")
         if allowed_sources is not None and source_path not in allowed_sources:

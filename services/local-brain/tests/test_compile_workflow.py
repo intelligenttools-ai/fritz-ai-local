@@ -757,3 +757,85 @@ def test_store_mode_repairs_single_capture_source_mangled_by_model(
     assert result.proposals[0].sources == [str(capture_path.resolve())]
     # Capture must be archived (not exist in inbox after compile).
     assert not capture_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# Issue #123: update accepts archived/processed source (store mode)
+# ---------------------------------------------------------------------------
+
+
+def test_store_mode_update_accepts_archived_source_from_prior_compile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: second compile proposes update re-listing an archived source.
+
+    Sequence:
+    1. First compile: create store article from inbox capture → capture is
+       compiled, marked processed, and archived out of inbox.
+    2. Second compile: a NEW inbox capture triggers compile.  The agent enriches
+       the existing article and re-lists the ORIGINAL inbox path (now archived)
+       as the source for the update proposal.  The validator must accept this
+       because the original source is recorded as already-processed.
+    """
+    brain_home, skills_dir = _store_mode_settings(tmp_path)
+    capture_path = brain_home / "capture" / "inbox" / "decision-001.md"
+    capture_path.write_text("# Capture\n\nInitial decision content.\n", encoding="utf-8")
+
+    # ---- First compile: create the article ----
+    create_proposal = ArticleWriteProposal(
+        vault="brain",
+        relative_path="common/decisions/decision-001.md",
+        operation="create",
+        title="Decision 001",
+        summary="Initial decision.",
+        sources=[str(capture_path)],
+        body="Initial body.",
+    )
+    monkeypatch.setattr(
+        compile_workflow,
+        "build_compile_agent",
+        lambda settings, skill_text: FakeCompileAgent(create_proposal),
+    )
+
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=skills_dir)
+    first = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False, max_captures=1)))
+
+    assert first.errors == [], f"First compile should succeed, got: {first.errors}"
+    assert len(first.applied) == 1
+    # Capture is now archived — no longer in inbox.
+    assert not capture_path.exists(), "Capture should have been archived after first compile"
+
+    # ---- Second compile: a new capture triggers compile, but the update
+    # proposal references the ORIGINAL (now-archived) inbox path. ----
+    new_capture_path = brain_home / "capture" / "inbox" / "enrichment-001.md"
+    new_capture_path.write_text("# Capture\n\nEnrichment detail.\n", encoding="utf-8")
+
+    # The update proposal lists the ORIGINAL archived path as source — this is
+    # the exact failure mode from issue #123: the source no longer exists in
+    # inbox and is not in the current batch's allowed_sources.
+    update_proposal = ArticleWriteProposal(
+        vault="brain",
+        relative_path="common/decisions/decision-001.md",
+        operation="update",
+        title="Decision 001",
+        summary="Enriched decision.",
+        sources=[str(capture_path)],  # original inbox path — file no longer exists there
+        body="Enriched body.",
+    )
+    update_agent = SequenceCompileAgent([CompileAgentOutput(proposals=[update_proposal])])
+    monkeypatch.setattr(
+        compile_workflow,
+        "build_compile_agent",
+        lambda settings, skill_text: update_agent,
+    )
+
+    second = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
+
+    # The update must apply without errors (this was the failing case before the fix).
+    assert second.errors == [], f"Second compile should succeed, got: {second.errors}"
+    assert len(second.applied) == 1
+    assert second.applied[0].operation == "update"
+
+    store_root = brain_home / "knowledge"
+    article_path = store_root / "common" / "decisions" / "decision-001.md"
+    assert "Enriched body." in article_path.read_text(encoding="utf-8")
