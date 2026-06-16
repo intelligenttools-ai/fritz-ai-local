@@ -214,6 +214,58 @@ verdicts automatically.
 | `RERECONCILIATION_DRY_RUN` | `true` | Dry-run mode for the re-reconciliation sweep |
 | `MERGE_POLICY` | `brain-first` | How brain and live-fetched external matches are merged |
 
+## Docker brain service — reconfigure and rollback
+
+After the Dockerized Local Brain service is provisioned (see
+[SETUP.md — Docker brain provisioning](../SETUP.md#docker-brain-provisioning--reproducible-setup-per-platform)),
+you can change config or revert to local-only mode.
+
+### Reconfigure on config change
+
+When a config value (LLM model, endpoint, scheduler, …) changes, run:
+
+```bash
+# Auto-detect drift and re-provision only when needed:
+.venv/bin/python scripts/local-brain-service.py reconfigure \
+  --llm-model qwen2.5:7b
+
+# Force re-provision even when no drift is detected:
+.venv/bin/python scripts/local-brain-service.py reconfigure \
+  --llm-model qwen2.5:7b --force
+```
+
+`reconfigure` compares the desired `.env` values against the running
+container's environment. If drift is detected (or `--force` is supplied), it
+calls the full `provision()` engine to write `.env`, update the registry, and
+restart the container. If the config is already in sync, it returns `no_drift`
+and does nothing. All captured and compiled knowledge is preserved.
+
+`reconfigure` accepts the same flags as `provision` with one addition: `--force`
+re-provisions even when no drift is detected. It does **not** accept
+`--install-autostart`, `--approval-token`, or `--drain-*`; those are initial-
+setup flags.
+
+### Roll back to local-only
+
+To stop the container and revert to using local hooks and slash skills:
+
+```bash
+# Stop the container and update the registry:
+.venv/bin/python scripts/local-brain-service.py rollback
+
+# Update the registry only, leave the container running:
+.venv/bin/python scripts/local-brain-service.py rollback --no-stop
+```
+
+`rollback` sets `local_brain_service.desired: local` and
+`local_brain_service.enabled: false` in `~/.brain/registry.yaml`. Captured
+knowledge under `~/.brain/capture/` and compiled articles under
+`~/.brain/knowledge/` are **not touched**. After rollback, the next session
+start will no longer force `/fritz:brain-service-setup` and agents fall back
+to local hooks and skills automatically.
+
+---
+
 ## Troubleshooting
 
 ### The session-start hook does not inject context
