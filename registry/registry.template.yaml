@@ -38,6 +38,12 @@ settings:
     # Service scheduler settings live in the service environment (.env):
     # SCHEDULER_ENABLED=false, SCHEDULER_DRY_RUN=true, AUTOSTART_INSTALLED=false.
     suggest_setup: true
+    # Declare the desired runtime: docker | local (default: local).
+    # When set to "docker", session-start will inject a MUST-run instruction for
+    # /fritz:brain-service-setup if the service is not currently operational —
+    # even when enabled: false is recorded.  Set to "local" (or omit) to suppress
+    # all forcing prompts and use the original local slash-skill workflow.
+    # desired: docker
 
 # External targets (service mode only; additive — the brain store works without this).
 # The registry now includes "external targets": other vaults, MCPs, shared drives,

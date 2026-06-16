@@ -24,6 +24,8 @@ from brain_common import (
     get_context_injection_level, get_fritz_version,
     local_brain_service_available, local_brain_service_instructions,
     local_brain_service_configured, local_brain_configuration_decision_prompt,
+    get_local_brain_service_desired, local_brain_service_operational,
+    local_brain_service_setup_forcing_instruction,
     BRAIN_HOME, FRITZ_REPO,
 )
 
@@ -153,6 +155,18 @@ def main():
 
     # Always inject brain system awareness
     context_parts.append("# Brain System Active\n")
+
+    # --- PROV3: desired-vs-operational forcing ---
+    # Check whether the operator has declared a desired runtime.  This is
+    # intentionally independent of `enabled` and `local_brain_service_configured()`
+    # so that `enabled: false` does NOT suppress the forcing instruction.
+    desired = get_local_brain_service_desired(cwd=cwd if cwd else None)
+    if desired == "docker":
+        operational = local_brain_service_operational()
+        if not operational:
+            # Service is desired but not running — inject the mandatory instruction.
+            # This fires regardless of `enabled` or any other flag.
+            context_parts.append(local_brain_service_setup_forcing_instruction())
 
     service_configured = local_brain_service_configured()
     service_available = local_brain_service_available()
