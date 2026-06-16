@@ -85,6 +85,16 @@ for workflows that the service does not provide.
 - The service cannot delete files. External sync is limited to explicit `git`
   pushes, and first real external sync is blocked unless configured.
 
+## Provisioning (guided setup)
+
+For a reproducible, agent-driven first-time setup — including the
+`desired: docker` forcing model, per-OS autostart, and the `provision` /
+`reconfigure` / `rollback` CLI — see
+[SETUP.md — Docker brain provisioning](../../SETUP.md#docker-brain-provisioning--reproducible-setup-per-platform).
+
+For reconfigure-on-drift and rollback-to-local procedures, see
+[docs/operations.md — Docker brain service: reconfigure and rollback](../../docs/operations.md#docker-brain-service--reconfigure-and-rollback).
+
 ## Configure
 
 Copy the repository-root `.env.example` to `.env` and adjust values. The Docker

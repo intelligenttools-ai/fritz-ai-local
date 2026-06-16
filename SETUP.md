@@ -321,6 +321,126 @@ slash skills remain the fallback. For safety, hooks probe only loopback service
 URLs by default and `allow_remote: false` keeps it on-host. Full service
 documentation: [`services/local-brain/README.md`](services/local-brain/README.md).
 
+---
+
+## Docker brain provisioning — reproducible setup per platform
+
+This section describes the **reproducible, agent-driven provisioning flow**
+introduced in the PROV epic. Use it when you want the service set up from
+scratch in a single guided pass rather than editing `.env` by hand.
+
+### Preflight requirements (all platforms)
+
+| Requirement | Check |
+|---|---|
+| Docker Desktop (or Docker Engine) | `docker --version` |
+| Docker Compose v2 (`docker compose`) | `docker compose version` |
+| Python 3.10+ | `python3 --version` |
+| Port 8765 free | `lsof -i :8765` (macOS/Linux) |
+
+On **Windows**, use `python` if `python3` is not in PATH.
+
+### The desired:docker + forcing model (PROV3)
+
+The provisioning flow is driven by a single registry key:
+
+```yaml
+# in ~/.brain/registry.yaml, under settings:
+settings:
+  local_brain_service:
+    desired: docker    # "docker" | "local" (default: "local")
+```
+
+When `desired: docker` is set and the service is **not operational**, every
+session start injects a mandatory `REQUIRED ACTION: /fritz:brain-service-setup`
+instruction into the agent context. The forcing fires regardless of the
+`enabled` flag — it stops only when the service actually answers on its
+endpoint.  Once operational, the instruction does not appear.
+
+You may set `desired: docker` in `~/.brain/registry.yaml` before or after
+installing the service; the agent will be prompted to run setup on the next
+session start.
+
+### Running setup
+
+**Option A — guided skill (recommended):** inside a Fritz-wired session, run:
+
+```
+/fritz:brain-service-setup
+```
+
+The skill asks a question set (LLM endpoint, model, API key, scheduler
+preferences, approval token, autostart) and delegates to the provision engine.
+
+**Option B — provision CLI directly** (for CI or scripted re-runs):
+
+```bash
+.venv/bin/python scripts/local-brain-service.py provision \
+  --llm-protocol openai-compatible \
+  --llm-endpoint http://host.docker.internal:11434/v1 \
+  --llm-model llama3.2:latest \
+  [--llm-api-key KEY] \
+  [--embedding-enabled] \
+  [--embedding-endpoint URL] \
+  [--embedding-model MODEL] \
+  [--embedding-api-key KEY] \
+  [--scheduler-enabled] \
+  [--scheduler-apply] \           # sets SCHEDULER_DRY_RUN=false
+  [--api-token TOKEN] \           # omit to auto-generate
+  [--api-port PORT] \
+  [--api-token-env VAR_NAME] \
+  [--approval-token TOKEN] \      # persistent APPROVAL_TOKEN for large-batch gating
+  [--install-autostart] \         # see per-OS autostart below
+  [--drain-backlog] \
+  [--drain-approval-token TOKEN]
+
+# Alias — identical to provision:
+.venv/bin/python scripts/local-brain-service.py setup ...
+```
+
+`provision` writes `.env` (merging managed keys without discarding unrelated
+entries), updates `~/.brain/registry.yaml` `settings.local_brain_service`,
+builds and starts the container, then probes `/v1/status` and the configured
+LLM endpoint to verify. If the LLM is not reachable the step is a warning
+(not a failure) — the container is running but compile will 502 until a model
+is served.
+
+> **Note**: `reconciliation_autonomy` is **not** settable via the provision
+> CLI. Set it directly in `registry.yaml` under `settings:`.
+
+### Per-OS autostart with `--install-autostart`
+
+Pass `--install-autostart` (or enable it through the setup skill) to register
+a daemon that starts the service at login / boot for the current OS user:
+
+| Platform | Mechanism | What is written |
+|---|---|---|
+| **macOS** | launchd LaunchAgent | `~/Library/LaunchAgents/ai.fritz.local-brain.plist` |
+| **Linux** | systemd user unit | `~/.config/systemd/user/fritz-local-brain.service` |
+| **Windows** | Task Scheduler logon task | task wrapper batch + registered task |
+
+All three platforms use the same Docker Compose service path. Set
+`AUTOSTART_INSTALLED=true` in `.env` afterwards (the installer sets it
+automatically). Remove the daemon with:
+
+```bash
+python3 scripts/local-brain-service.py uninstall-autostart
+```
+
+### Verify
+
+After provisioning completes:
+
+```bash
+curl http://127.0.0.1:8765/health
+curl -H "authorization: Bearer $LOCAL_BRAIN_API_TOKEN" http://127.0.0.1:8765/v1/status
+```
+
+Start a new session — with `desired: docker` and the service now operational,
+the forcing instruction will **not** appear.
+
+---
+
 ## Verify
 
 1. Start a new session — brain context should be injected (C1).
