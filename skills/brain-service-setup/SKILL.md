@@ -354,20 +354,79 @@ Some steps failed. Fix the errors above, then re-run:
 The engine is idempotent — steps that already completed will be skipped.
 ```
 
-### Reconfiguration and rollback
+### Reconfigure / Rollback
 
-This skill is safe to re-run at any time for reconfiguration. The PROV1
-engine merges changes into the existing `.env` without destroying unrelated
-keys. To roll back:
+#### Changing LLM backend, embeddings, or scheduler settings
 
-- **Revert `.env`**: restore from a backup or re-run with the previous values.
-- **Stop the container**: `python scripts/local-brain-service.py stop`
-- **Disable the service**: set `settings.local_brain_service.enabled: false`
-  in `~/.brain/registry.yaml`.
+To change any configuration (e.g. switch from Ollama to OpenAI, enable
+embeddings, change the scheduler interval):
 
-Full reconfiguration (e.g., switching from Ollama to OpenAI) requires a
-container rebuild, which the engine performs automatically (`docker compose
-build + up -d`).
+1. **Check for drift first** (optional but informative):
+
+   ```
+   python scripts/local-brain-service.py reconfigure \
+     --llm-model gpt-4o-mini \
+     --llm-endpoint https://api.openai.com/v1 \
+     --llm-api-key sk-... \
+     [other flags] \
+     --force
+   ```
+
+   The `reconfigure` sub-command (alias: `re-provision`) detects which keys
+   in the running container differ from the desired config (drift detection),
+   then re-applies provisioning via the PROV1 engine. It never duplicates
+   provisioning logic — it delegates to `provision()` internally.
+
+   - **Drift detected** → re-provision runs automatically (build + up + verify).
+   - **No drift + no `--force`** → returns `no_drift`; nothing runs.
+   - **`--force`** → re-provision always runs regardless of drift state.
+
+2. **Or run provision directly** (equivalent, and always idempotent):
+
+   ```
+   python scripts/local-brain-service.py provision \
+     --llm-model gpt-4o-mini \
+     --llm-endpoint https://api.openai.com/v1 \
+     --llm-api-key sk-...
+   ```
+
+   The engine merges new values into the existing `.env` without destroying
+   unrelated keys, then rebuilds and restarts the container. Steps that are
+   already correct are skipped.
+
+Both paths handle container restart (via `docker compose build + up -d`) and
+verify reachability after the change.
+
+#### Rolling back to local-only mode (no data loss)
+
+To disable the Docker service and fall back to local slash-skill brain
+workflows without losing any capture or knowledge data:
+
+```
+python scripts/local-brain-service.py rollback
+```
+
+What `rollback` does:
+- Sets `settings.local_brain_service.desired: local` and
+  `settings.local_brain_service.enabled: false` in `~/.brain/registry.yaml`,
+  preserving all other keys (vaults, external targets, other settings, the
+  API token, etc.).
+- Runs `docker compose down` to stop the container (pass `--no-stop` to
+  leave it running while only updating the registry).
+- Does **NOT** delete `~/.brain/capture/` or `~/.brain/knowledge/` — all
+  data is preserved on the host volume.
+- Does **NOT** modify `.env`.
+
+After rollback:
+- `get_local_brain_service_desired()` returns `"local"` — agents no longer
+  inject the forcing instruction.
+- `local_brain_service_enabled()` returns `False` — service routing is off.
+- Brain operations fall back to local slash-skill workflows automatically.
+
+To re-enable the service after a rollback, re-run `provision` (or this skill)
+with your desired configuration. The `--api-token` flag accepts the token
+previously stored in `~/.brain/registry.yaml`; if omitted, the existing token
+in `.env` is preserved automatically.
 
 ## Important
 
