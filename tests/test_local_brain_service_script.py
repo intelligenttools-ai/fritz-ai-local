@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -182,3 +184,59 @@ def test_windows_secure_env_permissions_uses_icacls(monkeypatch, tmp_path) -> No
         "SYSTEM:F",
         "Administrators:F",
     ]
+
+
+# ---------------------------------------------------------------------------
+# Regression test: CLI entry for the provision subcommand
+#
+# Before the fix in scripts/local-brain-service.py, running
+#   python scripts/local-brain-service.py provision --help
+# crashed with:
+#   ModuleNotFoundError: No module named 'scripts'         (first import path)
+#   AttributeError: 'NoneType'... in dataclasses           (spec fallback — module
+#       not registered in sys.modules before exec_module)
+#
+# These tests invoke the REAL CLI entry as a subprocess so they catch regressions
+# that unit tests (which import provision_engine directly) cannot detect.
+# ---------------------------------------------------------------------------
+
+_SCRIPT = str(Path(__file__).resolve().parents[1] / "scripts" / "local-brain-service.py")
+
+
+def test_provision_help_exits_0_and_prints_expected_flags() -> None:
+    """provision --help must exit 0 and list the LLM/embedding flags."""
+    result = subprocess.run(
+        [sys.executable, _SCRIPT, "provision", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"provision --help exited {result.returncode}.\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    help_text = result.stdout + result.stderr
+    for flag in ("--llm-protocol", "--llm-endpoint", "--llm-model", "--api-token"):
+        assert flag in help_text, f"Expected flag {flag!r} missing from provision --help output"
+
+
+def test_status_help_still_exits_0() -> None:
+    """The status subcommand must still load after the provision import fix."""
+    result = subprocess.run(
+        [sys.executable, _SCRIPT, "status", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"status --help exited {result.returncode}.\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+
+
+def test_start_help_still_exits_0() -> None:
+    """The start subcommand must still load after the provision import fix."""
+    result = subprocess.run(
+        [sys.executable, _SCRIPT, "start", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"start --help exited {result.returncode}.\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    )
