@@ -73,7 +73,12 @@ def render_article(proposal: ArticleWriteProposal) -> str:
     frontmatter.setdefault("title", proposal.title)
     frontmatter.setdefault("updated", datetime.now().strftime("%Y-%m-%d"))
     yaml_text = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=False).strip()
-    body = proposal.body.strip() + "\n"
+    # Strip any leading front-matter block the compile agent may have included in
+    # the body — the authoritative header is always proposal.frontmatter.
+    # _split_front_matter returns ({}, original_text) when no valid FM is present,
+    # so this is a no-op for clean bodies and malformed leading fences.
+    _, body_text = _split_front_matter(proposal.body)
+    body = body_text.strip() + "\n"
     return f"---\n{yaml_text}\n---\n\n{body}"
 
 
