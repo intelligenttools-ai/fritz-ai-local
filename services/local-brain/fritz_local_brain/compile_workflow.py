@@ -301,6 +301,22 @@ Available vaults:
 
     if not request.dry_run and not errors:
         processed_capture_paths.update(_skipped_capture_paths(settings.brain_home, allowed_sources, all_skipped))
+        # Guarantee every considered capture reaches a terminal state: any capture
+        # in the batch that the agent neither produced a proposal for nor listed in
+        # `skipped` would otherwise stay pending and be re-read on every run,
+        # causing the backlog to never drain (issue #135).  Mark them processed and
+        # archive them now.  The existing hash-check inside mark_captures_processed
+        # / archive_processed_inbox_captures ensures captures whose content changed
+        # during the run are excluded and remain pending for the next run.
+        auto_skipped = allowed_sources - processed_capture_paths
+        if auto_skipped:
+            append_global_log(
+                settings.brain_home,
+                "COMPILE",
+                f"auto-skipped {len(auto_skipped)} captures with no agent proposal/skip — archived to inbox/archive",
+                request.dry_run,
+            )
+            processed_capture_paths.update(auto_skipped)
         sorted_processed_paths = sorted(processed_capture_paths)
         mark_captures_processed(settings.brain_home, sorted_processed_paths, capture_hashes)
         try:

@@ -192,7 +192,12 @@ def test_compile_default_uses_safe_chronological_batch_cap(tmp_path: Path, monke
     assert agent.deps[0].capture_paths == captures[:25]
 
 
-def test_compile_apply_leaves_unrepresented_capture_pending(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_compile_apply_archives_unrepresented_capture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Captures the agent ignores (no proposal AND no explicit skip) are auto-archived.
+
+    This is the fix for issue #135: unrepresented captures must not stay pending
+    forever — they are archived after the apply run so a second run sees 0 pending.
+    """
     brain_home = tmp_path / "brain"
     vault_path = tmp_path / "vault"
     capture_path = brain_home / "capture" / "inbox" / "fact.md"
@@ -208,7 +213,8 @@ def test_compile_apply_leaves_unrepresented_capture_pending(tmp_path: Path, monk
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("# Compile Skill\n", encoding="utf-8")
 
-    agent = SequenceCompileAgent([CompileAgentOutput(), CompileAgentOutput()])
+    # Agent returns no proposals and lists no skipped — the exact #135 scenario.
+    agent = SequenceCompileAgent([CompileAgentOutput()])
     monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
 
     first = asyncio.run(
@@ -217,17 +223,21 @@ def test_compile_apply_leaves_unrepresented_capture_pending(tmp_path: Path, monk
             CompileRunRequest(dry_run=False),
         )
     )
+
+    # Capture must no longer exist in inbox — it has been auto-archived.
+    assert first.captures_considered == 1
+    assert first.applied == []
+    assert first.errors == []
+    assert not capture_path.exists(), "Unrepresented capture must be archived out of inbox"
+
+    # Second run must see 0 pending captures — backlog drains.
     second = asyncio.run(
         compile_workflow.run_compile(
             Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills"),
             CompileRunRequest(dry_run=True),
         )
     )
-
-    assert first.captures_considered == 1
-    assert first.applied == []
-    assert first.errors == []
-    assert second.captures_considered == 1
+    assert second.captures_considered == 0, "Backlog must be empty after auto-archival"
 
 
 def test_compile_apply_marks_explicitly_skipped_captures_processed(
@@ -496,6 +506,63 @@ def test_compile_apply_rejects_unrelated_hallucinated_single_capture_source(
     assert result.errors == [f"test/facts/useful.md: Source does not exist: {proposal.sources[0]}"]
     assert capture_path.exists()
 
+
+def test_compile_apply_drains_backlog_when_agent_covers_only_one_of_many_captures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reproduction for issue #135: agent produces one proposal for a multi-capture batch,
+    leaving the rest unaddressed.  All unaddressed captures must be auto-archived so a
+    second run sees 0 pending — the backlog must drain even when agent coverage is partial.
+    """
+    brain_home = tmp_path / "brain"
+    vault_path = tmp_path / "vault"
+    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
+
+    (brain_home / "capture" / "inbox").mkdir(parents=True)
+    (vault_path / ".brain").mkdir(parents=True)
+    (vault_path / "knowledge").mkdir()
+    (vault_path / ".brain" / "manifest.yaml").write_text("paths:\n  knowledge: knowledge\nexclude: []\n", encoding="utf-8")
+    brain_home.mkdir(exist_ok=True)
+    (brain_home / "registry.yaml").write_text(f"vaults:\n  test:\n    path: {vault_path}\n", encoding="utf-8")
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Compile Skill\n", encoding="utf-8")
+
+    # Three captures; the agent will produce a proposal only for the first one.
+    capture_a = brain_home / "capture" / "inbox" / "a.md"
+    capture_b = brain_home / "capture" / "inbox" / "b.md"
+    capture_c = brain_home / "capture" / "inbox" / "c.md"
+    capture_a.write_text("# Capture A\n\nFact A.\n", encoding="utf-8")
+    capture_b.write_text("# Capture B\n\nFact B.\n", encoding="utf-8")
+    capture_c.write_text("# Capture C\n\nFact C.\n", encoding="utf-8")
+
+    proposal = ArticleWriteProposal(
+        vault="test",
+        relative_path="facts/a.md",
+        operation="create",
+        title="Fact A",
+        summary="Only A was compiled.",
+        sources=[str(capture_a)],
+        body="Fact A body.",
+    )
+    # Agent covers capture_a only; capture_b and capture_c get no proposal and no skip.
+    agent = SequenceCompileAgent([CompileAgentOutput(proposals=[proposal])])
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
+
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills")
+    first = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
+
+    assert first.errors == []
+    assert len(first.applied) == 1
+    # All three captures must be gone from inbox (archived or processed).
+    assert not capture_a.exists(), "capture_a (applied source) must be archived"
+    assert not capture_b.exists(), "capture_b (unaddressed) must be auto-archived"
+    assert not capture_c.exists(), "capture_c (unaddressed) must be auto-archived"
+
+    # Second compile must see 0 pending — the backlog is drained.
+    second_agent = SequenceCompileAgent([CompileAgentOutput()])
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: second_agent)
+    second = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=True)))
+    assert second.captures_considered == 0, "Backlog must be fully drained after first apply run"
 
 
 def test_compile_apply_marks_successful_captures_processed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
