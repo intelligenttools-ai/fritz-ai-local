@@ -1,5 +1,7 @@
 """Shared utilities for brain hooks across all agents."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import os
