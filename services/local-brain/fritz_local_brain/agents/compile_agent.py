@@ -10,7 +10,7 @@ from pydantic_ai import Agent, RunContext
 
 from ..captures import read_capture
 from ..config import Settings
-from ..llm import build_model
+from ..llm import OUTPUT_RETRIES, build_model, output_spec_for
 from ..models import CompileAgentOutput
 from ..prompts import COMPILE_MVP_INSTRUCTIONS, COMPILE_SYSTEM_PROMPT
 
@@ -29,7 +29,8 @@ def build_compile_agent(settings: Settings, skill_text: str) -> Agent[CompileDep
     agent = Agent(
         build_model(settings),
         deps_type=CompileDeps,
-        output_type=CompileAgentOutput,
+        output_type=output_spec_for(settings.llm_protocol, CompileAgentOutput),
+        retries={"output": OUTPUT_RETRIES},
         system_prompt=COMPILE_SYSTEM_PROMPT,
         instructions=f"{COMPILE_MVP_INSTRUCTIONS}\n\n{skill_text}",
     )

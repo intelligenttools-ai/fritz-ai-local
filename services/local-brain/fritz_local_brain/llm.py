@@ -4,12 +4,33 @@ from __future__ import annotations
 
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
+from pydantic_ai import NativeOutput
 from pydantic_ai.models.anthropic import AnthropicModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.providers.openai import OpenAIProvider
 
 from .config import Settings
+
+#: Output-validation retry budget for structured-output agents. Lets the model
+#: self-repair from output-validation errors (the error is fed back) before the
+#: run fails. Applied to BOTH the compile and reconciliation agents.
+OUTPUT_RETRIES = 3
+
+
+def output_spec_for(protocol: str, model: type):
+    """Pick the structured-output spec for *model* based on the LLM *protocol*.
+
+    On ``openai-compatible`` endpoints we use ``NativeOutput`` so the backend
+    does guided decoding via a ``json_schema`` response format. ``AnthropicModel``'s
+    profile does not support native json_schema output (pydantic_ai raises a UserError
+    at request time), so for ``anthropic-compatible`` we keep the plain model
+    (pydantic_ai's default tool output).
+    """
+
+    if protocol == "openai-compatible":
+        return NativeOutput(model)
+    return model
 
 
 def build_model(settings: Settings):

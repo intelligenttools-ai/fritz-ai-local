@@ -1131,3 +1131,118 @@ def test_compile_rebuilds_indexes_after_supersession(
     assert archive_index.exists(), "archive.index.md must exist after supersession"
     archive_content = archive_index.read_text(encoding="utf-8")
     assert "color.md" in archive_content or "Project Color" in archive_content
+
+
+# ---------------------------------------------------------------------------
+# Issue #141: Robust float coercion on ReconciliationVerdict
+# ---------------------------------------------------------------------------
+
+
+def test_reconciliation_verdict_coerces_trailing_comma_floats() -> None:
+    """LLM-emitted strings like '0.7,' are coerced to float; other fields get valid values."""
+    v = ReconciliationVerdict.model_validate(
+        {
+            "verdict": "orthogonal",
+            "reasoning": "x",
+            "source_authority": "0.7,",
+            "anchor_strength": "0.9,",
+            "evidence_strength": "0.5,",
+            "confidence": "0.8,",
+        }
+    )
+    assert v.source_authority == 0.7
+    assert v.anchor_strength == 0.9
+    assert v.evidence_strength == 0.5
+    assert v.confidence == 0.8
+
+
+def test_reconciliation_verdict_leaves_numeric_floats_untouched() -> None:
+    v = ReconciliationVerdict.model_validate(
+        {"verdict": "orthogonal", "reasoning": "x", "source_authority": 0.3}
+    )
+    assert v.source_authority == 0.3
+
+
+def test_reconciliation_verdict_falls_back_to_default_on_unparseable_string() -> None:
+    v = ReconciliationVerdict.model_validate(
+        {"verdict": "orthogonal", "reasoning": "x", "source_authority": "not-a-number"}
+    )
+    assert v.source_authority == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Issue #141: Per-pair blast-radius containment in reconciliation loop
+# ---------------------------------------------------------------------------
+
+
+class FakeBadFirstPairAgent:
+    """Raises on the first call, succeeds on subsequent calls."""
+
+    def __init__(self, good_verdict: ReconciliationVerdict) -> None:
+        self.good_verdict = good_verdict
+        self.call_count = 0
+
+    async def run(self, prompt: str, *, deps: object, usage_limits: object) -> SimpleNamespace:
+        self.call_count += 1
+        if self.call_count == 1:
+            raise ValueError("simulated bad verdict on first pair")
+        return SimpleNamespace(output=self.good_verdict)
+
+
+def test_reconciliation_loop_continues_past_failing_pair(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A per-pair agent.run failure skips only that pair; subsequent pairs are processed."""
+    settings = _store_mode_settings(tmp_path)
+    brain_home = settings.brain_home
+    store_root = brain_home / "knowledge"
+
+    # Two related existing articles so the loop has two pairs to process.
+    existing1 = store_root / "common" / "decisions" / "topic1.md"
+    existing2 = store_root / "common" / "decisions" / "topic2.md"
+    _write_article(existing1, {"type": "article", "title": "Topic1", "status": "active"}, body="Topic one.")
+    _write_article(existing2, {"type": "article", "title": "Topic2", "status": "active"}, body="Topic two.")
+
+    capture_path = brain_home / "capture" / "inbox" / "new.md"
+    capture_path.write_text("# Capture\n\nNew info.\n", encoding="utf-8")
+
+    proposal = ArticleWriteProposal(
+        vault="brain",
+        relative_path="common/decisions/new-article.md",
+        operation="create",
+        title="New Article",
+        summary="New.",
+        sources=[str(capture_path)],
+        body="New article about topics one and two.",
+    )
+
+    monkeypatch.setattr(
+        compile_workflow,
+        "build_compile_agent",
+        lambda s, st: FakeCompileAgent(CompileAgentOutput(proposals=[proposal])),
+    )
+
+    good_verdict = ReconciliationVerdict(verdict="orthogonal", reasoning="unrelated")
+    fake_agent = FakeBadFirstPairAgent(good_verdict)
+    monkeypatch.setattr(compile_workflow, "build_reconciliation_agent", lambda s: fake_agent)
+
+    # find_related_articles must return two entries so the inner loop runs twice.
+    async def _fake_find_related(settings, content, *, store_root, top_k, char_budget):
+        return [
+            {"path": "common/decisions/topic1.md", "title": "Topic1", "content": "Topic one."},
+            {"path": "common/decisions/topic2.md", "title": "Topic2", "content": "Topic two."},
+        ]
+
+    monkeypatch.setattr(compile_workflow, "find_related_articles", _fake_find_related)
+
+    result = asyncio.run(
+        compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False, max_captures=1))
+    )
+
+    # The sweep must not surface as a hard error.
+    assert result.errors == []
+    # The first pair failed (skipped), the second pair was processed → one outcome.
+    assert len(result.reconciliations) == 1
+    assert result.reconciliations[0].verdict == "orthogonal"
+    # The agent was called twice (once failing, once succeeding).
+    assert fake_agent.call_count == 2
