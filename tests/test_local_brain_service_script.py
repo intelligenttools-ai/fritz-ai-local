@@ -240,3 +240,142 @@ def test_start_help_still_exits_0() -> None:
     assert result.returncode == 0, (
         f"start --help exited {result.returncode}.\nstdout: {result.stdout}\nstderr: {result.stderr}"
     )
+
+
+# ---------------------------------------------------------------------------
+# AC3 — build_launch_agent_plist() and build_systemd_unit() builder tests
+# ---------------------------------------------------------------------------
+
+
+def test_build_launch_agent_plist_uses_detached_compose() -> None:
+    """ProgramArguments must run `up -d --build` (detached one-shot)."""
+    module = load_script()
+
+    plist = module.build_launch_agent_plist()
+
+    args_str = " ".join(plist["ProgramArguments"])
+    assert "up -d --build" in args_str, "ProgramArguments must contain 'up -d --build'"
+    assert " -d " in args_str or args_str.endswith(" -d") or "up -d" in args_str, (
+        "ProgramArguments must include detached flag -d"
+    )
+
+
+def test_build_launch_agent_plist_no_exec_prefix() -> None:
+    """ProgramArguments must NOT contain an `exec ` token.
+
+    An `exec ` prefix would replace the shell process so launchd loses its pid
+    tracking; the command is already the last thing in the shell snippet so
+    `exec` is redundant and was intentionally dropped.
+    """
+    module = load_script()
+
+    plist = module.build_launch_agent_plist()
+
+    args_str = " ".join(plist["ProgramArguments"])
+    assert "exec " not in args_str, "ProgramArguments must not contain 'exec ' prefix"
+
+
+def test_build_launch_agent_plist_run_at_load_keep_alive_on_failure() -> None:
+    """RunAtLoad must be True; KeepAlive must retry only on non-zero exit.
+
+    KeepAlive={"SuccessfulExit": False} means launchd relaunches ONLY when the
+    one-shot `up -d --build` exits non-zero (e.g. Docker/Colima not ready yet
+    at login).  A successful `up -d` exits 0 and is NOT relaunched, so there is
+    no steady-state keepalive loop; Docker's `restart: unless-stopped` then
+    supervises the running container.
+    """
+    module = load_script()
+
+    plist = module.build_launch_agent_plist()
+
+    assert plist["RunAtLoad"] is True, "RunAtLoad must be True"
+    assert plist["KeepAlive"] == {"SuccessfulExit": False}, (
+        "KeepAlive must be {'SuccessfulExit': False} to retry only on failure"
+    )
+
+
+def test_build_systemd_unit_is_oneshot() -> None:
+    """Unit text must declare Type=oneshot and RemainAfterExit=yes."""
+    module = load_script()
+
+    unit = module.build_systemd_unit()
+
+    assert "Type=oneshot" in unit, "systemd unit must have Type=oneshot"
+    assert "RemainAfterExit=yes" in unit, "systemd unit must have RemainAfterExit=yes"
+
+
+def test_build_systemd_unit_exec_start_is_detached() -> None:
+    """ExecStart must run `up -d --build`."""
+    module = load_script()
+
+    unit = module.build_systemd_unit()
+
+    exec_start_lines = [l for l in unit.splitlines() if l.startswith("ExecStart=")]
+    assert exec_start_lines, "unit must have an ExecStart line"
+    assert "up -d --build" in exec_start_lines[0], (
+        f"ExecStart must contain 'up -d --build', got: {exec_start_lines[0]!r}"
+    )
+
+
+def test_build_systemd_unit_has_exec_stop() -> None:
+    """ExecStop must contain `down`."""
+    module = load_script()
+
+    unit = module.build_systemd_unit()
+
+    exec_stop_lines = [l for l in unit.splitlines() if l.startswith("ExecStop=")]
+    assert exec_stop_lines, "unit must have an ExecStop line"
+    assert "down" in exec_stop_lines[0], (
+        f"ExecStop must contain 'down', got: {exec_stop_lines[0]!r}"
+    )
+
+
+def test_build_systemd_unit_restart_on_failure() -> None:
+    """Unit must contain Restart=on-failure and RestartSec=10, NOT Restart=always.
+
+    With Type=oneshot + RemainAfterExit=yes, a successful start ends in
+    active(exited) and won't be restarted.  A failed start (e.g. Docker/Colima
+    not ready at boot) retries after RestartSec seconds.  Restart=always would
+    create a steady-state loop; Docker's `restart: unless-stopped` supervises
+    the running container instead.
+    """
+    module = load_script()
+
+    unit = module.build_systemd_unit()
+
+    assert "Restart=on-failure" in unit, "systemd unit must contain Restart=on-failure"
+    assert "RestartSec=10" in unit, "systemd unit must contain RestartSec=10"
+    assert "Restart=always" not in unit, "systemd unit must not contain Restart=always"
+
+
+def test_build_systemd_unit_no_exec_prefix() -> None:
+    """Unit text must NOT contain an `exec ` token in ExecStart/ExecStop lines."""
+    module = load_script()
+
+    unit = module.build_systemd_unit()
+
+    assert "exec " not in unit, "systemd unit must not contain 'exec ' prefix"
+
+
+# ---------------------------------------------------------------------------
+# AC1 — compose restart policy (previously untested)
+# ---------------------------------------------------------------------------
+
+
+def test_compose_restart_unless_stopped() -> None:
+    """docker-compose.example.yml must set restart: unless-stopped on local-brain.
+
+    Docker's own restart policy supervises the running container; the autostart
+    unit (launchd/systemd) only needs to fire `up -d` once per boot/login.
+    """
+    import yaml  # PyYAML — used elsewhere in the repo
+
+    repo_root = Path(__file__).resolve().parents[1]
+    compose_path = repo_root / "services" / "local-brain" / "docker-compose.example.yml"
+    assert compose_path.exists(), f"compose file not found: {compose_path}"
+
+    data = yaml.safe_load(compose_path.read_text())
+    restart = data["services"]["local-brain"]["restart"]
+    assert restart == "unless-stopped", (
+        f"local-brain service must have restart: unless-stopped, got: {restart!r}"
+    )
