@@ -68,6 +68,62 @@ def ensure_store_root(settings: Settings) -> Path:
     return root
 
 
+def normalize_front_matter(text: str) -> str:
+    """Collapse stacked/duplicate YAML front-matter blocks into a single block.
+
+    Stacked front matter arises when an article is written with TWO consecutive
+    ``---…---`` blocks (the #122 bug).  This function detects that pattern and
+    collapses to the FIRST block + the body that follows the LAST stacked block.
+
+    Idempotent: a single-block article or an article with no front matter is
+    returned unchanged.
+    """
+    _IDENTITY_KEYS = {"type", "title", "status"}
+
+    first_fm, after_first = _split_front_matter(text)
+    if not first_fm:
+        # No valid front matter at all — nothing to do.
+        return text
+    # Re-check: does the content after the first block start with another FM block?
+    # Strip leading blank lines before checking.
+    stripped = after_first.lstrip("\n")
+    if not stripped.startswith("---"):
+        # Single-block article — already clean.
+        return text
+    second_fm, after_second = _split_front_matter(stripped)
+    if not second_fm:
+        # The second ``---`` is not a valid FM block — leave as-is.
+        return text
+    # Guard against body thematic breaks: only treat the second block as a
+    # duplicate front-matter block when it shares at least one identity key
+    # (type / title / status) with the first block.  A glossary or horizontal-
+    # rule section whose YAML happens to parse as a mapping will share none of
+    # these keys and must be left intact.
+    first_keys = set(first_fm.keys())
+    second_keys = set(second_fm.keys())
+    if not (first_keys & second_keys & _IDENTITY_KEYS):
+        # Second block is a body section, not a duplicate FM — leave as-is.
+        return text
+    # We have stacked blocks.  Keep draining until no more stacked blocks remain
+    # (handles pathological triple-stacking).
+    remaining = after_second
+    while True:
+        candidate = remaining.lstrip("\n")
+        if not candidate.startswith("---"):
+            break
+        next_fm, next_body = _split_front_matter(candidate)
+        if not next_fm:
+            break
+        next_keys = set(next_fm.keys())
+        if not (first_keys & next_keys & _IDENTITY_KEYS):
+            break
+        remaining = next_body
+    # Rebuild: first block's YAML + cleaned body.
+    yaml_text = yaml.safe_dump(first_fm, sort_keys=False, allow_unicode=False).strip()
+    body = remaining.strip() + "\n"
+    return f"---\n{yaml_text}\n---\n\n{body}"
+
+
 def render_article(proposal: ArticleWriteProposal) -> str:
     frontmatter = dict(proposal.frontmatter)
     frontmatter.setdefault("title", proposal.title)
@@ -79,7 +135,9 @@ def render_article(proposal: ArticleWriteProposal) -> str:
     # so this is a no-op for clean bodies and malformed leading fences.
     _, body_text = _split_front_matter(proposal.body)
     body = body_text.strip() + "\n"
-    return f"---\n{yaml_text}\n---\n\n{body}"
+    # Normalize away any stacked FM blocks that may survive (covers the compile
+    # write path so both compile and reconciliation emit single-block output).
+    return normalize_front_matter(f"---\n{yaml_text}\n---\n\n{body}")
 
 
 def apply_article_write(target: Path, proposal: ArticleWriteProposal, dry_run: bool) -> None:
@@ -155,7 +213,7 @@ def apply_frontmatter_update(
         raise ValueError(f"Path escapes store root: {path}")
     if dry_run:
         return
-    text = resolved.read_text(encoding="utf-8", errors="replace")
+    text = normalize_front_matter(resolved.read_text(encoding="utf-8", errors="replace"))
     frontmatter, body = _split_front_matter(text)
 
     if status is not None:

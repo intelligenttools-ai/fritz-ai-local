@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 class ArticleWriteProposal(BaseModel):
@@ -26,6 +27,17 @@ class CompileAgentOutput(BaseModel):
 
     proposals: list[ArticleWriteProposal] = Field(default_factory=list)
     skipped: list[str] = Field(default_factory=list)
+
+    @field_validator("proposals", mode="before")
+    @classmethod
+    def _coerce_stringified_proposals(cls, v: object) -> object:
+        if not isinstance(v, str):
+            return v
+        try:
+            parsed = json.loads(v)
+        except (ValueError, TypeError):
+            return []  # fall back to field default on unparseable string
+        return parsed if isinstance(parsed, list) else []
 
 
 class AppliedArticleWrite(BaseModel):
@@ -53,6 +65,17 @@ class ReconciliationVerdict(BaseModel):
     anchor_strength: float = 0.0
     confidence: float = 0.0
     scope_qualifier: str | None = None  # used for context_split
+
+    @field_validator("evidence_strength", "source_authority", "anchor_strength", "confidence", mode="before")
+    @classmethod
+    def _coerce_float_string(cls, v: object) -> object:
+        if not isinstance(v, str):
+            return v
+        cleaned = v.strip().strip("'\"").rstrip(",").strip()
+        try:
+            return float(cleaned)
+        except (ValueError, TypeError):
+            return 0.0  # fall back to field default on unparseable string
 
 
 class ReconciliationOutcome(BaseModel):

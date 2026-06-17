@@ -55,6 +55,12 @@ Final output shape:
   "skipped": ["capture path: reason"]
 }
 
+OUTPUT SHAPE RULES (strict):
+- "proposals" and "skipped" MUST be real JSON arrays, never a string containing
+  a JSON array. Emit [ ... ], not "[ ... ]".
+- Correct shape: {"proposals": [], "skipped": ["capture/inbox/x.md: no durable knowledge"]}
+- Wrong shape (do NOT do this): {"proposals": "[]", "skipped": "capture/inbox/x.md: ..."}
+
 Detailed Fritz skill text follows. Use it for compile policy and article quality,
 but do not use it to invent extra tools or extra workflow steps.
 """
@@ -163,4 +169,12 @@ CONTEXT-SPLIT GUARD (retain-when-unsure):
 
 Set confidence (0..1) to your overall confidence in the chosen verdict, and explain
 your weighting briefly in reasoning.
+
+OUTPUT SHAPE RULES (strict):
+- The float fields (evidence_strength, source_authority, anchor_strength,
+  confidence) MUST be bare, unquoted JSON numbers: write 0.7, not "0.7", and never
+  a trailing comma like 0.7, inside a value.
+- Correct shape: {"verdict": "orthogonal", "reasoning": "...", "evidence_strength": 0.5,
+  "source_authority": 0.4, "anchor_strength": 0.3, "confidence": 0.8, "scope_qualifier": null}
+- Wrong shape (do NOT do this): {"evidence_strength": "0.5,", "confidence": "0.8"}
 """

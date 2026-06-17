@@ -8,7 +8,7 @@ from typing import Any
 from pydantic_ai import Agent, RunContext
 
 from ..config import Settings
-from ..llm import build_model
+from ..llm import OUTPUT_RETRIES, build_model, output_spec_for
 from ..models import ReconciliationVerdict
 from ..prompts import RECONCILIATION_INSTRUCTIONS, RECONCILIATION_SYSTEM_PROMPT
 
@@ -28,7 +28,8 @@ def build_reconciliation_agent(settings: Settings) -> Agent[ReconciliationDeps, 
     agent = Agent(
         build_model(settings),
         deps_type=ReconciliationDeps,
-        output_type=ReconciliationVerdict,
+        output_type=output_spec_for(settings.llm_protocol, ReconciliationVerdict),
+        retries={"output": OUTPUT_RETRIES},
         system_prompt=RECONCILIATION_SYSTEM_PROMPT,
         instructions=RECONCILIATION_INSTRUCTIONS,
     )

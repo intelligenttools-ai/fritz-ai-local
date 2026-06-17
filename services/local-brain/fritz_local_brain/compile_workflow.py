@@ -457,11 +457,20 @@ async def _reconcile_applied_articles(
                 old_title=entry.get("title", old_rel),
                 old_content=entry.get("content", ""),
             )
-            result = await agent.run(
-                _reconciliation_prompt(new_rel, old_rel),
-                deps=deps,
-                usage_limits=UsageLimits(request_limit=3),
-            )
+            try:
+                result = await agent.run(
+                    _reconciliation_prompt(new_rel, old_rel),
+                    deps=deps,
+                    usage_limits=UsageLimits(request_limit=3),
+                )
+            except Exception as exc:  # noqa: BLE001 — one bad pair must not abort the sweep
+                append_global_log(
+                    settings.brain_home,
+                    "RECONCILE",
+                    f"Skipping pair ({new_rel!r}, {old_rel!r}): {exc}",
+                    request.dry_run,
+                )
+                continue
             pending.append((new_target, old_path, result.output))
 
     # ---- Phase B: gate + apply ----
