@@ -894,3 +894,157 @@ class TestInstallAutostart:
         assert install_calls == []
         # Overall must not be "failed"
         assert result.overall != "failed"
+
+
+# ---------------------------------------------------------------------------
+# --reconciliation-autonomy flag (Item A) and registry merge (Item B)
+# ---------------------------------------------------------------------------
+
+class TestReconciliationAutonomy:
+    """Tests for --reconciliation-autonomy flag and RECONCILIATION_AUTONOMY env key."""
+
+    def _make_provision_components(self, mod):
+        build_calls: list[str] = []
+
+        class _FakeDocker(mod.DockerGateway):
+            def __init__(self):
+                self.calls = build_calls
+
+            def build(self):
+                build_calls.append("build")
+
+            def up(self):
+                build_calls.append("up")
+
+        class _FakeHttp(mod.HttpGateway):
+            def get(self, url, headers=None):
+                return (200, b'{"ok":true}')
+
+        return _FakeDocker(), _FakeHttp()
+
+    def _urlopen_ok(self):
+        import json
+
+        mock_response = MagicMock()
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_response.status = 200
+        mock_response.read.return_value = json.dumps({}).encode()
+        return mock_response
+
+    def test_reconciliation_autonomy_propose_written_to_env(self, tmp_path):
+        """provision --reconciliation-autonomy propose must write RECONCILIATION_AUTONOMY=propose to .env."""
+        mod = load_engine()
+        cfg = mod.ProvisionConfig(
+            api_token="tok-ra-001",
+            base_url="http://127.0.0.1:8765",
+            reconciliation_autonomy="propose",
+        )
+        env_path = tmp_path / ".env"
+        reg_path = tmp_path / ".brain" / "registry.yaml"
+        docker_gw, http_gw = self._make_provision_components(mod)
+
+        with patch("urllib.request.urlopen", return_value=self._urlopen_ok()):
+            with patch.object(mod, "_run_preflight", return_value=mod.StepResult("preflight", "ok", "ok")):
+                result = mod.provision(
+                    cfg,
+                    env_path=env_path,
+                    registry_path=reg_path,
+                    docker=docker_gw,
+                    http=http_gw,
+                )
+
+        assert result.overall in {"ok", "already_provisioned", "partial"}
+        text = env_path.read_text()
+        assert "RECONCILIATION_AUTONOMY=propose" in text
+
+    def test_reconciliation_autonomy_default_is_apply(self, tmp_path):
+        """Default ProvisionConfig must write RECONCILIATION_AUTONOMY=apply to .env."""
+        mod = load_engine()
+        cfg = mod.ProvisionConfig(
+            api_token="tok-ra-002",
+            base_url="http://127.0.0.1:8765",
+        )
+        env_path = tmp_path / ".env"
+        reg_path = tmp_path / ".brain" / "registry.yaml"
+        docker_gw, http_gw = self._make_provision_components(mod)
+
+        with patch("urllib.request.urlopen", return_value=self._urlopen_ok()):
+            with patch.object(mod, "_run_preflight", return_value=mod.StepResult("preflight", "ok", "ok")):
+                mod.provision(
+                    cfg,
+                    env_path=env_path,
+                    registry_path=reg_path,
+                    docker=docker_gw,
+                    http=http_gw,
+                )
+
+        text = env_path.read_text()
+        assert "RECONCILIATION_AUTONOMY=apply" in text
+
+    def test_provision_help_lists_reconciliation_autonomy(self):
+        """provision --help must mention --reconciliation-autonomy."""
+        import argparse
+        import io
+
+        mod = load_engine()
+        parser = argparse.ArgumentParser()
+        sub = parser.add_subparsers()
+        mod.add_provision_subparser(sub)
+
+        buf = io.StringIO()
+        try:
+            parser.parse_args(["provision", "--help"])
+        except SystemExit:
+            pass
+        # Verify the flag exists by attempting to parse it
+        ns = parser.parse_args(["provision", "--reconciliation-autonomy", "propose"])
+        assert ns.reconciliation_autonomy == "propose"
+
+        # Verify invalid value is rejected
+        with pytest.raises(SystemExit):
+            parser.parse_args(["provision", "--reconciliation-autonomy", "invalid"])
+
+
+class TestRegistryMergePreservesSubKeys:
+    """Item B: _run_write_registry must MERGE existing local_brain_service sub-keys."""
+
+    def _registry_path(self, tmp_path: Path) -> Path:
+        return tmp_path / ".brain" / "registry.yaml"
+
+    def test_existing_local_brain_service_subkeys_preserved_after_provision(self, tmp_path):
+        """Manually-set sub-keys not managed by provision (e.g. desired, allow_remote)
+        must survive a provision write without being clobbered."""
+        mod = load_engine()
+        cfg = mod.ProvisionConfig(base_url="http://127.0.0.1:8765")
+        reg_path = self._registry_path(tmp_path)
+        reg_path.parent.mkdir(parents=True, exist_ok=True)
+
+        existing = {
+            "version": 1,
+            "vaults": {},
+            "settings": {
+                "local_brain_service": {
+                    # These sub-keys are NOT written by provision — they should be preserved
+                    "desired": "docker",
+                    "allow_remote": False,
+                },
+            },
+        }
+        reg_path.write_text(yaml.dump(existing), encoding="utf-8")
+
+        step, changed = mod._run_write_registry(cfg, "tok-merge-001", reg_path)
+        assert step.status == "ok"
+        assert changed
+
+        data = yaml.safe_load(reg_path.read_text())
+        svc = data["settings"]["local_brain_service"]
+
+        # Newly written keys must be present
+        assert svc["enabled"] is True
+        assert svc["api_token"] == "tok-merge-001"
+        assert svc["base_url"] == "http://127.0.0.1:8765"
+
+        # Manually-set sub-keys not managed by provision must be preserved
+        assert svc["desired"] == "docker", "desired sub-key was clobbered"
+        assert svc["allow_remote"] is False, "allow_remote sub-key was clobbered"

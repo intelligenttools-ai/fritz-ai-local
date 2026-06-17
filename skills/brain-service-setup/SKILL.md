@@ -174,7 +174,21 @@ Map a provided token to `--approval-token <token>`.
 
 ---
 
-**Q9 — One-time backlog drain (optional)**
+**Q9 — Reconciliation autonomy**
+
+> "When new knowledge is reconciled against existing knowledge, should the
+> reconciliation agent apply changes automatically or only propose them?
+>
+>   a) apply  — changes are written automatically (default)
+>   b) propose — changes are proposed for your review (dry-run)
+>
+>   apply / propose"
+
+Map to `--reconciliation-autonomy <value>`. Defaults to `apply` if left blank.
+
+---
+
+**Q10 — One-time backlog drain (optional)**
 
 > "Do you want to trigger a one-time apply-mode compile immediately after
 > provisioning, to drain any pending captures from the backlog?
@@ -183,7 +197,7 @@ Map a provided token to `--approval-token <token>`.
 
 If yes, ask one follow-up sub-question:
 
-**Q9a — Drain approval token** (only if Q9 = yes)
+**Q10a — Drain approval token** (only if Q10 = yes)
 
 > "If the backlog is large (above the service's batch threshold), the compile
 > will require an approval token to proceed. Enter a token string now, or leave
@@ -202,7 +216,7 @@ If yes, ask one follow-up sub-question:
 
 ---
 
-**Q10 — API token**
+**Q11 — API token**
 
 > "The service exposes a local REST API protected by a Bearer token.
 >
@@ -213,7 +227,7 @@ If yes, ask one follow-up sub-question:
 
 ---
 
-After all ten questions (plus sub-questions) are answered, proceed to Phase 2.
+After all eleven questions (plus sub-questions) are answered, proceed to Phase 2.
 
 ---
 
@@ -243,9 +257,10 @@ Scheduler
   Interval : 30 minutes
   Mode     : dry-run (propose only)
 
-Autostart    : no
-Drain backlog: no  (skip one-time post-provision compile)
-API token    : (auto-generate)
+Autostart              : no
+Reconciliation autonomy: apply
+Drain backlog          : no  (skip one-time post-provision compile)
+API token              : (auto-generate)
 
 Execution plan
   1. Preflight: check docker, docker compose, python, port 8765
@@ -292,6 +307,7 @@ python scripts/local-brain-service.py provision \
   [--install-autostart] \
   [--api-token <token>] \
   [--approval-token <token>] \
+  [--reconciliation-autonomy apply|propose] \
   [--drain-backlog [--drain-approval-token <token>]]
 ```
 
@@ -306,6 +322,8 @@ safe to re-run to reconfigure. Pass flags that match the confirmed answers:
 | autostart yes | `--install-autostart` |
 | API token provided | `--api-token <token>` (omit to auto-generate) |
 | persistent approval token provided (Q8) | `--approval-token <token>` |
+| reconciliation autonomy = propose (Q9) | `--reconciliation-autonomy propose` |
+| reconciliation autonomy = apply (Q9) | `--reconciliation-autonomy apply` (default; may omit) |
 | drain backlog yes | `--drain-backlog` |
 | drain backlog yes + one-time approval token | `--drain-backlog --drain-approval-token <token>` |
 
@@ -317,7 +335,7 @@ safe to re-run to reconfigure. Pass flags that match the confirmed answers:
   backlog-drain POST** only; it is **not written to `.env`** and has no effect
   outside that one request. Omitting `--drain-backlog` makes this flag inert.
 - These two flags are independent and serve different purposes. Do not conflate
-  them. `reconciliation_autonomy` is **not settable** via the provision CLI.
+  them.
 
 The `provision` sub-command is also aliased as `setup`, so
 `python scripts/local-brain-service.py setup …` is equivalent.
