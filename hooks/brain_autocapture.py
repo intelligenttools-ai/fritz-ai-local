@@ -15,6 +15,8 @@ Brain root resolution mirrors :mod:`brain_save_fact` (``$BRAIN_HOME`` env var,
 falling back to ``~/.brain``); callers/tests may pass an explicit ``root``.
 """
 
+from __future__ import annotations
+
 import hashlib
 import re
 import sys

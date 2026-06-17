@@ -28,6 +28,8 @@ Example:
     setup_hyphenated_skills.py ~/.agents/skills/ --platform pi
 """
 
+from __future__ import annotations
+
 import os
 import re
 import sys

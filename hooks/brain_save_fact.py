@@ -11,6 +11,8 @@ back to ``~/.brain``. Callers (and tests) may also pass an explicit
 ``brain_home`` so the live ``~/.brain`` is never touched.
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
