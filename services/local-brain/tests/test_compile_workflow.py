@@ -36,47 +36,6 @@ class SequenceCompileAgent:
         return SimpleNamespace(output=self.outputs.pop(0))
 
 
-class ContextRecordingCompileAgent:
-    """Fake compile agent that exercises the real load_compile_context contract.
-
-    On every ``run`` it records ``deps.context_loaded`` AS SEEN AT ENTRY, then sets
-    ``deps.context_loaded = True`` — exactly what the real ``load_compile_context``
-    tool does on a real run. This lets a test prove the workflow resets the flag to
-    ``False`` before the repair run so the repair agent can re-read capture content.
-    """
-
-    def __init__(self, outputs: list[CompileAgentOutput]) -> None:
-        self.outputs = outputs
-        self.prompts: list[str] = []
-        self.context_loaded_at_entry: list[bool] = []
-
-    async def run(self, prompt: str, *, deps: object, usage_limits: object) -> SimpleNamespace:
-        self.prompts.append(prompt)
-        self.context_loaded_at_entry.append(deps.context_loaded)
-        deps.context_loaded = True
-        return SimpleNamespace(output=self.outputs.pop(0))
-
-
-class RaisingRepairCompileAgent:
-    """Fake whose FIRST run succeeds (partial) and whose REPAIR run raises.
-
-    Simulates the repair ``agent.run`` exhausting its request budget (or any
-    model/transport error) so the test can prove a repair failure does not abort
-    the compile.
-    """
-
-    def __init__(self, first_output: CompileAgentOutput, error: BaseException) -> None:
-        self.first_output = first_output
-        self.error = error
-        self.prompts: list[str] = []
-
-    async def run(self, prompt: str, *, deps: object, usage_limits: object) -> SimpleNamespace:
-        self.prompts.append(prompt)
-        if len(self.prompts) == 1:
-            return SimpleNamespace(output=self.first_output)
-        raise self.error
-
-
 class MutatingCompileAgent(FakeCompileAgent):
     def __init__(self, proposal: ArticleWriteProposal, path_to_mutate: Path) -> None:
         super().__init__(proposal)
@@ -164,16 +123,29 @@ def test_compile_considers_all_pending_captures_oldest_first_so_later_updates_ca
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("# Compile Skill\n", encoding="utf-8")
 
-    proposal = ArticleWriteProposal(
+    older_proposal = ArticleWriteProposal(
         vault="test",
         relative_path="facts/color.md",
         operation="create",
         title="Project Color",
+        summary="Initial color.",
+        sources=[str(older_capture)],
+        body="Project color is blue.",
+    )
+    newer_proposal = ArticleWriteProposal(
+        vault="test",
+        relative_path="facts/color.md",
+        operation="update",
+        title="Project Color",
         summary="Later capture supersedes earlier color.",
-        sources=[str(older_capture), str(newer_capture)],
+        sources=[str(newer_capture)],
         body="Project color is green.",
     )
-    agent = FakeCompileAgent(proposal)
+    # #153: one capture per agent.run — each run gets its own single-capture deps,
+    # ordered oldest-first so the later capture can update the earlier article.
+    agent = SequenceCompileAgent(
+        [CompileAgentOutput(proposals=[older_proposal]), CompileAgentOutput(proposals=[newer_proposal])]
+    )
     monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
 
     result = asyncio.run(
@@ -185,11 +157,14 @@ def test_compile_considers_all_pending_captures_oldest_first_so_later_updates_ca
 
     assert result.captures_considered == 2
     assert result.captures_by_source == {"inbox": 1, "daily": 1, "sessions": 0}
-    assert result.proposals == [proposal]
-    assert agent.deps[0].capture_paths == [older_capture, newer_capture]
+    assert result.proposals == [older_proposal, newer_proposal]
+    # Exactly two runs, each fed ONE capture, oldest first.
+    assert len(agent.deps) == 2
+    assert agent.deps[0].capture_paths == [older_capture]
+    assert agent.deps[1].capture_paths == [newer_capture]
 
 
-def test_compile_default_uses_safe_chronological_batch_cap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_compile_default_caps_captures_processed_per_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     brain_home = tmp_path / "brain"
     vault_path = tmp_path / "vault"
     skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
@@ -209,16 +184,10 @@ def test_compile_default_uses_safe_chronological_batch_cap(tmp_path: Path, monke
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("# Compile Skill\n", encoding="utf-8")
 
-    proposal = ArticleWriteProposal(
-        vault="test",
-        relative_path="facts/capped.md",
-        operation="create",
-        title="Capped",
-        summary="Default compile uses safe cap.",
-        sources=[str(captures[0])],
-        body="Capped body.",
+    # #153: each capture skipped — one agent.run per capture, capped at 25 per run.
+    agent = SequenceCompileAgent(
+        [CompileAgentOutput(skipped=[f"{capture}: no durable knowledge"]) for capture in captures[:25]]
     )
-    agent = FakeCompileAgent(proposal)
     monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
 
     result = asyncio.run(
@@ -230,7 +199,263 @@ def test_compile_default_uses_safe_chronological_batch_cap(tmp_path: Path, monke
 
     assert result.captures_considered == 25
     assert result.captures_by_source == {"inbox": 0, "daily": 25, "sessions": 0}
-    assert agent.deps[0].capture_paths == captures[:25]
+    # 25 agent.run calls, each fed exactly ONE capture, in chronological order.
+    assert len(agent.deps) == 25
+    assert [deps.capture_paths for deps in agent.deps] == [[capture] for capture in captures[:25]]
+
+
+class CapturePathRecordingAgent:
+    """Fake that records ``list(deps.capture_paths)`` seen on each ``agent.run``.
+
+    Used to pin the #153 one-capture-per-run contract: each run's deps must carry
+    exactly one capture. Returns one output per run, popped from ``outputs``.
+    """
+
+    def __init__(self, outputs: list[CompileAgentOutput]) -> None:
+        self.outputs = outputs
+        self.seen_paths: list[list[Path]] = []
+
+    async def run(self, prompt: str, *, deps: object, usage_limits: object) -> SimpleNamespace:
+        self.seen_paths.append(list(deps.capture_paths))
+        return SimpleNamespace(output=self.outputs.pop(0))
+
+
+def _manifest_vault(tmp_path: Path) -> tuple[Path, Path]:
+    """Create a registry+manifest vault and return (brain_home, skills_dir)."""
+    brain_home = tmp_path / "brain"
+    vault_path = tmp_path / "vault"
+    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
+    (brain_home / "capture" / "inbox").mkdir(parents=True)
+    (vault_path / ".brain").mkdir(parents=True)
+    (vault_path / "knowledge").mkdir()
+    (vault_path / ".brain" / "manifest.yaml").write_text("paths:\n  knowledge: knowledge\nexclude: []\n", encoding="utf-8")
+    (brain_home / "registry.yaml").write_text(f"vaults:\n  test:\n    path: {vault_path}\n", encoding="utf-8")
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Compile Skill\n", encoding="utf-8")
+    return brain_home, tmp_path / "skills"
+
+
+def test_compile_ac1_each_run_processes_exactly_one_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#153 AC1: a 3-capture backlog yields exactly 3 agent.run calls, each whose
+    deps carry exactly ONE capture (no batching)."""
+    brain_home, skills_dir = _manifest_vault(tmp_path)
+    captures = []
+    for index, name in enumerate(("a", "b", "c")):
+        capture = brain_home / "capture" / "inbox" / f"{name}.md"
+        capture.write_text(f"# Capture {name}\n\nFact {name}.\n", encoding="utf-8")
+        os.utime(capture, (100 + index, 100 + index))
+        captures.append(capture)
+
+    # Each run skips its one capture (terminal, no apply side effects to reason about).
+    agent = CapturePathRecordingAgent(
+        [CompileAgentOutput(skipped=[f"{capture}: no durable knowledge"]) for capture in captures]
+    )
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
+
+    result = asyncio.run(
+        compile_workflow.run_compile(
+            Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=skills_dir),
+            CompileRunRequest(dry_run=True),
+        )
+    )
+
+    assert result.captures_considered == 3
+    # Exactly 3 runs, each with EXACTLY ONE capture in its deps.
+    assert len(agent.seen_paths) == 3, "one agent.run per capture"
+    assert all(len(paths) == 1 for paths in agent.seen_paths), "each run's deps must carry exactly one capture"
+    assert [paths[0] for paths in agent.seen_paths] == captures, "captures processed oldest-first, one at a time"
+
+
+def test_compile_ac2_ten_capture_backlog_reaches_full_coverage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#153 AC2: a 10+ capture backlog reaches 100% coverage in one run — every
+    capture is applied, skipped, or routed to the retry counter; none silently
+    dropped. A re-run then only reconsiders the legitimately-pending (dropped) one.
+
+    Mix: 5 captures get a proposal (applied), 4 are explicitly skipped (archived),
+    1 is dropped (no proposal/skip) → routed to the #150 retry counter and stays
+    pending. 0 vanish.
+    """
+    brain_home, skills_dir = _manifest_vault(tmp_path)
+    captures = []
+    for index in range(10):
+        capture = brain_home / "capture" / "inbox" / f"cap-{index:02d}.md"
+        capture.write_text(f"# Capture {index}\n\nFact {index}.\n", encoding="utf-8")
+        os.utime(capture, (100 + index, 100 + index))
+        captures.append(capture)
+
+    outputs: list[CompileAgentOutput] = []
+    applied_sources: list[Path] = []
+    skipped_sources: list[Path] = []
+    for index, capture in enumerate(captures):
+        if index < 5:  # applied
+            outputs.append(
+                CompileAgentOutput(
+                    proposals=[
+                        ArticleWriteProposal(
+                            vault="test",
+                            relative_path=f"facts/cap-{index:02d}.md",
+                            operation="create",
+                            title=f"Fact {index}",
+                            summary="s",
+                            sources=[str(capture)],
+                            body="body",
+                        )
+                    ]
+                )
+            )
+            applied_sources.append(capture)
+        elif index < 9:  # explicitly skipped
+            outputs.append(CompileAgentOutput(skipped=[f"{capture}: no durable knowledge"]))
+            skipped_sources.append(capture)
+        else:  # dropped (no proposal, no skip) → retry counter
+            outputs.append(CompileAgentOutput())
+
+    agent = SequenceCompileAgent(outputs)
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
+
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=skills_dir)
+    result = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
+
+    assert result.errors == []
+    assert len(result.applied) == 5, "the 5 proposal captures applied"
+    # 5 applied + 4 skipped = 9 captures archived out of inbox; only the dropped one remains.
+    for capture in applied_sources + skipped_sources:
+        assert not capture.exists(), f"{capture.name} reached a terminal state and must be archived"
+    dropped = captures[9]
+    assert dropped.exists(), "the dropped capture must stay pending (routed to retry), not vanish"
+
+    # The dropped capture is tracked by the #150 retry counter — proof it was not
+    # silently lost.
+    from fritz_local_brain.captures import _load_capture_attempts
+
+    attempts = _load_capture_attempts(brain_home)
+    attempt_keys = {compile_workflow._resolve_capture_source(brain_home, key) for key in attempts}
+    assert dropped.resolve() in attempt_keys, "dropped capture must be tracked by the retry counter"
+
+    # A re-run (dry) reflects ONLY the legitimately-pending capture: full coverage,
+    # nothing silently dropped.
+    rerun_agent = SequenceCompileAgent([CompileAgentOutput()])
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: rerun_agent)
+    rerun = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=True)))
+    assert rerun.captures_considered == 1, "only the legitimately-pending capture remains; none vanished"
+
+
+def test_compile_error_isolation_one_bad_capture_does_not_block_others(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#153 error isolation (folds in the deferred #150/#151 finding): when ONE
+    capture yields an invalid proposal (validation error) and the others are valid,
+    the valid captures' articles ARE applied (the bad one no longer aborts the run)
+    and the bad capture is routed to the retry counter / surfaced — not dropped.
+    """
+    brain_home, skills_dir = _manifest_vault(tmp_path)
+    good_a = brain_home / "capture" / "inbox" / "good-a.md"
+    bad = brain_home / "capture" / "inbox" / "bad.md"
+    good_b = brain_home / "capture" / "inbox" / "good-b.md"
+    for index, capture in enumerate((good_a, bad, good_b)):
+        capture.write_text(f"# {capture.stem}\n\nContent.\n", encoding="utf-8")
+        os.utime(capture, (100 + index, 100 + index))
+
+    proposal_a = ArticleWriteProposal(
+        vault="test", relative_path="facts/a.md", operation="create",
+        title="A", summary="s", sources=[str(good_a)], body="A body",
+    )
+    # Invalid proposal: cites no source → validation rejects it.
+    bad_proposal = ArticleWriteProposal(
+        vault="test", relative_path="facts/bad.md", operation="create",
+        title="Bad", summary="s", sources=[], body="bad body",
+    )
+    proposal_b = ArticleWriteProposal(
+        vault="test", relative_path="facts/b.md", operation="create",
+        title="B", summary="s", sources=[str(good_b)], body="B body",
+    )
+    agent = SequenceCompileAgent(
+        [
+            CompileAgentOutput(proposals=[proposal_a]),
+            CompileAgentOutput(proposals=[bad_proposal]),
+            CompileAgentOutput(proposals=[proposal_b]),
+        ]
+    )
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
+
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=skills_dir)
+    result = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
+
+    # The bad capture's error is surfaced but the valid captures still applied.
+    assert {write.title for write in result.applied} == {"A", "B"}, "valid captures must apply despite a bad one"
+    assert any("facts/bad.md" in err for err in result.errors), "the bad proposal's error must be surfaced"
+    assert not good_a.exists() and not good_b.exists(), "applied captures are archived"
+    # The bad capture is NOT silently dropped — it stays pending, tracked by retry.
+    assert bad.exists(), "the bad capture must stay pending for the retry path"
+    from fritz_local_brain.captures import _load_capture_attempts
+
+    attempts = _load_capture_attempts(brain_home)
+    attempt_keys = {compile_workflow._resolve_capture_source(brain_home, key) for key in attempts}
+    assert bad.resolve() in attempt_keys, "the bad capture must be routed to the retry counter"
+
+
+def test_compile_capture_count_approval_gate_blocks_run_without_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#153 approval gate (adapted to the per-capture model): an apply run whose
+    capture count exceeds ``large_batch_threshold`` without a matching approval
+    token blocks the WHOLE run and applies nothing; the captures stay pending. A
+    matching token lets it through.
+
+    SHIFT FROM PRIOR SEMANTICS: the gate now counts CAPTURES this run will process
+    (known up-front), not proposals (which are only known after each per-capture
+    agent.run). This is the simplest correct adaptation for one-capture-per-run.
+    """
+    brain_home, skills_dir = _manifest_vault(tmp_path)
+    captures = []
+    for index in range(3):  # threshold = 2 below → 3 > 2 triggers the gate
+        capture = brain_home / "capture" / "inbox" / f"cap-{index}.md"
+        capture.write_text(f"# Cap {index}\n\nFact {index}.\n", encoding="utf-8")
+        os.utime(capture, (100 + index, 100 + index))
+        captures.append(capture)
+
+    def _agent() -> SequenceCompileAgent:
+        return SequenceCompileAgent(
+            [
+                CompileAgentOutput(
+                    proposals=[
+                        ArticleWriteProposal(
+                            vault="test", relative_path=f"facts/cap-{i}.md", operation="create",
+                            title=f"F{i}", summary="s", sources=[str(captures[i])], body="b",
+                        )
+                    ]
+                )
+                for i in range(3)
+            ]
+        )
+
+    settings = Settings(
+        LOCAL_BRAIN_HOME=brain_home,
+        LOCAL_BRAIN_SKILLS_DIR=skills_dir,
+        LOCAL_BRAIN_LARGE_BATCH_THRESHOLD=2,
+        APPROVAL_TOKEN="sekret",
+    )
+
+    # No token → whole run blocked, nothing applied, captures stay pending.
+    blocked_agent = _agent()
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: blocked_agent)
+    blocked = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
+    assert blocked.applied == []
+    assert any("requires approval" in err and "captures" in err for err in blocked.errors)
+    assert all(capture.exists() for capture in captures), "blocked run must apply nothing; captures stay pending"
+
+    # Matching token → run proceeds and applies.
+    approved_agent = _agent()
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: approved_agent)
+    approved = asyncio.run(
+        compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False, approval_token="sekret"))
+    )
+    assert len(approved.applied) == 3
+    assert approved.errors == []
 
 
 def test_compile_apply_keeps_unrepresented_capture_pending(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -459,10 +684,9 @@ def test_compile_apply_rejects_missing_source_even_for_single_capture(
         sources=[],
         body="Useful body.",
     )
-    # The proposal cites no source, so the capture is uncovered and #151 fires one
-    # repair run; the repair returns nothing, leaving the bad proposal as the only
-    # output (and the capture still pending for the #150 retry path).
-    agent = SequenceCompileAgent([CompileAgentOutput(proposals=[proposal]), CompileAgentOutput()])
+    # #153: one capture, one agent.run. The proposal cites no source, so validation
+    # rejects it (surfaced as an error) and the capture stays pending for #150 retry.
+    agent = FakeCompileAgent(proposal)
     monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
 
     result = asyncio.run(
@@ -547,10 +771,10 @@ def test_compile_apply_rejects_unrelated_hallucinated_single_capture_source(
         sources=[str(brain_home / "capture" / "inbox" / "totally-unrelated.md")],
         body="Useful body.",
     )
-    # The proposal cites an unrelated hallucinated source, so the real capture is
-    # uncovered and #151 fires one repair run; the repair returns nothing, leaving
-    # the bad proposal as the only output (capture still pending for #150 retry).
-    agent = SequenceCompileAgent([CompileAgentOutput(proposals=[proposal]), CompileAgentOutput()])
+    # #153: one capture, one agent.run. The proposal cites an unrelated hallucinated
+    # source, so validation rejects it (Source does not exist) and the real capture
+    # stays pending for the #150 retry path.
+    agent = FakeCompileAgent(proposal)
     monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
 
     result = asyncio.run(
@@ -608,10 +832,11 @@ def test_compile_apply_quarantines_uncovered_captures_after_n_runs(
     )
     settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills")
 
-    # Run 1: agent covers capture_a only; capture_b/capture_c get no proposal, no skip.
-    # First run covers A only; B/C uncovered → #151 fires one repair call that
-    # also drops them (empty repair output).
-    agent = SequenceCompileAgent([CompileAgentOutput(proposals=[proposal]), CompileAgentOutput()])
+    # Run 1: agent covers capture_a only; capture_b/capture_c get no proposal, no
+    # skip. #153: one agent.run per capture (3 runs) — A proposed, B and C dropped.
+    agent = SequenceCompileAgent(
+        [CompileAgentOutput(proposals=[proposal]), CompileAgentOutput(), CompileAgentOutput()]
+    )
     monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
     first = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
 
@@ -623,7 +848,7 @@ def test_compile_apply_quarantines_uncovered_captures_after_n_runs(
     assert capture_c.exists(), "capture_c (uncovered) must stay pending, not be discarded"
 
     # Runs 2 and 3: agent keeps ignoring b and c (3 unaccounted attempts total).
-    # Each run drops them on both the first and the #151 repair call.
+    # #153: one run per remaining capture (2 runs each), all dropped.
     for _ in range(compile_workflow.COMPILE_MAX_CAPTURE_ATTEMPTS - 1):
         ignore_agent = SequenceCompileAgent([CompileAgentOutput(), CompileAgentOutput()])
         monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: ignore_agent)
@@ -648,435 +873,6 @@ def test_compile_apply_quarantines_uncovered_captures_after_n_runs(
     monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: drained_agent)
     drained = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=True)))
     assert drained.captures_considered == 0, "Backlog must drain once captures are quarantined"
-
-
-def test_compile_repair_round_achieves_full_coverage(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """#151 AC2: a first run that covers only SOME captures triggers exactly ONE
-    repair run, which covers the rest — so nothing is left to the #150 retry path.
-
-    First agent output: a proposal for capture A only (B and C unaccounted).
-    Repair agent output: a proposal for B and an explicit skip for C.
-    After the run B and C are accounted for (applied/skipped), NOT pending. The
-    agent is called exactly twice (first + one repair), and the repair prompt
-    names the uncovered capture paths.
-    """
-    brain_home = tmp_path / "brain"
-    vault_path = tmp_path / "vault"
-    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
-
-    (brain_home / "capture" / "inbox").mkdir(parents=True)
-    (vault_path / ".brain").mkdir(parents=True)
-    (vault_path / "knowledge").mkdir()
-    (vault_path / ".brain" / "manifest.yaml").write_text("paths:\n  knowledge: knowledge\nexclude: []\n", encoding="utf-8")
-    brain_home.mkdir(exist_ok=True)
-    (brain_home / "registry.yaml").write_text(f"vaults:\n  test:\n    path: {vault_path}\n", encoding="utf-8")
-    skill_path.parent.mkdir(parents=True)
-    skill_path.write_text("# Compile Skill\n", encoding="utf-8")
-
-    capture_a = brain_home / "capture" / "inbox" / "a.md"
-    capture_b = brain_home / "capture" / "inbox" / "b.md"
-    capture_c = brain_home / "capture" / "inbox" / "c.md"
-    capture_a.write_text("# Capture A\n\nFact A.\n", encoding="utf-8")
-    capture_b.write_text("# Capture B\n\nFact B.\n", encoding="utf-8")
-    capture_c.write_text("# Capture C\n\nNo durable knowledge.\n", encoding="utf-8")
-
-    proposal_a = ArticleWriteProposal(
-        vault="test",
-        relative_path="facts/a.md",
-        operation="create",
-        title="Fact A",
-        summary="A only.",
-        sources=[str(capture_a)],
-        body="Fact A body.",
-    )
-    proposal_b = ArticleWriteProposal(
-        vault="test",
-        relative_path="facts/b.md",
-        operation="create",
-        title="Fact B",
-        summary="B from repair.",
-        sources=[str(capture_b)],
-        body="Fact B body.",
-    )
-    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills")
-
-    # First output covers only A; the repair output covers B (proposal) and C (skip).
-    agent = SequenceCompileAgent(
-        [
-            CompileAgentOutput(proposals=[proposal_a]),
-            CompileAgentOutput(proposals=[proposal_b], skipped=[f"{capture_c}: no durable knowledge"]),
-        ]
-    )
-    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
-
-    first = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
-
-    assert first.errors == []
-    # A and B both applied; C accounted via skip.
-    assert {write.title for write in first.applied} == {"Fact A", "Fact B"}
-    # The repair round fired: exactly two agent calls (first + one repair), no more.
-    assert len(agent.prompts) == 2, "exactly one repair run must follow the partial first run"
-    # The repair prompt must name the uncovered capture paths.
-    repair_prompt = agent.prompts[1]
-    assert str(capture_b) in repair_prompt and str(capture_c) in repair_prompt
-
-    # All three captures reach a terminal state — none left pending for the retry path.
-    assert not capture_a.exists() and not capture_b.exists() and not capture_c.exists()
-
-    drained_agent = SequenceCompileAgent([CompileAgentOutput()])
-    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: drained_agent)
-    drained = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=True)))
-    assert drained.captures_considered == 0, "full coverage after repair means no capture is left pending"
-
-
-def test_compile_repair_still_partial_routes_remainder_to_retry_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """#151 AC1: if the SINGLE repair run still omits a capture, the remainder is
-    routed to the #150 retry path (stays pending, attempt counter incremented),
-    NOT silently dropped — and the agent is called exactly twice (no repair loop).
-    """
-    brain_home = tmp_path / "brain"
-    vault_path = tmp_path / "vault"
-    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
-
-    (brain_home / "capture" / "inbox").mkdir(parents=True)
-    (vault_path / ".brain").mkdir(parents=True)
-    (vault_path / "knowledge").mkdir()
-    (vault_path / ".brain" / "manifest.yaml").write_text("paths:\n  knowledge: knowledge\nexclude: []\n", encoding="utf-8")
-    brain_home.mkdir(exist_ok=True)
-    (brain_home / "registry.yaml").write_text(f"vaults:\n  test:\n    path: {vault_path}\n", encoding="utf-8")
-    skill_path.parent.mkdir(parents=True)
-    skill_path.write_text("# Compile Skill\n", encoding="utf-8")
-
-    capture_a = brain_home / "capture" / "inbox" / "a.md"
-    capture_b = brain_home / "capture" / "inbox" / "b.md"
-    capture_a.write_text("# Capture A\n\nFact A.\n", encoding="utf-8")
-    capture_b.write_text("# Capture B\n\nFact B the agent keeps dropping.\n", encoding="utf-8")
-
-    proposal_a = ArticleWriteProposal(
-        vault="test",
-        relative_path="facts/a.md",
-        operation="create",
-        title="Fact A",
-        summary="A only.",
-        sources=[str(capture_a)],
-        body="Fact A body.",
-    )
-    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills")
-
-    # First output covers A only; repair output STILL omits B (empty output).
-    agent = SequenceCompileAgent([CompileAgentOutput(proposals=[proposal_a]), CompileAgentOutput()])
-    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
-
-    first = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
-
-    assert first.errors == []
-    assert {write.title for write in first.applied} == {"Fact A"}
-    # Exactly two calls: first + one repair. No infinite repair loop.
-    assert len(agent.prompts) == 2, "only ONE repair attempt — must not loop"
-    # A is applied/archived; B is NOT silently dropped — it stays pending for #150 retry.
-    assert not capture_a.exists()
-    assert capture_b.exists(), "still-uncovered capture must stay pending for the #150 retry path"
-
-    # The #150 attempt counter must have been incremented for B (it is in the retry path).
-    from fritz_local_brain.captures import _load_capture_attempts
-
-    attempts = _load_capture_attempts(brain_home)
-    attempt_keys = {compile_workflow._resolve_capture_source(brain_home, key) for key in attempts}
-    assert capture_b.resolve() in attempt_keys, "uncovered capture must be tracked by the #150 retry counter"
-
-    # Re-running still considers B (pending), proving it was not dropped.
-    second_agent = SequenceCompileAgent([CompileAgentOutput(), CompileAgentOutput()])
-    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: second_agent)
-    second = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=True)))
-    assert second.captures_considered == 1, "the still-uncovered capture remains pending"
-
-
-def test_compile_repair_run_resets_context_so_it_can_re_read_captures(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """#151 Fix 1: the workflow MUST reset ``deps.context_loaded`` to ``False``
-    before the repair run, so the repair agent re-reads the full bounded capture
-    context (load_compile_context only returns content while the flag is False).
-
-    The fake records ``deps.context_loaded`` at entry of each run and then sets it
-    True (as the real load_compile_context tool does). We drive a partial first run
-    → repair scenario and assert BOTH runs saw ``context_loaded == False``. Without
-    the reset the repair run would see ``True`` and this test would fail.
-    """
-    brain_home = tmp_path / "brain"
-    vault_path = tmp_path / "vault"
-    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
-
-    (brain_home / "capture" / "inbox").mkdir(parents=True)
-    (vault_path / ".brain").mkdir(parents=True)
-    (vault_path / "knowledge").mkdir()
-    (vault_path / ".brain" / "manifest.yaml").write_text("paths:\n  knowledge: knowledge\nexclude: []\n", encoding="utf-8")
-    brain_home.mkdir(exist_ok=True)
-    (brain_home / "registry.yaml").write_text(f"vaults:\n  test:\n    path: {vault_path}\n", encoding="utf-8")
-    skill_path.parent.mkdir(parents=True)
-    skill_path.write_text("# Compile Skill\n", encoding="utf-8")
-
-    capture_a = brain_home / "capture" / "inbox" / "a.md"
-    capture_b = brain_home / "capture" / "inbox" / "b.md"
-    capture_a.write_text("# Capture A\n\nFact A.\n", encoding="utf-8")
-    capture_b.write_text("# Capture B\n\nFact B.\n", encoding="utf-8")
-
-    proposal_a = ArticleWriteProposal(
-        vault="test",
-        relative_path="facts/a.md",
-        operation="create",
-        title="Fact A",
-        summary="A only.",
-        sources=[str(capture_a)],
-        body="Fact A body.",
-    )
-    proposal_b = ArticleWriteProposal(
-        vault="test",
-        relative_path="facts/b.md",
-        operation="create",
-        title="Fact B",
-        summary="B from repair.",
-        sources=[str(capture_b)],
-        body="Fact B body.",
-    )
-    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills")
-
-    # First run covers A only (B uncovered → repair); repair run covers B.
-    agent = ContextRecordingCompileAgent(
-        [CompileAgentOutput(proposals=[proposal_a]), CompileAgentOutput(proposals=[proposal_b])]
-    )
-    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
-
-    result = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
-
-    assert result.errors == []
-    assert len(agent.context_loaded_at_entry) == 2, "first run + one repair run"
-    assert agent.context_loaded_at_entry[0] is False, "first run must start with fresh context"
-    assert agent.context_loaded_at_entry[1] is False, (
-        "repair run must see context_loaded reset to False so it can re-read captures"
-    )
-
-
-def test_compile_repair_run_is_scoped_to_only_the_uncovered_captures(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """#151 Fix: the repair run must receive a deps whose ``capture_paths`` contains
-    ONLY the uncovered captures — NOT the ones the first run already covered.
-
-    A first run covers A only (B, C uncovered). The repair run must be fed exactly
-    [B, C] (not A), so a coverage-contract-following repair agent cannot re-propose
-    the already-covered A and create a duplicate proposal. We assert the first
-    agent call saw all of [A, B, C] and the repair call saw exactly [B, C].
-    """
-    brain_home = tmp_path / "brain"
-    vault_path = tmp_path / "vault"
-    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
-
-    (brain_home / "capture" / "inbox").mkdir(parents=True)
-    (vault_path / ".brain").mkdir(parents=True)
-    (vault_path / "knowledge").mkdir()
-    (vault_path / ".brain" / "manifest.yaml").write_text("paths:\n  knowledge: knowledge\nexclude: []\n", encoding="utf-8")
-    brain_home.mkdir(exist_ok=True)
-    (brain_home / "registry.yaml").write_text(f"vaults:\n  test:\n    path: {vault_path}\n", encoding="utf-8")
-    skill_path.parent.mkdir(parents=True)
-    skill_path.write_text("# Compile Skill\n", encoding="utf-8")
-
-    capture_a = brain_home / "capture" / "inbox" / "a.md"
-    capture_b = brain_home / "capture" / "inbox" / "b.md"
-    capture_c = brain_home / "capture" / "inbox" / "c.md"
-    capture_a.write_text("# Capture A\n\nFact A.\n", encoding="utf-8")
-    capture_b.write_text("# Capture B\n\nFact B.\n", encoding="utf-8")
-    capture_c.write_text("# Capture C\n\nNo durable knowledge.\n", encoding="utf-8")
-
-    proposal_a = ArticleWriteProposal(
-        vault="test",
-        relative_path="facts/a.md",
-        operation="create",
-        title="Fact A",
-        summary="A only.",
-        sources=[str(capture_a)],
-        body="Fact A body.",
-    )
-    proposal_b = ArticleWriteProposal(
-        vault="test",
-        relative_path="facts/b.md",
-        operation="create",
-        title="Fact B",
-        summary="B from repair.",
-        sources=[str(capture_b)],
-        body="Fact B body.",
-    )
-    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills")
-
-    # First output covers A only; repair output covers B (proposal) and C (skip).
-    agent = SequenceCompileAgent(
-        [
-            CompileAgentOutput(proposals=[proposal_a]),
-            CompileAgentOutput(proposals=[proposal_b], skipped=[f"{capture_c}: no durable knowledge"]),
-        ]
-    )
-    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
-
-    result = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
-
-    assert result.errors == []
-    assert len(agent.deps) == 2, "first run + one repair run"
-
-    first_paths = {p.resolve() for p in agent.deps[0].capture_paths}
-    repair_paths = {p.resolve() for p in agent.deps[1].capture_paths}
-
-    assert first_paths == {capture_a.resolve(), capture_b.resolve(), capture_c.resolve()}, (
-        "first run must see the full batch"
-    )
-    assert repair_paths == {capture_b.resolve(), capture_c.resolve()}, (
-        "repair run must be scoped to ONLY the uncovered captures (B, C) — not the covered A"
-    )
-    assert capture_a.resolve() not in repair_paths, "covered capture A must not be re-fed to the repair run"
-
-
-def test_compile_repair_stray_proposal_for_covered_capture_is_dropped(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """#151 defensive filter: if the repair agent returns a stray proposal citing an
-    already-covered capture (A), the workflow drops it rather than merging a
-    duplicate-create proposal for A. Only the in-scope repair proposal (B) survives.
-    """
-    brain_home = tmp_path / "brain"
-    vault_path = tmp_path / "vault"
-    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
-
-    (brain_home / "capture" / "inbox").mkdir(parents=True)
-    (vault_path / ".brain").mkdir(parents=True)
-    (vault_path / "knowledge").mkdir()
-    (vault_path / ".brain" / "manifest.yaml").write_text("paths:\n  knowledge: knowledge\nexclude: []\n", encoding="utf-8")
-    brain_home.mkdir(exist_ok=True)
-    (brain_home / "registry.yaml").write_text(f"vaults:\n  test:\n    path: {vault_path}\n", encoding="utf-8")
-    skill_path.parent.mkdir(parents=True)
-    skill_path.write_text("# Compile Skill\n", encoding="utf-8")
-
-    capture_a = brain_home / "capture" / "inbox" / "a.md"
-    capture_b = brain_home / "capture" / "inbox" / "b.md"
-    capture_a.write_text("# Capture A\n\nFact A.\n", encoding="utf-8")
-    capture_b.write_text("# Capture B\n\nFact B.\n", encoding="utf-8")
-
-    proposal_a = ArticleWriteProposal(
-        vault="test",
-        relative_path="facts/a.md",
-        operation="create",
-        title="Fact A",
-        summary="A only.",
-        sources=[str(capture_a)],
-        body="Fact A body.",
-    )
-    # Stray repair proposal that re-cites the already-covered A (a duplicate create).
-    stray_a = ArticleWriteProposal(
-        vault="test",
-        relative_path="facts/a-dup.md",
-        operation="create",
-        title="Fact A duplicate",
-        summary="stray.",
-        sources=[str(capture_a)],
-        body="Stray duplicate of A.",
-    )
-    proposal_b = ArticleWriteProposal(
-        vault="test",
-        relative_path="facts/b.md",
-        operation="create",
-        title="Fact B",
-        summary="B from repair.",
-        sources=[str(capture_b)],
-        body="Fact B body.",
-    )
-    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills")
-
-    # First covers A only; repair returns B (in scope) AND a stray proposal for A.
-    agent = SequenceCompileAgent(
-        [
-            CompileAgentOutput(proposals=[proposal_a]),
-            CompileAgentOutput(proposals=[proposal_b, stray_a]),
-        ]
-    )
-    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
-
-    result = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
-
-    assert result.errors == []
-    # The stray duplicate-A proposal was dropped; only A (first run) and B (repair) survive.
-    assert {write.title for write in result.applied} == {"Fact A", "Fact B"}
-    titles = {p.title for p in result.proposals}
-    assert "Fact A duplicate" not in titles, "stray repair proposal for already-covered A must be dropped"
-
-
-def test_compile_repair_run_failure_falls_through_to_retry_path(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """#151 Fix 2: if the repair ``agent.run`` raises, the compile must NOT abort.
-
-    A nonfatal warning is recorded and the still-uncovered capture falls through to
-    the #150 retry path (stays pending, attempt counter incremented) instead of
-    502-ing the run. The primary first run still succeeds and applies its proposal.
-    """
-    from pydantic_ai.usage import UsageLimitExceeded
-
-    brain_home = tmp_path / "brain"
-    vault_path = tmp_path / "vault"
-    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
-
-    (brain_home / "capture" / "inbox").mkdir(parents=True)
-    (vault_path / ".brain").mkdir(parents=True)
-    (vault_path / "knowledge").mkdir()
-    (vault_path / ".brain" / "manifest.yaml").write_text("paths:\n  knowledge: knowledge\nexclude: []\n", encoding="utf-8")
-    brain_home.mkdir(exist_ok=True)
-    (brain_home / "registry.yaml").write_text(f"vaults:\n  test:\n    path: {vault_path}\n", encoding="utf-8")
-    skill_path.parent.mkdir(parents=True)
-    skill_path.write_text("# Compile Skill\n", encoding="utf-8")
-
-    capture_a = brain_home / "capture" / "inbox" / "a.md"
-    capture_b = brain_home / "capture" / "inbox" / "b.md"
-    capture_a.write_text("# Capture A\n\nFact A.\n", encoding="utf-8")
-    capture_b.write_text("# Capture B\n\nFact B the repair never reaches.\n", encoding="utf-8")
-
-    proposal_a = ArticleWriteProposal(
-        vault="test",
-        relative_path="facts/a.md",
-        operation="create",
-        title="Fact A",
-        summary="A only.",
-        sources=[str(capture_a)],
-        body="Fact A body.",
-    )
-    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills")
-
-    # First run covers A only; B uncovered → repair run raises (budget exhausted).
-    agent = RaisingRepairCompileAgent(
-        CompileAgentOutput(proposals=[proposal_a]),
-        UsageLimitExceeded("request limit exceeded"),
-    )
-    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
-
-    result = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
-
-    # The repair failure did NOT abort the compile: no errors, A still applied.
-    assert result.errors == []
-    assert {write.title for write in result.applied} == {"Fact A"}
-    assert len(agent.prompts) == 2, "first run + one repair run that raised"
-
-    # A is applied/archived; B is NOT lost — it stays pending for the #150 retry path.
-    assert not capture_a.exists()
-    assert capture_b.exists(), "uncovered capture must stay pending when repair fails"
-
-    # The #150 attempt counter was incremented for B (it is on the retry path).
-    from fritz_local_brain.captures import _load_capture_attempts
-
-    attempts = _load_capture_attempts(brain_home)
-    attempt_keys = {compile_workflow._resolve_capture_source(brain_home, key) for key in attempts}
-    assert capture_b.resolve() in attempt_keys, "uncovered capture must be tracked by the retry counter"
-
-    # A nonfatal warning naming the repair failure was recorded to the global log.
-    log_text = (brain_home / "log.md").read_text(encoding="utf-8")
-    assert "repair" in log_text.lower(), "repair-failure warning must be logged as nonfatal"
 
 
 def test_compile_apply_ac1_unaccounted_captures_in_partial_batch_stay_pending(
@@ -1118,11 +914,12 @@ def test_compile_apply_ac1_unaccounted_captures_in_partial_batch_stay_pending(
     )
     settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills")
 
-    # First output covers A (proposal) and B (skip); C uncovered → #151 fires one
-    # repair call that also drops C (empty repair output).
+    # #153: one agent.run per capture (A, B, C in mtime order). A → proposal,
+    # B → explicit skip, C → dropped (no proposal, no skip).
     agent = SequenceCompileAgent(
         [
-            CompileAgentOutput(proposals=[proposal], skipped=[f"{capture_b}: no durable knowledge"]),
+            CompileAgentOutput(proposals=[proposal]),
+            CompileAgentOutput(skipped=[f"{capture_b}: no durable knowledge"]),
             CompileAgentOutput(),
         ]
     )
@@ -1136,8 +933,8 @@ def test_compile_apply_ac1_unaccounted_captures_in_partial_batch_stay_pending(
     # The unaccounted capture must remain in the inbox — pending, not lost.
     assert capture_c.exists(), "unaccounted capture must stay pending in inbox"
 
-    # Re-running still considers the unaccounted capture (first + #151 repair call).
-    second_agent = SequenceCompileAgent([CompileAgentOutput(), CompileAgentOutput()])
+    # Re-running still considers the unaccounted capture (one run, dropped again).
+    second_agent = SequenceCompileAgent([CompileAgentOutput()])
     monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: second_agent)
     second = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=True)))
     assert second.captures_considered == 1, "only the unaccounted capture remains pending"
@@ -1797,3 +1594,223 @@ def test_store_mode_update_accepts_archived_source_from_prior_compile(
     store_root = brain_home / "knowledge"
     article_path = store_root / "common" / "decisions" / "decision-001.md"
     assert "Enriched body." in article_path.read_text(encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Adversarial-review fixes (#153 / epic #149)
+# ---------------------------------------------------------------------------
+
+
+def test_compile_apply_does_not_account_capture_when_proposal_cites_only_prior_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix 1 (#149 BLOCKER — silent capture loss): an applied UPDATE proposal that
+    cites ONLY a previously-processed source (not THIS run's capture) must NOT make
+    the current capture "accounted".  The capture stays pending and is routed to the
+    #150 retry counter — never silently marked processed/archived without being
+    captured into any article.
+
+    Sequence mirrors the #123 path: first compile creates an article from capture P
+    (P is archived/processed).  Second compile sees a NEW capture C; the agent emits
+    an update proposal whose only source is the archived P — the update applies, but
+    C is never cited.  C must remain pending.
+    """
+    brain_home, skills_dir = _store_mode_settings(tmp_path)
+    prior = brain_home / "capture" / "inbox" / "prior.md"
+    prior.write_text("# Capture\n\nInitial decision content.\n", encoding="utf-8")
+
+    create_proposal = ArticleWriteProposal(
+        vault="brain",
+        relative_path="common/decisions/decision-001.md",
+        operation="create",
+        title="Decision 001",
+        summary="Initial decision.",
+        sources=[str(prior)],
+        body="Initial body.",
+    )
+    monkeypatch.setattr(
+        compile_workflow, "build_compile_agent", lambda settings, skill_text: FakeCompileAgent(create_proposal)
+    )
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=skills_dir)
+    first = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False, max_captures=1)))
+    assert first.errors == []
+    assert not prior.exists(), "prior capture archived after first compile"
+
+    # ---- Second compile: a NEW capture C, but the proposal cites ONLY the prior
+    # (archived) source — never C. ----
+    current = brain_home / "capture" / "inbox" / "current.md"
+    current.write_text("# Capture\n\nUnrelated new fact the agent ignored.\n", encoding="utf-8")
+
+    update_proposal = ArticleWriteProposal(
+        vault="brain",
+        relative_path="common/decisions/decision-001.md",
+        operation="update",
+        title="Decision 001",
+        summary="Enriched decision.",
+        sources=[str(prior)],  # only the prior, archived source — NOT the current capture
+        body="Enriched body.",
+    )
+    monkeypatch.setattr(
+        compile_workflow, "build_compile_agent", lambda settings, skill_text: FakeCompileAgent(update_proposal)
+    )
+    second = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
+
+    # The update applies (cites a legitimately-processed source), but the CURRENT
+    # capture was never cited, so it must NOT be archived/processed.
+    assert len(second.applied) == 1, "the update still applies"
+    assert current.exists(), "current capture must stay pending — not silently archived"
+
+    from fritz_local_brain.captures import _load_capture_attempts
+
+    attempts = _load_capture_attempts(brain_home)
+    attempt_keys = {compile_workflow._resolve_capture_source(brain_home, key) for key in attempts}
+    assert current.resolve() in attempt_keys, "uncited current capture must be routed to the retry counter"
+
+    # A re-run still considers the current capture — proof it was not lost.
+    rerun_agent = FakeCompileAgent(update_proposal)
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: rerun_agent)
+    rerun = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=True)))
+    assert rerun.captures_considered == 1, "the uncited capture remains pending across runs"
+
+
+class RaisingNthCompileAgent:
+    """Fake whose Nth ``run`` (0-indexed) raises, simulating an unstable LLM endpoint.
+
+    All other runs return the matching output from ``outputs`` (popped in order).
+    """
+
+    def __init__(self, outputs: list[CompileAgentOutput], raise_on_index: int, exc: Exception) -> None:
+        self.outputs = outputs
+        self.raise_on_index = raise_on_index
+        self.exc = exc
+        self.calls = 0
+
+    async def run(self, prompt: str, *, deps: object, usage_limits: object) -> SimpleNamespace:
+        index = self.calls
+        self.calls += 1
+        if index == self.raise_on_index:
+            raise self.exc
+        return SimpleNamespace(output=self.outputs.pop(0))
+
+
+def test_compile_apply_isolates_agent_run_exception_to_one_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix 2 (#153 MAJOR — robustness): an exception from ``agent.run`` on ONE
+    capture (unstable LLM endpoint) must not abort ``run_compile``.  The other
+    captures' articles are still applied and their sources marked processed (the
+    post-loop mark/archive runs), the failing capture's attempt counter is
+    incremented, and an error is recorded.
+    """
+    brain_home, skills_dir = _manifest_vault(tmp_path)
+    good_a = brain_home / "capture" / "inbox" / "good-a.md"
+    boom = brain_home / "capture" / "inbox" / "boom.md"
+    good_b = brain_home / "capture" / "inbox" / "good-b.md"
+    for index, capture in enumerate((good_a, boom, good_b)):
+        capture.write_text(f"# {capture.stem}\n\nContent.\n", encoding="utf-8")
+        os.utime(capture, (100 + index, 100 + index))
+
+    proposal_a = ArticleWriteProposal(
+        vault="test", relative_path="facts/a.md", operation="create",
+        title="A", summary="s", sources=[str(good_a)], body="A body",
+    )
+    proposal_b = ArticleWriteProposal(
+        vault="test", relative_path="facts/b.md", operation="create",
+        title="B", summary="s", sources=[str(good_b)], body="B body",
+    )
+    # Middle run (index 1, the boom capture) raises; the surrounding runs return A and B.
+    agent = RaisingNthCompileAgent(
+        [CompileAgentOutput(proposals=[proposal_a]), CompileAgentOutput(proposals=[proposal_b])],
+        raise_on_index=1,
+        exc=RuntimeError("model transport error"),
+    )
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
+
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=skills_dir)
+    result = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
+
+    # The run did NOT raise out; the good captures applied and were archived.
+    assert {write.title for write in result.applied} == {"A", "B"}, "good captures apply despite a mid-run exception"
+    assert not good_a.exists() and not good_b.exists(), "good captures' sources marked processed + archived"
+    # The failing capture is surfaced and stays pending, routed to the retry counter.
+    assert any("boom.md" in err for err in result.errors), "the failing capture must be named in an error"
+    assert boom.exists(), "the failing capture must stay pending, not be lost"
+    from fritz_local_brain.captures import _load_capture_attempts
+
+    attempts = _load_capture_attempts(brain_home)
+    attempt_keys = {compile_workflow._resolve_capture_source(brain_home, key) for key in attempts}
+    assert boom.resolve() in attempt_keys, "the failing capture must be routed to the retry counter"
+
+
+def test_compile_dry_run_detects_duplicate_create_against_earlier_same_run_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix 3 (#153 MAJOR — dry-run fidelity): two captures that both propose
+    CREATING the same target in a single dry-run must be detected as a duplicate
+    create on the second — matching real apply semantics.  Dry-run is the DEFAULT
+    request mode, so the preview must not let two creates of one target slip
+    through.
+    """
+    brain_home, skills_dir = _store_mode_settings(tmp_path)
+    cap_a = brain_home / "capture" / "inbox" / "a.md"
+    cap_b = brain_home / "capture" / "inbox" / "b.md"
+    cap_a.write_text("# A\n\nFact A.\n", encoding="utf-8")
+    cap_b.write_text("# B\n\nFact B.\n", encoding="utf-8")
+    os.utime(cap_a, (100, 100))
+    os.utime(cap_b, (200, 200))
+
+    same_target = "common/decisions/dup.md"
+    proposal_a = ArticleWriteProposal(
+        vault="brain", relative_path=same_target, operation="create",
+        title="Dup A", summary="s", sources=[str(cap_a)], body="A body",
+    )
+    proposal_b = ArticleWriteProposal(
+        vault="brain", relative_path=same_target, operation="create",
+        title="Dup B", summary="s", sources=[str(cap_b)], body="B body",
+    )
+    agent = SequenceCompileAgent(
+        [CompileAgentOutput(proposals=[proposal_a]), CompileAgentOutput(proposals=[proposal_b])]
+    )
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
+
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=skills_dir)
+    result = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=True)))
+
+    # The second create of the same target must be rejected in dry-run, exactly as apply.
+    assert any(
+        "already exists" in err and same_target in err for err in result.errors
+    ), f"duplicate create must be rejected in dry-run, got errors: {result.errors}"
+
+
+def test_compile_approval_blocked_run_does_not_create_store_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix 4 (#153 MINOR): an approval-blocked run must not create the store root
+    on disk — the store dir is only materialised when the run actually proceeds.
+    """
+    brain_home, skills_dir = _store_mode_settings(tmp_path)
+    captures = []
+    for index in range(3):  # threshold = 2 below → 3 > 2 triggers the gate
+        capture = brain_home / "capture" / "inbox" / f"cap-{index}.md"
+        capture.write_text(f"# Cap {index}\n\nFact {index}.\n", encoding="utf-8")
+        os.utime(capture, (100 + index, 100 + index))
+        captures.append(capture)
+
+    proposal = ArticleWriteProposal(
+        vault="brain", relative_path="common/decisions/x.md", operation="create",
+        title="X", summary="s", sources=[str(captures[0])], body="b",
+    )
+    monkeypatch.setattr(
+        compile_workflow, "build_compile_agent", lambda settings, skill_text: FakeCompileAgent(proposal)
+    )
+    settings = Settings(
+        LOCAL_BRAIN_HOME=brain_home,
+        LOCAL_BRAIN_SKILLS_DIR=skills_dir,
+        LOCAL_BRAIN_LARGE_BATCH_THRESHOLD=2,
+        APPROVAL_TOKEN="sekret",
+    )
+
+    blocked = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
+    assert blocked.applied == []
+    assert any("requires approval" in err for err in blocked.errors)
+    assert not (brain_home / "knowledge").exists(), "blocked run must not create the store root on disk"
