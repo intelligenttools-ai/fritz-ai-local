@@ -61,17 +61,6 @@ def _resolve_capture_source(brain_home: Path, source: str) -> Path:
     return source_path.resolve()
 
 
-def _resolved_proposal_sources(brain_home: Path, proposal: ArticleWriteProposal) -> set[Path]:
-    """Resolve a proposal's source strings the SAME way ``_uncovered_captures`` does."""
-    resolved: set[Path] = set()
-    for source in proposal.sources:
-        try:
-            resolved.add(_resolve_capture_source(brain_home, source))
-        except (OSError, RuntimeError, ValueError):
-            continue
-    return resolved
-
-
 def _skipped_capture_paths(brain_home: Path, allowed_sources: set[Path], skipped: list[str]) -> set[Path]:
     accounted: set[Path] = set()
     for item in skipped:
@@ -84,48 +73,23 @@ def _skipped_capture_paths(brain_home: Path, allowed_sources: set[Path], skipped
     return accounted
 
 
-def _uncovered_captures(
+def _repair_single_capture_source(
     brain_home: Path,
-    batch_paths: list[Path],
-    allowed_sources: set[Path],
-    proposals: list[ArticleWriteProposal],
-    skipped: list[str],
-) -> set[Path]:
-    """Captures in this batch the agent neither proposed nor explicitly skipped.
-
-    "Covered" is computed the SAME way the downstream apply block counts a capture
-    as accounted-for: a proposal source that resolves into ``allowed_sources``, or a
-    skipped entry whose path resolves into ``allowed_sources`` (see
-    ``_skipped_capture_paths``).  Keeping this identical avoids inventing a parallel
-    notion of coverage.  #153 can later simplify this to a 1:1 check.
-    """
-    covered: set[Path] = set()
-    for proposal in proposals:
-        covered |= _resolved_proposal_sources(brain_home, proposal) & allowed_sources
-    covered |= _skipped_capture_paths(brain_home, allowed_sources, skipped)
-    return {path.resolve() for path in batch_paths} - covered
-
-
-def _repair_single_capture_sources(
-    brain_home: Path,
-    batch_paths: list[Path],
-    allowed_sources: set[Path],
+    capture_path: Path,
     proposal: ArticleWriteProposal,
 ) -> tuple[ArticleWriteProposal, str | None]:
-    """Repair model-mangled source names when a batch contained one capture.
+    """Repair a model-mangled source name for the single capture of this run.
 
-    The model occasionally rewrites long capture file names while still clearly
-    producing an article from the only capture it was given. For one-capture
-    batches, replacing missing/empty source paths with that exact batch path is
-    safer than blocking the drain forever; multi-capture batches still require
-    exact source attribution.
+    The model occasionally rewrites a long capture file name while still clearly
+    producing an article from the only capture it was given. Because each run now
+    processes exactly one capture (#153), replacing a missing/empty source path
+    with that capture's exact path is safe whenever the proposal's source(s) look
+    like a mangled version of it — and is safer than blocking the drain forever.
     """
-    if len(batch_paths) != 1:
-        return proposal, None
-    capture_root = (brain_home / "capture").resolve()
     if not proposal.sources:
         return proposal, None
-    actual_path = batch_paths[0].resolve()
+    capture_root = (brain_home / "capture").resolve()
+    actual_path = capture_path.resolve()
     resolved_sources: list[Path] = []
     for source in proposal.sources:
         try:
@@ -135,7 +99,7 @@ def _repair_single_capture_sources(
         if not source_path.is_relative_to(capture_root):
             return proposal, None
         resolved_sources.append(source_path)
-    if resolved_sources and all(source_path in allowed_sources and source_path.exists() for source_path in resolved_sources):
+    if all(source_path == actual_path and source_path.exists() for source_path in resolved_sources):
         return proposal, None
     if not all(_looks_like_mangled_single_capture_source(source_path, actual_path) for source_path in resolved_sources):
         return proposal, None
@@ -144,12 +108,12 @@ def _repair_single_capture_sources(
     if "sources" in frontmatter:
         frontmatter["sources"] = [repaired_source]
     return proposal.model_copy(update={"sources": [repaired_source], "frontmatter": frontmatter}), (
-        f"Repaired compile proposal source path for single-capture batch: {proposal.relative_path}"
+        f"Repaired compile proposal source path for single-capture run: {proposal.relative_path}"
     )
 
 
 def _looks_like_mangled_single_capture_source(source_path: Path, actual_path: Path) -> bool:
-    if source_path.exists():
+    if source_path == actual_path and source_path.exists():
         return False
     if source_path.parent != actual_path.parent:
         return False
@@ -157,6 +121,110 @@ def _looks_like_mangled_single_capture_source(source_path: Path, actual_path: Pa
         return False
     similarity = SequenceMatcher(None, source_path.stem, actual_path.stem).ratio()
     return similarity >= 0.78
+
+
+def _apply_capture_proposals(
+    *,
+    settings: Settings,
+    request: CompileRunRequest,
+    store_mode: bool,
+    brain_store_root: Path | None,
+    vault_paths: dict[str, Path],
+    manifests: dict[str, dict],
+    capture_proposals: list[ArticleWriteProposal],
+    capture_source: Path,
+    single_allowed: set[Path],
+    processed_sources: set[Path],
+    simulated_article_paths: dict[str, set[str]],
+    simulated_target_paths: set[Path],
+    applied: list[AppliedArticleWrite],
+    applied_store_targets: list[Path],
+    processed_capture_paths: set[Path],
+    errors: list[str],
+) -> tuple[bool, bool]:
+    """Validate + apply one capture's proposal(s).  Returns ``(applied_ok, failed)``.
+
+    ``applied_ok`` is True only when a proposal that CITES ``capture_source``
+    validated+applied (#153 Fix 1): a proposal that applies but cites only a
+    prior-processed source must NOT make THIS capture "accounted", or the capture
+    would be archived without being captured into any article (#149 silent loss).
+    """
+    capture_applied_ok = False
+    capture_failed = False
+
+    # Re-scan existing targets each capture so a duplicate-create against an article
+    # applied earlier this run is detected (apply-before-next).  In dry-run nothing is
+    # written to disk, so also seed with the targets simulated earlier this run
+    # (#153 Fix 3) — otherwise two creates of the same target both pass the preview
+    # while a real apply rejects the second.
+    known_existing_targets: set[Path] = set(simulated_target_paths)
+    if store_mode:
+        assert brain_store_root is not None
+        if brain_store_root.exists():
+            known_existing_targets.update(
+                path.resolve() for path in brain_store_root.glob("**/*.md") if path.name != "index.md"
+            )
+    else:
+        for name, manifest in manifests.items():
+            knowledge_root = resolve_manifest_path(vault_paths[name], manifest, "knowledge")
+            if knowledge_root and knowledge_root.exists():
+                known_existing_targets.update(
+                    path.resolve() for path in knowledge_root.glob("**/*.md") if ".brain" not in path.parts
+                )
+
+    for proposal in capture_proposals:
+        try:
+            if store_mode:
+                assert brain_store_root is not None
+                target = validate_store_article_write(
+                    proposal, brain_store_root, settings.brain_home, single_allowed, known_existing_targets,
+                    processed_sources=processed_sources,
+                )
+            else:
+                target = validate_article_write(
+                    proposal, vault_paths, manifests, settings.brain_home, single_allowed, known_existing_targets,
+                    processed_sources=processed_sources,
+                )
+            if proposal.operation == "create":
+                known_existing_targets.add(target)
+            apply_article_write(target, proposal, request.dry_run)
+            if store_mode:
+                assert brain_store_root is not None
+                update_indexes_for_article(brain_store_root, target, proposal.title, proposal.summary, request.dry_run)
+            else:
+                update_directory_index(target, proposal.title, proposal.summary, request.dry_run)
+            simulated_article_paths.setdefault(proposal.vault, set()).add(proposal.relative_path)
+            simulated_target_paths.add(target)
+            # #153 Fix 1: this capture is only "accounted" when the applied proposal
+            # cites THIS capture's source (single_allowed == {capture_source}).  A
+            # proposal citing only a prior-processed source applies but must NOT mark
+            # the current capture done — it falls to the #150 retry path.
+            cites_capture = any(
+                _resolve_capture_source(settings.brain_home, source) in single_allowed
+                for source in proposal.sources
+            )
+            if cites_capture:
+                capture_applied_ok = True
+            if not request.dry_run:
+                applied.append(
+                    AppliedArticleWrite(
+                        vault=proposal.vault,
+                        path=str(target),
+                        operation=proposal.operation,
+                        title=proposal.title,
+                    )
+                )
+                if store_mode:
+                    applied_store_targets.append(target)
+                if cites_capture:
+                    processed_capture_paths.add(capture_source)
+        except (PolicyError, ValueError, OSError) as exc:
+            # A single bad proposal must NOT abort the others (#153): record the
+            # error and route THIS capture to the retry path.
+            errors.append(f"{proposal.vault}/{proposal.relative_path}: {exc}")
+            capture_failed = True
+
+    return capture_applied_ok, capture_failed
 
 
 async def run_compile(settings: Settings, request: CompileRunRequest) -> CompileRunResult:
@@ -184,17 +252,59 @@ async def run_compile(settings: Settings, request: CompileRunRequest) -> Compile
     capture_hashes = {path.resolve(): capture_hash(path) for path in capture_paths}
     allowed_sources = {path.resolve() for path in capture_paths}
     skill_text = load_skill(settings.skills_dir, settings.compile_skill_name)
-    all_proposals = []
+    all_proposals: list[ArticleWriteProposal] = []
     all_skipped: list[str] = []
     nonfatal_warnings: list[str] = []
     simulated_article_paths: dict[str, set[str]] = {name: set() for name in manifests} if not store_mode else {"brain": set()}
-    batch_size = settings.compile_max_captures or len(capture_paths) or 1
+    # Resolved target Paths applied/simulated so far this run.  In dry-run nothing is
+    # written to disk, so this is how a duplicate-create against an earlier same-run
+    # target is still detected in the preview (#153 Fix 3).
+    simulated_target_paths: set[Path] = set()
 
-    # In store mode, resolve the store root once outside the loop.
-    brain_store_root = ensure_store_root(settings) if store_mode else None
+    # --- Approval gate (#153): gate up-front on how many captures this run will
+    # process.  In the per-capture model "number of proposals" is no longer known
+    # before the loop runs, so we gate on the capture count instead: if it exceeds
+    # the threshold without a matching approval token, block the WHOLE run and
+    # apply nothing (the captures stay pending for a later approved run). ---
+    approval_blocked = (
+        not request.dry_run
+        and len(capture_paths) > settings.large_batch_threshold
+        and not settings.approval_matches(request.approval_token)
+    )
+    if approval_blocked:
+        errors.append(
+            f"Large compile run requires approval: {len(capture_paths)} captures exceeds threshold {settings.large_batch_threshold}"
+        )
 
-    for batch_start in range(0, len(capture_paths), batch_size):
-        batch_paths = capture_paths[batch_start : batch_start + batch_size]
+    # In store mode, resolve the store root once outside the loop — but only when the
+    # run will actually proceed (#153 Fix 4): a blocked run must not create the store
+    # dir on disk.
+    brain_store_root = ensure_store_root(settings) if store_mode and not approval_blocked else None
+
+    vault_names = ["brain"] if store_mode else sorted(manifests)
+    # Capture sources already recorded as processed by prior runs — used so an
+    # update proposal may re-cite an already-archived capture (#123).
+    processed_capture_record = _load_processed_captures(settings.brain_home)
+    processed_sources: set[Path] = {
+        _resolve_capture_source(settings.brain_home, key) for key in processed_capture_record
+    }
+
+    # Track captures that reach a terminal state this run (applied or skipped) so
+    # they are marked processed/archived, and those that don't so they go to the
+    # #150 retry/quarantine path — both accumulated across the per-capture loop.
+    processed_capture_paths: set[Path] = set()
+    applied_store_targets: list[Path] = []
+
+    # Process EXACTLY ONE capture per agent.run (#153).  Each iteration recomputes
+    # article_paths so it reflects everything applied so far (apply-before-next),
+    # runs the agent for that single capture, then validates/applies/accounts for
+    # it immediately so the next capture can choose update-over-create.
+    for capture_path in [] if approval_blocked else capture_paths:
+        capture_source = capture_path.resolve()
+        single_allowed = {capture_source}
+
+        # Recompute the live + simulated article paths so this capture sees every
+        # article applied by earlier captures in this run.
         article_paths: dict[str, list[str]] = {}
         if store_mode:
             assert brain_store_root is not None
@@ -221,12 +331,9 @@ async def run_compile(settings: Settings, request: CompileRunRequest) -> Compile
                     )
 
         if store_mode:
-            query_text = "\n\n".join(
-                read_capture(path, settings.capture_max_chars) for path in batch_paths
-            )
             related = await find_related_articles(
                 settings,
-                query_text,
+                read_capture(capture_path, settings.capture_max_chars),
                 store_root=brain_store_root,
                 top_k=settings.correlation_top_k,
                 char_budget=settings.correlation_max_chars,
@@ -236,18 +343,18 @@ async def run_compile(settings: Settings, request: CompileRunRequest) -> Compile
 
         agent = build_compile_agent(settings, skill_text)
         deps = CompileDeps(
-            capture_paths=batch_paths,
-            vault_names=["brain"] if store_mode else sorted(manifests),
+            capture_paths=[capture_path],
+            vault_names=vault_names,
             article_paths=article_paths,
             capture_max_chars=settings.capture_max_chars,
             related_articles=related,
         )
         if store_mode:
             prompt = f"""
-Run one chronological compile batch.
+Compile exactly one capture.
 
 Call load_compile_context exactly once. Then return final structured output.
-Do not invent vault names or source paths. Later batches may update knowledge created by earlier batches.
+Do not invent vault names or source paths. You may update knowledge created by earlier captures in this run.
 
 Destination: brain knowledge store (~/.brain/knowledge).
 Set vault to "brain" for all proposals.
@@ -256,207 +363,113 @@ Set relative_path to <scope>/<section>/<slug>.md where scope is "common" or a pr
 """.strip()
         else:
             prompt = f"""
-Run one chronological compile batch.
+Compile exactly one capture.
 
 Call load_compile_context exactly once. Then return final structured output.
-Do not invent vault names or source paths. Later batches may update knowledge created by earlier batches.
+Do not invent vault names or source paths. You may update knowledge created by earlier captures in this run.
 
 Available vaults:
 {deps.vault_names}
 """.strip()
 
-        def _repair_batch_proposals(proposals: list[ArticleWriteProposal]) -> list[ArticleWriteProposal]:
-            repaired: list[ArticleWriteProposal] = []
-            for proposal in proposals:
-                repaired_proposal, repair_warning = _repair_single_capture_sources(
-                    settings.brain_home, batch_paths, allowed_sources, proposal
-                )
-                repaired.append(repaired_proposal)
-                if repair_warning:
-                    nonfatal_warnings.append(repair_warning)
-            return repaired
+        # Per-capture state, declared before the (failure-prone) agent.run so the
+        # #150 accounting below always has them defined (#153 Fix 2).
+        capture_applied_ok = False
+        capture_failed = False
+        capture_skipped: list[str] = []
 
-        result = await agent.run(prompt, deps=deps, usage_limits=UsageLimits(request_limit=AGENT_REQUEST_LIMIT))
-        output = result.output
-        batch_proposals = _repair_batch_proposals(output.proposals)
-        batch_skipped = list(output.skipped)
-
-        # Same-run coverage contract (#151): force the agent to account for EVERY
-        # returned capture instead of relying on the slow cross-run #150 retry.
-        # If any capture is neither proposed nor explicitly skipped, do ONE bounded
-        # repair run feeding the uncovered paths back; merge its output the same way.
-        uncovered = _uncovered_captures(
-            settings.brain_home, batch_paths, allowed_sources, batch_proposals, batch_skipped
-        )
-        if uncovered:
-            uncovered_list = sorted(str(path) for path in uncovered)
-            repair_prompt = (
-                f"{prompt}\n\nYou did not account for these captures: {uncovered_list}. "
-                "For EACH, return a proposal whose sources include it, or list it in skipped "
-                "with a reason. Account for every one of these capture paths."
-            )
-            # Scope the repair run to ONLY the uncovered captures (#151).  Reusing
-            # the full-batch ``deps`` would re-feed every capture to the repair
-            # agent, which could then re-propose an already-covered capture — and
-            # that duplicate proposal would be merged into batch_proposals (risking
-            # duplicate-create apply errors that abort the whole batch).  A fresh
-            # CompileDeps whose capture_paths is exactly the uncovered set makes the
-            # repair agent see and account for exactly those.  context_loaded=False
-            # so load_compile_context returns their full bounded content (otherwise
-            # it returns an "already provided" stub and the repair agent could only
-            # skip them — losing exactly the knowledge #149 exists to keep).
-            uncovered_paths = [p for p in batch_paths if p.resolve() in uncovered]
-            repair_deps = CompileDeps(
-                capture_paths=uncovered_paths,
-                vault_names=deps.vault_names,
-                article_paths=deps.article_paths,
-                capture_max_chars=deps.capture_max_chars,
-                related_articles=deps.related_articles,
-                context_loaded=False,
-            )
-            try:
-                repair_result = await agent.run(repair_prompt, deps=repair_deps, usage_limits=UsageLimits(request_limit=AGENT_REQUEST_LIMIT))
-                repair_output = repair_result.output
-                # Defensive merge filter (#151): even with scoped deps, keep only
-                # repair output that pertains to the uncovered captures, so a stray
-                # proposal/skip for an already-covered capture can never duplicate.
-                repaired_repair_proposals = _repair_batch_proposals(repair_output.proposals)
-                batch_proposals.extend(
-                    proposal
-                    for proposal in repaired_repair_proposals
-                    if _resolved_proposal_sources(settings.brain_home, proposal) & uncovered
-                )
-                batch_skipped.extend(
-                    item
-                    for item in repair_output.skipped
-                    if _skipped_capture_paths(settings.brain_home, uncovered, [item])
-                )
-            except Exception as exc:  # noqa: BLE001 - a repair failure must not abort the compile.
-                # Keep batch_proposals/batch_skipped unchanged so the still-uncovered
-                # captures fall through to the #150 retry/quarantine path instead of
-                # 502-ing the whole run (the primary run above stays unguarded).
-                nonfatal_warnings.append(f"Coverage repair run failed; routing uncovered captures to retry path: {exc}")
-
-        all_proposals.extend(batch_proposals)
-        all_skipped.extend(batch_skipped)
-        for proposal in batch_proposals:
-            simulated_article_paths.setdefault(proposal.vault, set()).add(proposal.relative_path)
-
-    proposals_to_apply = list(all_proposals)
-    if not request.dry_run and len(proposals_to_apply) > settings.large_batch_threshold:
-        if not settings.approval_matches(request.approval_token):
-            errors.append(
-                f"Large compile run requires approval: {len(proposals_to_apply)} proposals exceeds threshold {settings.large_batch_threshold}"
-            )
-            proposals_to_apply.clear()
-
-    known_existing_targets: set[Path] = set()
-    if store_mode:
-        assert brain_store_root is not None
-        if brain_store_root.exists():
-            known_existing_targets.update(
-                path.resolve() for path in brain_store_root.glob("**/*.md") if path.name != "index.md"
-            )
-    else:
-        for name, manifest in manifests.items():
-            knowledge_root = resolve_manifest_path(vault_paths[name], manifest, "knowledge")
-            if knowledge_root and knowledge_root.exists():
-                known_existing_targets.update(
-                    path.resolve() for path in knowledge_root.glob("**/*.md") if ".brain" not in path.parts
-                )
-
-    processed_capture_record = _load_processed_captures(settings.brain_home)
-    processed_sources: set[Path] = {
-        _resolve_capture_source(settings.brain_home, key) for key in processed_capture_record
-    }
-
-    validated_targets = []
-    for proposal in proposals_to_apply:
+        # ---- Run the agent + validate/apply for THIS capture, isolated so an
+        # exception on one capture (unstable LLM endpoint: transport error,
+        # UsageLimitExceeded, etc.) does NOT abort the whole run (#153 Fix 2). The
+        # failing capture is surfaced and routed to the #150 retry path; later
+        # captures still run and earlier captures' post-loop mark/archive still
+        # happens. ----
         try:
-            if store_mode:
-                assert brain_store_root is not None
-                target = validate_store_article_write(
-                    proposal, brain_store_root, settings.brain_home, allowed_sources, known_existing_targets,
-                    processed_sources=processed_sources,
-                )
-            else:
-                target = validate_article_write(
-                    proposal, vault_paths, manifests, settings.brain_home, allowed_sources, known_existing_targets,
-                    processed_sources=processed_sources,
-                )
-            validated_targets.append((proposal, target))
-            if proposal.operation == "create":
-                known_existing_targets.add(target)
-        except (PolicyError, ValueError) as exc:
-            errors.append(f"{proposal.vault}/{proposal.relative_path}: {exc}")
+            result = await agent.run(prompt, deps=deps, usage_limits=UsageLimits(request_limit=AGENT_REQUEST_LIMIT))
+            output = result.output
 
-    processed_capture_paths: set[Path] = set()
-    applied_store_targets: list[Path] = []
-    if not errors:
-        for proposal, target in validated_targets:
-            try:
-                apply_article_write(target, proposal, request.dry_run)
-                if store_mode:
-                    assert brain_store_root is not None
-                    update_indexes_for_article(brain_store_root, target, proposal.title, proposal.summary, request.dry_run)
-                else:
-                    update_directory_index(target, proposal.title, proposal.summary, request.dry_run)
-                if not request.dry_run:
-                    applied.append(
-                        AppliedArticleWrite(
-                            vault=proposal.vault,
-                            path=str(target),
-                            operation=proposal.operation,
-                            title=proposal.title,
-                        )
-                    )
-                    if store_mode:
-                        applied_store_targets.append(target)
-                    for source in proposal.sources:
-                        source_path = _resolve_capture_source(settings.brain_home, source)
-                        if source_path in allowed_sources:
-                            processed_capture_paths.add(source_path)
-            except OSError as exc:
-                errors.append(f"{proposal.vault}/{proposal.relative_path}: {exc}")
-                break
+            # Repair a model-mangled source name for this one capture, then validate +
+            # apply its proposal(s) (1:1 coverage, #153).  Proposals are NOT pre-filtered
+            # by source: validation requires every cited source to be in single_allowed,
+            # so a missing/hallucinated/stray source is surfaced as an error and routes
+            # this capture to the retry path — never silently dropped.
+            capture_proposals = [
+                _repair_single_capture_source(settings.brain_home, capture_path, proposal)
+                for proposal in output.proposals
+            ]
+            capture_proposals_repaired: list[ArticleWriteProposal] = []
+            for repaired, warning in capture_proposals:
+                capture_proposals_repaired.append(repaired)
+                if warning:
+                    nonfatal_warnings.append(warning)
+            capture_proposals = capture_proposals_repaired
+            # Keep only skips that account for THIS capture; a skip citing some other
+            # path must not mark this capture done.
+            capture_skipped = [
+                item
+                for item in output.skipped
+                if _skipped_capture_paths(settings.brain_home, single_allowed, [item])
+            ]
+            all_proposals.extend(capture_proposals)
+            all_skipped.extend(capture_skipped)
 
-    if not request.dry_run and not errors:
-        skipped_capture_paths = _skipped_capture_paths(settings.brain_home, allowed_sources, all_skipped)
-        processed_capture_paths.update(skipped_capture_paths)
-        # Captures the agent neither produced a proposal for nor explicitly
-        # skipped are "unaccounted-for".  The model routinely drops captures, so
-        # auto-archiving them here would be permanent silent data loss (#150).
-        # Instead retry-then-quarantine: increment a bounded per-capture attempt
-        # counter and leave the capture PENDING so the next run re-reads it.
-        # After COMPILE_MAX_CAPTURE_ATTEMPTS failed attempts, move it to the
-        # distinct, visible capture/quarantine/ location and mark it processed so
-        # the backlog still cannot grow forever (#135) — without discarding data.
-        unaccounted = allowed_sources - processed_capture_paths
-        # Captures that reached a terminal state this run should not retain a
-        # stale attempt counter.
-        clear_capture_attempts(settings.brain_home, processed_capture_paths)
-        if unaccounted:
-            attempt_counts = increment_capture_attempts(settings.brain_home, unaccounted)
-            to_quarantine = sorted(
-                path
-                for path, counts in attempt_counts.items()
-                if counts.count >= COMPILE_MAX_CAPTURE_ATTEMPTS
-                or counts.total >= COMPILE_MAX_CAPTURE_ATTEMPTS_ABSOLUTE
+            capture_applied_ok, capture_failed = _apply_capture_proposals(
+                settings=settings,
+                request=request,
+                store_mode=store_mode,
+                brain_store_root=brain_store_root,
+                vault_paths=vault_paths,
+                manifests=manifests,
+                capture_proposals=capture_proposals,
+                capture_source=capture_source,
+                single_allowed=single_allowed,
+                processed_sources=processed_sources,
+                simulated_article_paths=simulated_article_paths,
+                simulated_target_paths=simulated_target_paths,
+                applied=applied,
+                applied_store_targets=applied_store_targets,
+                processed_capture_paths=processed_capture_paths,
+                errors=errors,
             )
-            if to_quarantine:
-                quarantined = quarantine_captures(settings.brain_home, to_quarantine, capture_hashes)
-                if quarantined:
-                    append_global_log(
-                        settings.brain_home,
-                        "COMPILE",
-                        f"quarantined {len(quarantined)} captures with no agent proposal/skip after "
-                        f"{COMPILE_MAX_CAPTURE_ATTEMPTS} attempts -> capture/quarantine: "
-                        + ", ".join(sorted(path.name for path in quarantined)),
-                        request.dry_run,
-                    )
-                    # The files are physically moved out of inbox, so discovery
-                    # stops finding them — drop their now-stale attempt counters.
-                    clear_capture_attempts(settings.brain_home, to_quarantine)
+        except Exception as exc:  # noqa: BLE001 — one capture's failure must not abort the run (#153)
+            errors.append(f"{capture_path.name}: agent run failed: {exc}")
+            capture_failed = True
+
+        # ---- Per-capture #150 accounting (1:1) ----
+        # Applied → processed; explicitly skipped (and nothing failed) → processed +
+        # archived; uncovered OR a failed/invalid proposal → increment this
+        # capture's attempt counter and leave it pending / quarantine per #150.
+        if not request.dry_run and not approval_blocked:
+            skipped_here = _skipped_capture_paths(settings.brain_home, single_allowed, capture_skipped)
+            accounted = capture_applied_ok or (bool(skipped_here) and not capture_failed)
+            if accounted:
+                processed_capture_paths.update(skipped_here)
+                processed_capture_paths.add(capture_source)
+                # Reached a terminal state — drop any stale attempt counter.
+                clear_capture_attempts(settings.brain_home, {capture_source})
+            else:
+                attempt_counts = increment_capture_attempts(settings.brain_home, {capture_source})
+                counts = attempt_counts.get(capture_source)
+                if counts is not None and (
+                    counts.count >= COMPILE_MAX_CAPTURE_ATTEMPTS
+                    or counts.total >= COMPILE_MAX_CAPTURE_ATTEMPTS_ABSOLUTE
+                ):
+                    quarantined = quarantine_captures(settings.brain_home, [capture_path], capture_hashes)
+                    if quarantined:
+                        append_global_log(
+                            settings.brain_home,
+                            "COMPILE",
+                            f"quarantined {len(quarantined)} captures with no agent proposal/skip after "
+                            f"{COMPILE_MAX_CAPTURE_ATTEMPTS} attempts -> capture/quarantine: "
+                            + ", ".join(sorted(path.name for path in quarantined)),
+                            request.dry_run,
+                        )
+                        # The file is physically moved out of inbox, so discovery
+                        # stops finding it — drop its now-stale attempt counter.
+                        clear_capture_attempts(settings.brain_home, {capture_source})
+
+    # Mark + archive all processed captures once, after the loop.
+    if not request.dry_run and processed_capture_paths:
         sorted_processed_paths = sorted(processed_capture_paths)
         mark_captures_processed(settings.brain_home, sorted_processed_paths, capture_hashes)
         try:
@@ -464,10 +477,13 @@ Available vaults:
         except Exception as exc:  # noqa: BLE001 - inbox archive cleanup must not fail applied compile work.
             nonfatal_warnings.append(f"Processed capture archive cleanup failed after compile apply: {exc}")
 
+    # Reconciliation runs over the articles that WERE applied this run.  It is no
+    # longer gated on ``not errors`` (#153 error isolation): one bad capture no
+    # longer suppresses reconciliation of the good ones, and ``applied_store_targets``
+    # already contains only successfully-applied articles.
     if (
         store_mode
         and not request.dry_run
-        and not errors
         and settings.reconciliation_enabled
         and settings.correlation_top_k > 0
         and applied_store_targets

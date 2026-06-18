@@ -311,9 +311,8 @@ def test_store_mode_compile_deps_carry_related_articles(tmp_path: Path, monkeypa
     )
     asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=True, max_captures=1)))
 
-    # Two calls: the first run plus the #151 coverage-repair run (the empty output
-    # leaves the capture uncovered). Both receive the same deps; assert on the first.
-    assert len(agent.captured_deps) == 2
+    # #153: one agent.run per capture (single capture here, so exactly one call).
+    assert len(agent.captured_deps) == 1
     deps = agent.captured_deps[0]
     assert hasattr(deps, "related_articles")
     # The existing store article shares tokens with the capture text → it must appear.
@@ -347,9 +346,8 @@ def test_store_mode_compile_related_articles_empty_when_top_k_zero(
     )
     asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=True, max_captures=1)))
 
-    # Two calls: the first run plus the #151 coverage-repair run (the empty output
-    # leaves the capture uncovered). Both receive the same deps; assert on the first.
-    assert len(agent.captured_deps) == 2
+    # #153: one agent.run per capture (single capture here, so exactly one call).
+    assert len(agent.captured_deps) == 1
     assert agent.captured_deps[0].related_articles == []
 
 
@@ -381,8 +379,7 @@ def test_registry_mode_compile_related_articles_not_populated(
     )
     asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=True, max_captures=1)))
 
-    # Two calls: the first run plus the #151 coverage-repair run (the empty output
-    # leaves the capture uncovered). Both receive the same deps; assert on the first.
-    assert len(agent.captured_deps) == 2
+    # #153: one agent.run per capture (single capture here, so exactly one call).
+    assert len(agent.captured_deps) == 1
     # Registry mode → related_articles must be empty.
     assert agent.captured_deps[0].related_articles == []
