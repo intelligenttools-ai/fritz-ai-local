@@ -11,7 +11,17 @@ from pydantic_ai.usage import UsageLimits
 
 from .agents.compile_agent import CompileDeps, build_compile_agent
 from .agents.reconciliation_agent import ReconciliationDeps, build_reconciliation_agent
-from .captures import _load_processed_captures, archive_processed_inbox_captures, capture_hash, list_all_captures, mark_captures_processed, read_capture
+from .captures import (
+    _load_processed_captures,
+    archive_processed_inbox_captures,
+    capture_hash,
+    clear_capture_attempts,
+    increment_capture_attempts,
+    list_all_captures,
+    mark_captures_processed,
+    quarantine_captures,
+    read_capture,
+)
 from .config import Settings
 from .correlation import find_related_articles
 from .indexes import backfill_indexes, update_directory_index, update_indexes_for_article
@@ -23,6 +33,21 @@ from .paths import PathMapper
 from .registry import RegistryError, load_registry, registered_vault_paths
 from .security import PolicyError, validate_article_write, validate_store_article_write
 from .skill_loader import load_skill
+
+# Number of consecutive compile runs a capture may go unaccounted-for (no
+# proposal and no explicit skip) before it is quarantined.  Bounds retries so
+# the backlog cannot grow forever (issue #135) while never silently discarding
+# data (issue #150).
+COMPILE_MAX_CAPTURE_ATTEMPTS = 3
+
+# Absolute lifetime ceiling on attempts for a single capture path, independent of
+# content changes.  The hash-bound budget (above) resets when a capture's content
+# changes — which is correct for an edited/corrected capture, but means a capture
+# whose content mutates on EVERY run would reset to 1 forever and never quarantine,
+# reopening the "backlog cannot grow forever" guarantee (#135).  This bound fires
+# on the lifetime ``total`` (never reset) so even content-mutating captures are
+# eventually quarantined.
+COMPILE_MAX_CAPTURE_ATTEMPTS_ABSOLUTE = 10
 
 
 def _resolve_capture_source(brain_home: Path, source: str) -> Path:
@@ -300,23 +325,42 @@ Available vaults:
                 break
 
     if not request.dry_run and not errors:
-        processed_capture_paths.update(_skipped_capture_paths(settings.brain_home, allowed_sources, all_skipped))
-        # Guarantee every considered capture reaches a terminal state: any capture
-        # in the batch that the agent neither produced a proposal for nor listed in
-        # `skipped` would otherwise stay pending and be re-read on every run,
-        # causing the backlog to never drain (issue #135).  Mark them processed and
-        # archive them now.  The existing hash-check inside mark_captures_processed
-        # / archive_processed_inbox_captures ensures captures whose content changed
-        # during the run are excluded and remain pending for the next run.
-        auto_skipped = allowed_sources - processed_capture_paths
-        if auto_skipped:
-            append_global_log(
-                settings.brain_home,
-                "COMPILE",
-                f"auto-skipped {len(auto_skipped)} captures with no agent proposal/skip — archived to inbox/archive",
-                request.dry_run,
+        skipped_capture_paths = _skipped_capture_paths(settings.brain_home, allowed_sources, all_skipped)
+        processed_capture_paths.update(skipped_capture_paths)
+        # Captures the agent neither produced a proposal for nor explicitly
+        # skipped are "unaccounted-for".  The model routinely drops captures, so
+        # auto-archiving them here would be permanent silent data loss (#150).
+        # Instead retry-then-quarantine: increment a bounded per-capture attempt
+        # counter and leave the capture PENDING so the next run re-reads it.
+        # After COMPILE_MAX_CAPTURE_ATTEMPTS failed attempts, move it to the
+        # distinct, visible capture/quarantine/ location and mark it processed so
+        # the backlog still cannot grow forever (#135) — without discarding data.
+        unaccounted = allowed_sources - processed_capture_paths
+        # Captures that reached a terminal state this run should not retain a
+        # stale attempt counter.
+        clear_capture_attempts(settings.brain_home, processed_capture_paths)
+        if unaccounted:
+            attempt_counts = increment_capture_attempts(settings.brain_home, unaccounted)
+            to_quarantine = sorted(
+                path
+                for path, counts in attempt_counts.items()
+                if counts.count >= COMPILE_MAX_CAPTURE_ATTEMPTS
+                or counts.total >= COMPILE_MAX_CAPTURE_ATTEMPTS_ABSOLUTE
             )
-            processed_capture_paths.update(auto_skipped)
+            if to_quarantine:
+                quarantined = quarantine_captures(settings.brain_home, to_quarantine, capture_hashes)
+                if quarantined:
+                    append_global_log(
+                        settings.brain_home,
+                        "COMPILE",
+                        f"quarantined {len(quarantined)} captures with no agent proposal/skip after "
+                        f"{COMPILE_MAX_CAPTURE_ATTEMPTS} attempts -> capture/quarantine: "
+                        + ", ".join(sorted(path.name for path in quarantined)),
+                        request.dry_run,
+                    )
+                    # The files are physically moved out of inbox, so discovery
+                    # stops finding them — drop their now-stale attempt counters.
+                    clear_capture_attempts(settings.brain_home, to_quarantine)
         sorted_processed_paths = sorted(processed_capture_paths)
         mark_captures_processed(settings.brain_home, sorted_processed_paths, capture_hashes)
         try:
