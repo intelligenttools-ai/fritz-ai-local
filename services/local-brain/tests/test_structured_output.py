@@ -17,7 +17,7 @@ from pydantic_ai import NativeOutput
 from fritz_local_brain.agents.compile_agent import build_compile_agent
 from fritz_local_brain.agents.reconciliation_agent import build_reconciliation_agent
 from fritz_local_brain.config import Settings
-from fritz_local_brain.llm import OUTPUT_RETRIES, output_spec_for
+from fritz_local_brain.llm import AGENT_REQUEST_LIMIT, OUTPUT_RETRIES, output_spec_for
 from fritz_local_brain.models import CompileAgentOutput, ReconciliationVerdict
 
 
@@ -91,6 +91,35 @@ def test_reconciliation_agent_output_retry_budget(tmp_path: Path) -> None:
     settings = _settings(tmp_path, "anthropic-compatible")
     agent = build_reconciliation_agent(settings)
     assert agent._max_output_retries == OUTPUT_RETRIES
+
+
+# ---------------------------------------------------------------------------
+# Issue #152: temperature pinned to 0 on compile and reconciliation agents
+# ---------------------------------------------------------------------------
+
+
+def test_compile_agent_temperature_zero(tmp_path: Path) -> None:
+    settings = _settings(tmp_path, "openai-compatible")
+    agent = build_compile_agent(settings, skill_text="# Skill\n")
+    assert agent.model_settings.get("temperature") == 0.0
+
+
+def test_reconciliation_agent_temperature_zero(tmp_path: Path) -> None:
+    settings = _settings(tmp_path, "openai-compatible")
+    agent = build_reconciliation_agent(settings)
+    assert agent.model_settings.get("temperature") == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Issue #152: request budget must cover OUTPUT_RETRIES + 3 (context-tool call
+# + one tolerated stray re-call of the tool + first output +
+# up-to-OUTPUT_RETRIES self-repair) so a stray tool re-call cannot cause
+# UsageLimitExceeded (the batch-abort/502 this hardening exists to prevent).
+# ---------------------------------------------------------------------------
+
+
+def test_agent_request_limit_covers_output_retries() -> None:
+    assert AGENT_REQUEST_LIMIT >= OUTPUT_RETRIES + 3
 
 
 # Reference the output models so the imports document the wired types.

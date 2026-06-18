@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.settings import ModelSettings
 
 from ..captures import read_capture
 from ..config import Settings
@@ -31,6 +32,7 @@ def build_compile_agent(settings: Settings, skill_text: str) -> Agent[CompileDep
         deps_type=CompileDeps,
         output_type=output_spec_for(settings.llm_protocol, CompileAgentOutput),
         retries={"output": OUTPUT_RETRIES},
+        model_settings=ModelSettings(temperature=0.0),
         system_prompt=COMPILE_SYSTEM_PROMPT,
         instructions=f"{COMPILE_MVP_INSTRUCTIONS}\n\n{skill_text}",
     )
