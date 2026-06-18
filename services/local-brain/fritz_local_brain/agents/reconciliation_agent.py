@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.settings import ModelSettings
 
 from ..config import Settings
 from ..llm import OUTPUT_RETRIES, build_model, output_spec_for
@@ -30,6 +31,7 @@ def build_reconciliation_agent(settings: Settings) -> Agent[ReconciliationDeps, 
         deps_type=ReconciliationDeps,
         output_type=output_spec_for(settings.llm_protocol, ReconciliationVerdict),
         retries={"output": OUTPUT_RETRIES},
+        model_settings=ModelSettings(temperature=0.0),
         system_prompt=RECONCILIATION_SYSTEM_PROMPT,
         instructions=RECONCILIATION_INSTRUCTIONS,
     )

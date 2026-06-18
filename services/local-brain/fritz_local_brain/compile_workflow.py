@@ -24,6 +24,7 @@ from .captures import (
 )
 from .config import Settings
 from .correlation import find_related_articles
+from .llm import AGENT_REQUEST_LIMIT
 from .indexes import backfill_indexes, update_directory_index, update_indexes_for_article
 from .knowledge import ARCHIVE_STATUSES, _current_status, apply_article_write, apply_reconciliation_verdict, ensure_store_root
 from .logs import append_global_log, append_reconciliation_undo
@@ -275,7 +276,7 @@ Available vaults:
                     nonfatal_warnings.append(repair_warning)
             return repaired
 
-        result = await agent.run(prompt, deps=deps, usage_limits=UsageLimits(request_limit=3))
+        result = await agent.run(prompt, deps=deps, usage_limits=UsageLimits(request_limit=AGENT_REQUEST_LIMIT))
         output = result.output
         batch_proposals = _repair_batch_proposals(output.proposals)
         batch_skipped = list(output.skipped)
@@ -314,7 +315,7 @@ Available vaults:
                 context_loaded=False,
             )
             try:
-                repair_result = await agent.run(repair_prompt, deps=repair_deps, usage_limits=UsageLimits(request_limit=3))
+                repair_result = await agent.run(repair_prompt, deps=repair_deps, usage_limits=UsageLimits(request_limit=AGENT_REQUEST_LIMIT))
                 repair_output = repair_result.output
                 # Defensive merge filter (#151): even with scoped deps, keep only
                 # repair output that pertains to the uncovered captures, so a stray
@@ -600,7 +601,7 @@ async def _reconcile_applied_articles(
                 result = await agent.run(
                     _reconciliation_prompt(new_rel, old_rel),
                     deps=deps,
-                    usage_limits=UsageLimits(request_limit=3),
+                    usage_limits=UsageLimits(request_limit=AGENT_REQUEST_LIMIT),
                 )
             except Exception as exc:  # noqa: BLE001 — one bad pair must not abort the sweep
                 append_global_log(

@@ -17,6 +17,16 @@ from .config import Settings
 #: run fails. Applied to BOTH the compile and reconciliation agents.
 OUTPUT_RETRIES = 3
 
+#: Per-run request budget for the structured-output agents. A run spends:
+#:   1. one request on the read-only context tool call,
+#:   2. one tolerated stray re-call of the tool (the ``already_provided`` stub
+#:      path — a misbehaving local model may call it a second time),
+#:   3. one request on the first structured output,
+#:   4. up to OUTPUT_RETRIES more on output self-repair.
+#: Budget must be at least OUTPUT_RETRIES + 3 or a stray tool re-call causes
+#: UsageLimitExceeded — exactly the batch-abort/502 this hardening exists to prevent.
+AGENT_REQUEST_LIMIT = OUTPUT_RETRIES + 3
+
 
 def output_spec_for(protocol: str, model: type):
     """Pick the structured-output spec for *model* based on the LLM *protocol*.
