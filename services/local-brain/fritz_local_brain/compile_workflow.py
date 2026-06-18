@@ -35,6 +35,40 @@ from .registry import RegistryError, load_registry, registered_vault_paths
 from .security import PolicyError, validate_article_write, validate_store_article_write
 from .skill_loader import load_skill
 
+
+def _compile_capture_prompt(store_mode: bool, vault_names: list[str]) -> str:
+    """Build the per-capture compile prompt string.
+
+    Extracted as a pure helper so unit tests can assert on the wording without
+    a live model (see test_compile_capture_prompt_wording_* in the test suite).
+
+    The phrasing here is the proven pre-#153 wording that produces proposals
+    4/4 runs on hermes-qwen36-35b-a3b.  Do NOT change it without updating the
+    wording-lock tests; those tests exist precisely to guard this regression.
+    """
+    if store_mode:
+        return f"""
+Run one chronological compile batch.
+
+Call load_compile_context exactly once. Then return final structured output.
+Do not invent vault names or source paths. Later batches may update knowledge created by earlier batches.
+
+Destination: brain knowledge store (~/.brain/knowledge).
+Set vault to "brain" for all proposals.
+Set relative_path to <scope>/<section>/<slug>.md where scope is "common" or a project slug, and section is one of: decisions, lessons, runbooks, context.
+{vault_names}
+""".strip()
+    return f"""
+Run one chronological compile batch.
+
+Call load_compile_context exactly once. Then return final structured output.
+Do not invent vault names or source paths. Later batches may update knowledge created by earlier batches.
+
+Available vaults:
+{vault_names}
+""".strip()
+
+
 # Number of consecutive compile runs a capture may go unaccounted-for (no
 # proposal and no explicit skip) before it is quarantined.  Bounds retries so
 # the backlog cannot grow forever (issue #135) while never silently discarding
@@ -349,28 +383,7 @@ async def run_compile(settings: Settings, request: CompileRunRequest) -> Compile
             capture_max_chars=settings.capture_max_chars,
             related_articles=related,
         )
-        if store_mode:
-            prompt = f"""
-Compile exactly one capture.
-
-Call load_compile_context exactly once. Then return final structured output.
-Do not invent vault names or source paths. You may update knowledge created by earlier captures in this run.
-
-Destination: brain knowledge store (~/.brain/knowledge).
-Set vault to "brain" for all proposals.
-Set relative_path to <scope>/<section>/<slug>.md where scope is "common" or a project slug, and section is one of: decisions, lessons, runbooks, context.
-{deps.vault_names}
-""".strip()
-        else:
-            prompt = f"""
-Compile exactly one capture.
-
-Call load_compile_context exactly once. Then return final structured output.
-Do not invent vault names or source paths. You may update knowledge created by earlier captures in this run.
-
-Available vaults:
-{deps.vault_names}
-""".strip()
+        prompt = _compile_capture_prompt(store_mode, vault_names)
 
         # Per-capture state, declared before the (failure-prone) agent.run so the
         # #150 accounting below always has them defined (#153 Fix 2).
