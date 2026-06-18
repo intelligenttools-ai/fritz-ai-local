@@ -38,6 +38,14 @@ path it accounts for, followed by a colon and the reason.
 Only cite a capture path in proposal sources or skipped when that returned capture
 is intentionally accounted for by the proposal or skip reason.
 
+COVERAGE CONTRACT (mandatory — do not omit any capture):
+Every capture path returned by load_compile_context MUST appear in exactly one of
+two places: either in the "sources" of some proposal, or as a "skipped" entry.
+Never silently drop a capture. If a capture holds no durable knowledge, you MUST
+list it in "skipped" with a reason — do NOT just leave it out. Before returning,
+check the returned captures against your proposals' sources and your skipped list:
+every returned capture path must be accounted for in one of them.
+
 Final output shape:
 {
   "proposals": [

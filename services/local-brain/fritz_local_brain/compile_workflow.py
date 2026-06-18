@@ -60,6 +60,17 @@ def _resolve_capture_source(brain_home: Path, source: str) -> Path:
     return source_path.resolve()
 
 
+def _resolved_proposal_sources(brain_home: Path, proposal: ArticleWriteProposal) -> set[Path]:
+    """Resolve a proposal's source strings the SAME way ``_uncovered_captures`` does."""
+    resolved: set[Path] = set()
+    for source in proposal.sources:
+        try:
+            resolved.add(_resolve_capture_source(brain_home, source))
+        except (OSError, RuntimeError, ValueError):
+            continue
+    return resolved
+
+
 def _skipped_capture_paths(brain_home: Path, allowed_sources: set[Path], skipped: list[str]) -> set[Path]:
     accounted: set[Path] = set()
     for item in skipped:
@@ -70,6 +81,28 @@ def _skipped_capture_paths(brain_home: Path, allowed_sources: set[Path], skipped
         if source_path in allowed_sources:
             accounted.add(source_path)
     return accounted
+
+
+def _uncovered_captures(
+    brain_home: Path,
+    batch_paths: list[Path],
+    allowed_sources: set[Path],
+    proposals: list[ArticleWriteProposal],
+    skipped: list[str],
+) -> set[Path]:
+    """Captures in this batch the agent neither proposed nor explicitly skipped.
+
+    "Covered" is computed the SAME way the downstream apply block counts a capture
+    as accounted-for: a proposal source that resolves into ``allowed_sources``, or a
+    skipped entry whose path resolves into ``allowed_sources`` (see
+    ``_skipped_capture_paths``).  Keeping this identical avoids inventing a parallel
+    notion of coverage.  #153 can later simplify this to a 1:1 check.
+    """
+    covered: set[Path] = set()
+    for proposal in proposals:
+        covered |= _resolved_proposal_sources(brain_home, proposal) & allowed_sources
+    covered |= _skipped_capture_paths(brain_home, allowed_sources, skipped)
+    return {path.resolve() for path in batch_paths} - covered
 
 
 def _repair_single_capture_sources(
@@ -231,19 +264,81 @@ Available vaults:
 {deps.vault_names}
 """.strip()
 
+        def _repair_batch_proposals(proposals: list[ArticleWriteProposal]) -> list[ArticleWriteProposal]:
+            repaired: list[ArticleWriteProposal] = []
+            for proposal in proposals:
+                repaired_proposal, repair_warning = _repair_single_capture_sources(
+                    settings.brain_home, batch_paths, allowed_sources, proposal
+                )
+                repaired.append(repaired_proposal)
+                if repair_warning:
+                    nonfatal_warnings.append(repair_warning)
+            return repaired
+
         result = await agent.run(prompt, deps=deps, usage_limits=UsageLimits(request_limit=3))
         output = result.output
-        repaired_proposals = []
-        for proposal in output.proposals:
-            repaired_proposal, repair_warning = _repair_single_capture_sources(
-                settings.brain_home, batch_paths, allowed_sources, proposal
+        batch_proposals = _repair_batch_proposals(output.proposals)
+        batch_skipped = list(output.skipped)
+
+        # Same-run coverage contract (#151): force the agent to account for EVERY
+        # returned capture instead of relying on the slow cross-run #150 retry.
+        # If any capture is neither proposed nor explicitly skipped, do ONE bounded
+        # repair run feeding the uncovered paths back; merge its output the same way.
+        uncovered = _uncovered_captures(
+            settings.brain_home, batch_paths, allowed_sources, batch_proposals, batch_skipped
+        )
+        if uncovered:
+            uncovered_list = sorted(str(path) for path in uncovered)
+            repair_prompt = (
+                f"{prompt}\n\nYou did not account for these captures: {uncovered_list}. "
+                "For EACH, return a proposal whose sources include it, or list it in skipped "
+                "with a reason. Account for every one of these capture paths."
             )
-            repaired_proposals.append(repaired_proposal)
-            if repair_warning:
-                nonfatal_warnings.append(repair_warning)
-        all_proposals.extend(repaired_proposals)
-        all_skipped.extend(output.skipped)
-        for proposal in repaired_proposals:
+            # Scope the repair run to ONLY the uncovered captures (#151).  Reusing
+            # the full-batch ``deps`` would re-feed every capture to the repair
+            # agent, which could then re-propose an already-covered capture — and
+            # that duplicate proposal would be merged into batch_proposals (risking
+            # duplicate-create apply errors that abort the whole batch).  A fresh
+            # CompileDeps whose capture_paths is exactly the uncovered set makes the
+            # repair agent see and account for exactly those.  context_loaded=False
+            # so load_compile_context returns their full bounded content (otherwise
+            # it returns an "already provided" stub and the repair agent could only
+            # skip them — losing exactly the knowledge #149 exists to keep).
+            uncovered_paths = [p for p in batch_paths if p.resolve() in uncovered]
+            repair_deps = CompileDeps(
+                capture_paths=uncovered_paths,
+                vault_names=deps.vault_names,
+                article_paths=deps.article_paths,
+                capture_max_chars=deps.capture_max_chars,
+                related_articles=deps.related_articles,
+                context_loaded=False,
+            )
+            try:
+                repair_result = await agent.run(repair_prompt, deps=repair_deps, usage_limits=UsageLimits(request_limit=3))
+                repair_output = repair_result.output
+                # Defensive merge filter (#151): even with scoped deps, keep only
+                # repair output that pertains to the uncovered captures, so a stray
+                # proposal/skip for an already-covered capture can never duplicate.
+                repaired_repair_proposals = _repair_batch_proposals(repair_output.proposals)
+                batch_proposals.extend(
+                    proposal
+                    for proposal in repaired_repair_proposals
+                    if _resolved_proposal_sources(settings.brain_home, proposal) & uncovered
+                )
+                batch_skipped.extend(
+                    item
+                    for item in repair_output.skipped
+                    if _skipped_capture_paths(settings.brain_home, uncovered, [item])
+                )
+            except Exception as exc:  # noqa: BLE001 - a repair failure must not abort the compile.
+                # Keep batch_proposals/batch_skipped unchanged so the still-uncovered
+                # captures fall through to the #150 retry/quarantine path instead of
+                # 502-ing the whole run (the primary run above stays unguarded).
+                nonfatal_warnings.append(f"Coverage repair run failed; routing uncovered captures to retry path: {exc}")
+
+        all_proposals.extend(batch_proposals)
+        all_skipped.extend(batch_skipped)
+        for proposal in batch_proposals:
             simulated_article_paths.setdefault(proposal.vault, set()).add(proposal.relative_path)
 
     proposals_to_apply = list(all_proposals)
