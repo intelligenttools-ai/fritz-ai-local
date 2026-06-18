@@ -1814,3 +1814,118 @@ def test_compile_approval_blocked_run_does_not_create_store_root(
     assert blocked.applied == []
     assert any("requires approval" in err for err in blocked.errors)
     assert not (brain_home / "knowledge").exists(), "blocked run must not create the store root on disk"
+
+
+# ---------------------------------------------------------------------------
+# #158 — per-capture compile prompt regression guard
+# ---------------------------------------------------------------------------
+
+def test_compile_capture_prompt_wording_store_mode() -> None:
+    """Wording lock (guards #158 regression): the per-capture store-mode prompt must
+    use the proven lead line from before #153 and must NOT use the #153 wording that
+    produced zero proposals on hermes-qwen36-35b-a3b.
+
+    This test MUST FAIL before the #158 fix (current wording = 'Compile exactly one
+    capture') and PASS after (restored wording = 'Run one chronological compile
+    batch').  Any future prompt edit MUST consciously update this test.
+    """
+    prompt = compile_workflow._compile_capture_prompt(
+        store_mode=True, vault_names=["brain"]
+    )
+    assert "Run one chronological compile batch" in prompt, (
+        "store-mode prompt must use the proven pre-#153 lead line"
+    )
+    assert "Compile exactly one capture" not in prompt, (
+        "store-mode prompt must NOT use the #153 wording that produced zero proposals"
+    )
+    assert "Later batches may update knowledge created by earlier batches" in prompt, (
+        "store-mode prompt must use the proven second sentence"
+    )
+    assert "You may update knowledge created by earlier captures in this run" not in prompt, (
+        "store-mode prompt must NOT use the #153 regressing second sentence"
+    )
+
+
+def test_compile_capture_prompt_wording_non_store_mode() -> None:
+    """Wording lock (guards #158 regression): the per-capture non-store-mode prompt
+    must use the proven lead line and must NOT use the #153 wording.
+
+    Same pass/fail criteria as the store-mode variant.
+    """
+    prompt = compile_workflow._compile_capture_prompt(
+        store_mode=False, vault_names=["project-a", "common"]
+    )
+    assert "Run one chronological compile batch" in prompt, (
+        "non-store-mode prompt must use the proven pre-#153 lead line"
+    )
+    assert "Compile exactly one capture" not in prompt, (
+        "non-store-mode prompt must NOT use the #153 wording that produced zero proposals"
+    )
+    assert "Later batches may update knowledge created by earlier batches" in prompt, (
+        "non-store-mode prompt must use the proven second sentence"
+    )
+    assert "You may update knowledge created by earlier captures in this run" not in prompt, (
+        "non-store-mode prompt must NOT use the #153 regressing second sentence"
+    )
+
+
+@pytest.mark.skipif(
+    not os.environ.get("LOCAL_BRAIN_SMOKE_LLM"),
+    reason="real-model smoke test; set LOCAL_BRAIN_SMOKE_LLM=1 and configure a live LLM endpoint to run",
+)
+def test_compile_capture_prompt_real_model_produces_proposals(tmp_path: Path) -> None:
+    """Real-model smoke guard (AC2 intent from #158).
+
+    Unit-test mocks cannot detect a prompt that causes the model to return zero
+    proposals — that is the root cause of #158.  This test exercises the actual
+    ``build_compile_agent`` → ``agent.run`` path with a substantive capture and
+    asserts that at least one proposal is returned.
+
+    Skipped in normal CI runs (no live LLM).  Run manually against a configured
+    endpoint to verify the restored prompt wording on the real model:
+
+        LOCAL_BRAIN_SMOKE_LLM=1 .venv/bin/python -m pytest tests/test_compile_workflow.py \
+            -k test_compile_capture_prompt_real_model_produces_proposals -v
+
+    This is the guard the mocked unit tests cannot provide.
+    """
+    from fritz_local_brain.agents.compile_agent import CompileDeps, build_compile_agent
+    from fritz_local_brain.models import CompileRunRequest
+
+    brain_home = tmp_path / "brain"
+    skills_dir = tmp_path / "skills"
+    capture_path = brain_home / "capture" / "inbox" / "smoke.md"
+    capture_path.parent.mkdir(parents=True)
+    capture_path.write_text(
+        "# Smoke Test Capture\n\n"
+        "Decision: always use UTC timestamps in log entries to avoid timezone confusion.\n"
+        "Rationale: avoids DST edge cases and makes log correlation trivial.\n",
+        encoding="utf-8",
+    )
+    skill_dir = skills_dir / "brain-compile"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("# Compile Skill\n", encoding="utf-8")
+
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=skills_dir)
+    vault_names = ["brain"]
+    prompt = compile_workflow._compile_capture_prompt(store_mode=True, vault_names=vault_names)
+    deps = CompileDeps(
+        capture_paths=[capture_path],
+        vault_names=vault_names,
+        article_paths={},
+        capture_max_chars=settings.capture_max_chars,
+    )
+
+    skill_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    agent = build_compile_agent(settings, skill_text)
+
+    from pydantic_ai.usage import UsageLimits
+    from fritz_local_brain.llm import AGENT_REQUEST_LIMIT
+
+    result = asyncio.run(
+        agent.run(prompt, deps=deps, usage_limits=UsageLimits(request_limit=AGENT_REQUEST_LIMIT))
+    )
+    assert result.output.proposals, (
+        "real model must return at least one proposal for a substantive capture; "
+        "zero proposals → prompt regression"
+    )
