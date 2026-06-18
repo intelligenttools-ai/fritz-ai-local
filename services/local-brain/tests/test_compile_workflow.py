@@ -192,11 +192,13 @@ def test_compile_default_uses_safe_chronological_batch_cap(tmp_path: Path, monke
     assert agent.deps[0].capture_paths == captures[:25]
 
 
-def test_compile_apply_archives_unrepresented_capture(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Captures the agent ignores (no proposal AND no explicit skip) are auto-archived.
+def test_compile_apply_keeps_unrepresented_capture_pending(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Captures the agent ignores (no proposal AND no explicit skip) stay PENDING.
 
-    This is the fix for issue #135: unrepresented captures must not stay pending
-    forever — they are archived after the apply run so a second run sees 0 pending.
+    Issue #150: the old #135 fix auto-archived unrepresented captures, which is
+    permanent silent data loss because the model routinely drops captures.  The
+    new contract is retry-then-quarantine: after one run the unaccounted capture
+    must NOT be archived — it stays in inbox and is re-considered next run.
     """
     brain_home = tmp_path / "brain"
     vault_path = tmp_path / "vault"
@@ -213,8 +215,10 @@ def test_compile_apply_archives_unrepresented_capture(tmp_path: Path, monkeypatc
     skill_path.parent.mkdir(parents=True)
     skill_path.write_text("# Compile Skill\n", encoding="utf-8")
 
-    # Agent returns no proposals and lists no skipped — the exact #135 scenario.
-    agent = SequenceCompileAgent([CompileAgentOutput()])
+    # Agent returns no proposals and lists no skipped — the dropped-capture scenario.
+    # Two outputs: one for the apply run, one for the follow-up dry-run (the
+    # capture is still pending, so the agent is invoked again).
+    agent = SequenceCompileAgent([CompileAgentOutput(), CompileAgentOutput()])
     monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
 
     first = asyncio.run(
@@ -224,20 +228,21 @@ def test_compile_apply_archives_unrepresented_capture(tmp_path: Path, monkeypatc
         )
     )
 
-    # Capture must no longer exist in inbox — it has been auto-archived.
+    # Capture must STILL exist in inbox — it is retried, not archived (no data loss).
     assert first.captures_considered == 1
     assert first.applied == []
     assert first.errors == []
-    assert not capture_path.exists(), "Unrepresented capture must be archived out of inbox"
+    assert capture_path.exists(), "Unrepresented capture must stay pending, not be archived"
+    assert not (brain_home / "capture" / "inbox" / "archive").exists(), "Must not archive an unaccounted capture"
 
-    # Second run must see 0 pending captures — backlog drains.
+    # Second run must still see the capture as pending — it is re-read for a retry.
     second = asyncio.run(
         compile_workflow.run_compile(
             Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills"),
             CompileRunRequest(dry_run=True),
         )
     )
-    assert second.captures_considered == 0, "Backlog must be empty after auto-archival"
+    assert second.captures_considered == 1, "Unaccounted capture must remain pending across runs"
 
 
 def test_compile_apply_marks_explicitly_skipped_captures_processed(
@@ -507,12 +512,16 @@ def test_compile_apply_rejects_unrelated_hallucinated_single_capture_source(
     assert capture_path.exists()
 
 
-def test_compile_apply_drains_backlog_when_agent_covers_only_one_of_many_captures(
+def test_compile_apply_quarantines_uncovered_captures_after_n_runs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Reproduction for issue #135: agent produces one proposal for a multi-capture batch,
-    leaving the rest unaddressed.  All unaddressed captures must be auto-archived so a
-    second run sees 0 pending — the backlog must drain even when agent coverage is partial.
+    """Issue #150: partial agent coverage must NOT auto-archive the rest.
+
+    The applied capture leaves immediately; the uncovered captures stay pending
+    and are RETRIED.  Only after COMPILE_MAX_CAPTURE_ATTEMPTS (3) consecutive
+    runs in which the agent keeps ignoring them are they quarantined — at which
+    point the backlog drains (the #135 guarantee still holds, just deferred by N
+    attempts) without ever silently discarding data.
     """
     brain_home = tmp_path / "brain"
     vault_path = tmp_path / "vault"
@@ -544,25 +553,405 @@ def test_compile_apply_drains_backlog_when_agent_covers_only_one_of_many_capture
         sources=[str(capture_a)],
         body="Fact A body.",
     )
-    # Agent covers capture_a only; capture_b and capture_c get no proposal and no skip.
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills")
+
+    # Run 1: agent covers capture_a only; capture_b/capture_c get no proposal, no skip.
     agent = SequenceCompileAgent([CompileAgentOutput(proposals=[proposal])])
     monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
-
-    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills")
     first = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
 
     assert first.errors == []
     assert len(first.applied) == 1
-    # All three captures must be gone from inbox (archived or processed).
     assert not capture_a.exists(), "capture_a (applied source) must be archived"
-    assert not capture_b.exists(), "capture_b (unaddressed) must be auto-archived"
-    assert not capture_c.exists(), "capture_c (unaddressed) must be auto-archived"
+    # Uncovered captures must stay pending after one run — NOT auto-archived.
+    assert capture_b.exists(), "capture_b (uncovered) must stay pending, not be discarded"
+    assert capture_c.exists(), "capture_c (uncovered) must stay pending, not be discarded"
 
-    # Second compile must see 0 pending — the backlog is drained.
+    # Runs 2 and 3: agent keeps ignoring b and c (3 unaccounted attempts total).
+    for _ in range(compile_workflow.COMPILE_MAX_CAPTURE_ATTEMPTS - 1):
+        ignore_agent = SequenceCompileAgent([CompileAgentOutput()])
+        monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: ignore_agent)
+        run = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
+        assert run.errors == []
+
+    # After N attempts the uncovered captures are quarantined (gone from inbox)...
+    assert not capture_b.exists(), "capture_b must be quarantined after N attempts"
+    assert not capture_c.exists(), "capture_c must be quarantined after N attempts"
+    # ...landing in the distinct, visible quarantine location (NOT inbox/archive).
+    quarantine_root = brain_home / "capture" / "quarantine"
+    quarantined_names = {p.name for p in quarantine_root.glob("**/*.md")}
+    assert {"b.md", "c.md"} <= quarantined_names, "Uncovered captures must land in capture/quarantine"
+    # capture_a was legitimately archived (it had a proposal); b and c must NOT
+    # be in inbox/archive — quarantine is a distinct location.
+    inbox_archive = brain_home / "capture" / "inbox" / "archive"
+    archived_names = {p.name for p in inbox_archive.glob("**/*.md")} if inbox_archive.exists() else set()
+    assert "b.md" not in archived_names and "c.md" not in archived_names, "uncovered captures must not be archived"
+
+    # The backlog drains — a fresh run sees 0 pending.
+    drained_agent = SequenceCompileAgent([CompileAgentOutput()])
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: drained_agent)
+    drained = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=True)))
+    assert drained.captures_considered == 0, "Backlog must drain once captures are quarantined"
+
+
+def test_compile_apply_ac1_unaccounted_captures_in_partial_batch_stay_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC1 (#150): a batch where the agent accounts for only SOME captures (one
+    proposal, one explicit skip) leaves the remaining unaccounted capture PENDING
+    — not archived — proven by re-running and seeing it still considered, with the
+    inbox file still present.
+    """
+    brain_home = tmp_path / "brain"
+    vault_path = tmp_path / "vault"
+    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
+
+    (brain_home / "capture" / "inbox").mkdir(parents=True)
+    (vault_path / ".brain").mkdir(parents=True)
+    (vault_path / "knowledge").mkdir()
+    (vault_path / ".brain" / "manifest.yaml").write_text("paths:\n  knowledge: knowledge\nexclude: []\n", encoding="utf-8")
+    brain_home.mkdir(exist_ok=True)
+    (brain_home / "registry.yaml").write_text(f"vaults:\n  test:\n    path: {vault_path}\n", encoding="utf-8")
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Compile Skill\n", encoding="utf-8")
+
+    capture_a = brain_home / "capture" / "inbox" / "a.md"  # gets a proposal
+    capture_b = brain_home / "capture" / "inbox" / "b.md"  # explicitly skipped
+    capture_c = brain_home / "capture" / "inbox" / "c.md"  # unaccounted-for
+    capture_a.write_text("# Capture A\n\nFact A.\n", encoding="utf-8")
+    capture_b.write_text("# Capture B\n\nNo durable knowledge.\n", encoding="utf-8")
+    capture_c.write_text("# Capture C\n\nFact C.\n", encoding="utf-8")
+
+    proposal = ArticleWriteProposal(
+        vault="test",
+        relative_path="facts/a.md",
+        operation="create",
+        title="Fact A",
+        summary="Only A was compiled.",
+        sources=[str(capture_a)],
+        body="Fact A body.",
+    )
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills")
+
+    agent = SequenceCompileAgent(
+        [CompileAgentOutput(proposals=[proposal], skipped=[f"{capture_b}: no durable knowledge"])]
+    )
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
+    first = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
+
+    assert first.errors == []
+    assert len(first.applied) == 1
+    assert not capture_a.exists(), "accounted-for (proposal) capture is archived"
+    assert not capture_b.exists(), "explicitly-skipped capture is archived (terminal state)"
+    # The unaccounted capture must remain in the inbox — pending, not lost.
+    assert capture_c.exists(), "unaccounted capture must stay pending in inbox"
+
+    # Re-running still considers the unaccounted capture.
     second_agent = SequenceCompileAgent([CompileAgentOutput()])
     monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: second_agent)
     second = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=True)))
-    assert second.captures_considered == 0, "Backlog must be fully drained after first apply run"
+    assert second.captures_considered == 1, "only the unaccounted capture remains pending"
+
+
+def test_compile_apply_ac2_quarantine_after_n_runs_logs_loudly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC2 (#150): a capture unaccounted-for N consecutive runs lands in
+    capture/quarantine/ (present there, absent from capture/inbox AND from
+    capture/inbox/archive), a loud log line is written to the global log, and a
+    subsequent run no longer sees it pending.
+    """
+    brain_home = tmp_path / "brain"
+    vault_path = tmp_path / "vault"
+    capture_path = brain_home / "capture" / "inbox" / "dropped.md"
+    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
+
+    capture_path.parent.mkdir(parents=True)
+    capture_path.write_text("# Capture\n\nUseful fact the agent keeps dropping.\n", encoding="utf-8")
+    (vault_path / ".brain").mkdir(parents=True)
+    (vault_path / "knowledge").mkdir()
+    (vault_path / ".brain" / "manifest.yaml").write_text("paths:\n  knowledge: knowledge\nexclude: []\n", encoding="utf-8")
+    brain_home.mkdir(exist_ok=True)
+    (brain_home / "registry.yaml").write_text(f"vaults:\n  test:\n    path: {vault_path}\n", encoding="utf-8")
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Compile Skill\n", encoding="utf-8")
+
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills")
+
+    # N runs in which the agent keeps ignoring the capture entirely.
+    for attempt in range(compile_workflow.COMPILE_MAX_CAPTURE_ATTEMPTS):
+        agent = SequenceCompileAgent([CompileAgentOutput()])
+        monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
+        run = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
+        assert run.errors == []
+        if attempt < compile_workflow.COMPILE_MAX_CAPTURE_ATTEMPTS - 1:
+            assert capture_path.exists(), "capture stays pending until the attempt cap is reached"
+
+    # Quarantined: gone from inbox, NOT in inbox/archive, present in quarantine.
+    assert not capture_path.exists(), "capture must be removed from inbox after N attempts"
+    assert not (brain_home / "capture" / "inbox" / "archive").exists(), "quarantine must not use inbox/archive"
+    quarantine_root = brain_home / "capture" / "quarantine"
+    quarantined = list(quarantine_root.glob("**/dropped.md"))
+    assert quarantined, "capture must be moved into capture/quarantine"
+
+    # Loud log line naming the capture and the quarantine action.
+    log_text = (brain_home / "log.md").read_text(encoding="utf-8")
+    assert "quarantine" in log_text.lower(), "a loud quarantine log line must be written"
+    assert "dropped.md" in log_text, "the quarantine log must name the capture"
+
+    # Next run no longer sees it pending.
+    final_agent = SequenceCompileAgent([CompileAgentOutput()])
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: final_agent)
+    final = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=True)))
+    assert final.captures_considered == 0, "quarantined capture is no longer pending"
+
+
+def test_compile_apply_quarantines_uncovered_daily_capture_after_n_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix 1 (#150 regression): quarantine must cover ALL capture sources.
+
+    A capture under ``capture/daily/`` (not inbox) that the agent keeps ignoring
+    must, after COMPILE_MAX_CAPTURE_ATTEMPTS runs, be moved to capture/quarantine
+    and then NO LONGER be rediscovered. The earlier inbox-only quarantine silently
+    skipped daily/sessions captures, so they were never quarantined nor processed
+    and the backlog grew forever (#135 broken). This proves it drains.
+    """
+    brain_home = tmp_path / "brain"
+    vault_path = tmp_path / "vault"
+    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
+
+    (brain_home / "capture" / "daily").mkdir(parents=True)
+    (vault_path / ".brain").mkdir(parents=True)
+    (vault_path / "knowledge").mkdir()
+    (vault_path / ".brain" / "manifest.yaml").write_text("paths:\n  knowledge: knowledge\nexclude: []\n", encoding="utf-8")
+    brain_home.mkdir(exist_ok=True)
+    (brain_home / "registry.yaml").write_text(f"vaults:\n  test:\n    path: {vault_path}\n", encoding="utf-8")
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Compile Skill\n", encoding="utf-8")
+
+    # A daily capture discovered by list_all_captures but never accounted for.
+    daily_capture = brain_home / "capture" / "daily" / "2026-06-18.md"
+    daily_capture.write_text("# Daily\n\nA fact the agent keeps dropping.\n", encoding="utf-8")
+
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills")
+
+    for attempt in range(compile_workflow.COMPILE_MAX_CAPTURE_ATTEMPTS):
+        agent = SequenceCompileAgent([CompileAgentOutput()])
+        monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
+        run = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
+        assert run.errors == []
+        if attempt < compile_workflow.COMPILE_MAX_CAPTURE_ATTEMPTS - 1:
+            assert daily_capture.exists(), "daily capture stays pending until the attempt cap is reached"
+
+    # Quarantined from the non-inbox source: gone from daily/, present in quarantine.
+    assert not daily_capture.exists(), "daily capture must be quarantined after N attempts"
+    quarantine_root = brain_home / "capture" / "quarantine"
+    quarantined = list(quarantine_root.glob("**/2026-06-18.md"))
+    assert quarantined, "an unaccounted daily capture must land in capture/quarantine"
+
+    # Backlog drains: a fresh run no longer rediscovers the daily capture.
+    drained_agent = SequenceCompileAgent([CompileAgentOutput()])
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: drained_agent)
+    drained = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=True)))
+    assert drained.captures_considered == 0, "quarantined daily capture must no longer be rediscovered"
+
+
+def test_compile_apply_quarantines_uncovered_sessions_capture_after_n_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix 1 (#150 regression): quarantine must cover the sessions source too.
+
+    Mirrors the daily test for ``capture/sessions/``: an unaccounted sessions
+    capture must, after COMPILE_MAX_CAPTURE_ATTEMPTS runs, be moved to
+    capture/quarantine and then NO LONGER be rediscovered. Proves the all-sources
+    fix holds for sessions, not just inbox/daily.
+    """
+    brain_home = tmp_path / "brain"
+    vault_path = tmp_path / "vault"
+    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
+
+    (brain_home / "capture" / "sessions").mkdir(parents=True)
+    (vault_path / ".brain").mkdir(parents=True)
+    (vault_path / "knowledge").mkdir()
+    (vault_path / ".brain" / "manifest.yaml").write_text("paths:\n  knowledge: knowledge\nexclude: []\n", encoding="utf-8")
+    brain_home.mkdir(exist_ok=True)
+    (brain_home / "registry.yaml").write_text(f"vaults:\n  test:\n    path: {vault_path}\n", encoding="utf-8")
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Compile Skill\n", encoding="utf-8")
+
+    # A sessions capture discovered by list_all_captures but never accounted for.
+    sessions_capture = brain_home / "capture" / "sessions" / "session-001.md"
+    sessions_capture.write_text("# Session\n\nA fact the agent keeps dropping.\n", encoding="utf-8")
+
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills")
+
+    for attempt in range(compile_workflow.COMPILE_MAX_CAPTURE_ATTEMPTS):
+        agent = SequenceCompileAgent([CompileAgentOutput()])
+        monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
+        run = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
+        assert run.errors == []
+        if attempt < compile_workflow.COMPILE_MAX_CAPTURE_ATTEMPTS - 1:
+            assert sessions_capture.exists(), "sessions capture stays pending until the attempt cap is reached"
+
+    # Quarantined from the sessions source: gone from sessions/, present in quarantine.
+    assert not sessions_capture.exists(), "sessions capture must be quarantined after N attempts"
+    quarantine_root = brain_home / "capture" / "quarantine"
+    quarantined = list(quarantine_root.glob("**/session-001.md"))
+    assert quarantined, "an unaccounted sessions capture must land in capture/quarantine"
+
+    # Backlog drains: a fresh run no longer rediscovers the sessions capture.
+    drained_agent = SequenceCompileAgent([CompileAgentOutput()])
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: drained_agent)
+    drained = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=True)))
+    assert drained.captures_considered == 0, "quarantined sessions capture must no longer be rediscovered"
+
+
+def test_compile_absolute_ceiling_quarantines_content_mutating_capture(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix A (#135/#150): the absolute lifetime ceiling fires.
+
+    A capture whose CONTENT CHANGES every run keeps resetting the hash-bound
+    ``count`` to 1, so it would never hit COMPILE_MAX_CAPTURE_ATTEMPTS and would
+    be rediscovered forever — reopening the "backlog cannot grow forever" (#135)
+    guarantee. The lifetime ``total`` counter (never reset on content change)
+    must eventually quarantine it once total reaches
+    COMPILE_MAX_CAPTURE_ATTEMPTS_ABSOLUTE.
+    """
+    brain_home = tmp_path / "brain"
+    vault_path = tmp_path / "vault"
+    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
+
+    (brain_home / "capture" / "inbox").mkdir(parents=True)
+    (vault_path / ".brain").mkdir(parents=True)
+    (vault_path / "knowledge").mkdir()
+    (vault_path / ".brain" / "manifest.yaml").write_text("paths:\n  knowledge: knowledge\nexclude: []\n", encoding="utf-8")
+    brain_home.mkdir(exist_ok=True)
+    (brain_home / "registry.yaml").write_text(f"vaults:\n  test:\n    path: {vault_path}\n", encoding="utf-8")
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Compile Skill\n", encoding="utf-8")
+
+    capture_path = brain_home / "capture" / "inbox" / "mutating.md"
+
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills")
+
+    absolute = compile_workflow.COMPILE_MAX_CAPTURE_ATTEMPTS_ABSOLUTE
+    # Run ABSOLUTE times; rewrite the capture's content BEFORE each run so the
+    # hash differs every time and ``count`` resets to 1 every run (never reaching
+    # COMPILE_MAX_CAPTURE_ATTEMPTS). Only ``total`` accumulates.
+    for run_index in range(absolute):
+        capture_path.write_text(f"# Capture\n\nMutating content revision {run_index}.\n", encoding="utf-8")
+        assert capture_path.exists(), "content-mutating capture must NOT be quarantined before the absolute ceiling"
+        agent = SequenceCompileAgent([CompileAgentOutput()])
+        monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
+        run = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
+        assert run.errors == []
+
+    # After total reaches the absolute ceiling the capture is quarantined despite
+    # the content changing (so count never reached the per-content cap).
+    assert not capture_path.exists(), "content-mutating capture must be quarantined once total hits the absolute ceiling"
+    quarantine_root = brain_home / "capture" / "quarantine"
+    assert list(quarantine_root.glob("**/mutating.md")), "capture must land in capture/quarantine via the absolute ceiling"
+
+    # Backlog drains.
+    drained_agent = SequenceCompileAgent([CompileAgentOutput()])
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: drained_agent)
+    drained = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=True)))
+    assert drained.captures_considered == 0, "quarantined content-mutating capture must no longer be rediscovered"
+
+
+def test_compile_quarantine_collision_keeps_both_same_basename_captures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#150: two unaccounted captures with the SAME basename from different
+    sources, quarantined the same day, must both survive as distinct files under
+    capture/quarantine/<date>/ (e.g. ``x.md`` and ``x-1.md``) — neither lost to a
+    name collision.
+    """
+    brain_home = tmp_path / "brain"
+    vault_path = tmp_path / "vault"
+    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
+
+    (brain_home / "capture" / "inbox").mkdir(parents=True)
+    (brain_home / "capture" / "daily").mkdir(parents=True)
+    (vault_path / ".brain").mkdir(parents=True)
+    (vault_path / "knowledge").mkdir()
+    (vault_path / ".brain" / "manifest.yaml").write_text("paths:\n  knowledge: knowledge\nexclude: []\n", encoding="utf-8")
+    brain_home.mkdir(exist_ok=True)
+    (brain_home / "registry.yaml").write_text(f"vaults:\n  test:\n    path: {vault_path}\n", encoding="utf-8")
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Compile Skill\n", encoding="utf-8")
+
+    # Same basename, different sources, distinct content.
+    inbox_x = brain_home / "capture" / "inbox" / "x.md"
+    daily_x = brain_home / "capture" / "daily" / "x.md"
+    inbox_x.write_text("# Inbox X\n\nInbox fact the agent drops.\n", encoding="utf-8")
+    daily_x.write_text("# Daily X\n\nDaily fact the agent drops.\n", encoding="utf-8")
+
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills")
+
+    for _ in range(compile_workflow.COMPILE_MAX_CAPTURE_ATTEMPTS):
+        agent = SequenceCompileAgent([CompileAgentOutput()])
+        monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
+        run = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
+        assert run.errors == []
+
+    assert not inbox_x.exists() and not daily_x.exists(), "both same-basename captures must be quarantined"
+    quarantine_root = brain_home / "capture" / "quarantine"
+    quarantined = sorted(p.name for p in quarantine_root.glob("**/*.md"))
+    # Two distinct files under the same date dir: x.md and x-1.md — neither lost.
+    assert quarantined == ["x-1.md", "x.md"], f"collision must keep both files, got {quarantined}"
+
+
+def test_compile_attempt_budget_resets_when_capture_content_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fix 2 (#150): the attempt counter is bound to the capture's content hash.
+
+    A capture that fails once, then has its CONTENT CHANGED by the user, gets a
+    FRESH retry budget — it must NOT be quarantined on the next failure as if it
+    already had a prior attempt. Without hash-binding the stale count would carry
+    over and quarantine the edited capture prematurely.
+    """
+    brain_home = tmp_path / "brain"
+    vault_path = tmp_path / "vault"
+    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
+
+    (brain_home / "capture" / "inbox").mkdir(parents=True)
+    (vault_path / ".brain").mkdir(parents=True)
+    (vault_path / "knowledge").mkdir()
+    (vault_path / ".brain" / "manifest.yaml").write_text("paths:\n  knowledge: knowledge\nexclude: []\n", encoding="utf-8")
+    brain_home.mkdir(exist_ok=True)
+    (brain_home / "registry.yaml").write_text(f"vaults:\n  test:\n    path: {vault_path}\n", encoding="utf-8")
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Compile Skill\n", encoding="utf-8")
+
+    capture_path = brain_home / "capture" / "inbox" / "edited.md"
+    capture_path.write_text("# Capture\n\nOriginal content.\n", encoding="utf-8")
+
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills")
+
+    # Accumulate (N - 1) failed attempts against the ORIGINAL content, so one
+    # more failure on the same content would quarantine it.
+    for _ in range(compile_workflow.COMPILE_MAX_CAPTURE_ATTEMPTS - 1):
+        agent = SequenceCompileAgent([CompileAgentOutput()])
+        monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
+        run = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
+        assert run.errors == []
+        assert capture_path.exists()
+
+    # The user edits the capture: new content => fresh retry budget.
+    capture_path.write_text("# Capture\n\nCorrected content the user fixed.\n", encoding="utf-8")
+
+    # One more failed run. With the budget reset to 1, this must NOT quarantine.
+    agent = SequenceCompileAgent([CompileAgentOutput()])
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
+    run = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
+    assert run.errors == []
+    assert capture_path.exists(), "edited capture must NOT be quarantined on a single fresh-content failure"
+    quarantine_root = brain_home / "capture" / "quarantine"
+    assert not list(quarantine_root.glob("**/edited.md")), "edited capture must not be quarantined prematurely"
 
 
 def test_compile_apply_marks_successful_captures_processed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
