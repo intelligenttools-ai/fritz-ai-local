@@ -1874,12 +1874,15 @@ def test_compile_capture_prompt_wording_non_store_mode() -> None:
     reason="real-model smoke test; set LOCAL_BRAIN_SMOKE_LLM=1 and configure a live LLM endpoint to run",
 )
 def test_compile_capture_prompt_real_model_produces_proposals(tmp_path: Path) -> None:
-    """Real-model smoke guard (AC2 intent from #158).
+    """Real-model smoke guard (AC2 intent from #158, updated for #160).
 
     Unit-test mocks cannot detect a prompt that causes the model to return zero
     proposals — that is the root cause of #158.  This test exercises the actual
     ``build_compile_agent`` → ``agent.run`` path with a substantive capture and
     asserts that at least one proposal is returned.
+
+    The agent is built with COMPILE_POLICY (the in-service policy), matching the
+    instructions now used by the service (#160 fix).
 
     Skipped in normal CI runs (no live LLM).  Run manually against a configured
     endpoint to verify the restored prompt wording on the real model:
@@ -1890,7 +1893,7 @@ def test_compile_capture_prompt_real_model_produces_proposals(tmp_path: Path) ->
     This is the guard the mocked unit tests cannot provide.
     """
     from fritz_local_brain.agents.compile_agent import CompileDeps, build_compile_agent
-    from fritz_local_brain.models import CompileRunRequest
+    from fritz_local_brain.prompts import COMPILE_POLICY
 
     brain_home = tmp_path / "brain"
     skills_dir = tmp_path / "skills"
@@ -1916,8 +1919,7 @@ def test_compile_capture_prompt_real_model_produces_proposals(tmp_path: Path) ->
         capture_max_chars=settings.capture_max_chars,
     )
 
-    skill_text = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
-    agent = build_compile_agent(settings, skill_text)
+    agent = build_compile_agent(settings, COMPILE_POLICY)
 
     from pydantic_ai.usage import UsageLimits
     from fritz_local_brain.llm import AGENT_REQUEST_LIMIT
@@ -1929,3 +1931,87 @@ def test_compile_capture_prompt_real_model_produces_proposals(tmp_path: Path) ->
         "real model must return at least one proposal for a substantive capture; "
         "zero proposals → prompt regression"
     )
+
+
+# ---------------------------------------------------------------------------
+# #160 — compile agent policy: in-service agent must NOT receive host runbook
+# ---------------------------------------------------------------------------
+
+
+def test_compile_policy_does_not_contain_host_orchestration_markers() -> None:
+    """AC5a (#160): COMPILE_POLICY must not carry host-orchestration instructions.
+
+    The in-service compile agent is only responsible for grounding (calling
+    load_compile_context) and producing proposals.  Host steps — service gate,
+    finding captures, updating indexes, logging — are done by the Python harness
+    and must NOT appear in the agent's instructions.
+    """
+    from fritz_local_brain.prompts import COMPILE_POLICY
+
+    forbidden = [
+        "Service-first gate",
+        "Find unprocessed captures",
+        "Update indexes",
+        "### 7. Log",
+    ]
+    for marker in forbidden:
+        assert marker not in COMPILE_POLICY, (
+            f"COMPILE_POLICY must not contain host-orchestration marker {marker!r}"
+        )
+
+
+def test_run_compile_builds_agent_with_compile_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """AC5b (#160): run_compile must pass COMPILE_POLICY (not the SKILL.md text)
+    to build_compile_agent.
+
+    Monkeypatches build_compile_agent to capture the skill_text argument and
+    asserts it equals COMPILE_POLICY and does not contain host-orchestration markers.
+    """
+    from fritz_local_brain.prompts import COMPILE_POLICY
+
+    brain_home = tmp_path / "brain"
+    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
+    capture_path = brain_home / "capture" / "inbox" / "fact.md"
+
+    capture_path.parent.mkdir(parents=True)
+    capture_path.write_text("# Capture\n\nDurable fact.\n", encoding="utf-8")
+    brain_home.mkdir(exist_ok=True)
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Full host SKILL.md with Service-first gate\n", encoding="utf-8")
+
+    received_skill_texts: list[str] = []
+    proposal = ArticleWriteProposal(
+        vault="brain",
+        relative_path="common/decisions/fact.md",
+        operation="create",
+        title="Fact",
+        summary="s",
+        sources=[str(capture_path)],
+        body="body",
+    )
+
+    def capturing_build(settings: object, skill_text: str) -> object:
+        received_skill_texts.append(skill_text)
+        return FakeCompileAgent(proposal)
+
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", capturing_build)
+
+    asyncio.run(
+        compile_workflow.run_compile(
+            Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills"),
+            CompileRunRequest(dry_run=True, max_captures=1),
+        )
+    )
+
+    assert received_skill_texts, "build_compile_agent must have been called"
+    for skill_text in received_skill_texts:
+        assert skill_text == COMPILE_POLICY, (
+            "run_compile must pass COMPILE_POLICY to build_compile_agent, "
+            f"not the SKILL.md text; got: {skill_text[:120]!r}"
+        )
+        for marker in ("Service-first gate", "Find unprocessed captures", "Update indexes", "### 7. Log"):
+            assert marker not in skill_text, (
+                f"skill_text passed to build_compile_agent must not contain {marker!r}"
+            )

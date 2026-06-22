@@ -38,8 +38,9 @@ live-fetch at query time) or `full-summary` (agent summarizes into a capture).
 | `RERECONCILIATION_DRY_RUN` | `true` | Dry-run for the re-reconciliation sweep |
 | `MERGE_POLICY` | `brain-first` | How brain and live-fetched results are merged |
 
-Compile loads `skills/brain-compile/SKILL.md` as agent task instructions and
-wraps all captures as untrusted data; it cannot write directly. The compile
+Compile uses a built-in compile policy (`COMPILE_POLICY`) for routing and article
+quality — it does not load the host-facing `skills/brain-compile/SKILL.md`.
+Captures are wrapped as untrusted data; the agent cannot write directly. The compile
 agent uses one bounded read-only context tool. Sync loads `skills/brain-sync/SKILL.md`
 as policy context but execution is deterministic and limited to `none`, `local`,
 and guarded `git` targets.

@@ -52,7 +52,6 @@ class Settings(BaseSettings):
     approval_token: str | None = Field(default=None, validation_alias=AliasChoices("LOCAL_BRAIN_APPROVAL_TOKEN", "APPROVAL_TOKEN"))
     large_batch_threshold: int = Field(default=10, ge=1, validation_alias=AliasChoices("LOCAL_BRAIN_LARGE_BATCH_THRESHOLD", "LARGE_BATCH_THRESHOLD"))
 
-    compile_skill_name: str = Field(default="brain-compile", validation_alias=AliasChoices("LOCAL_BRAIN_COMPILE_SKILL_NAME", "COMPILE_SKILL_NAME"))
     sync_skill_name: str = Field(default="brain-sync", validation_alias=AliasChoices("LOCAL_BRAIN_SYNC_SKILL_NAME", "SYNC_SKILL_NAME"))
     query_skill_name: str = Field(default="brain-query", validation_alias=AliasChoices("LOCAL_BRAIN_QUERY_SKILL_NAME", "QUERY_SKILL_NAME"))
     lint_skill_name: str = Field(default="brain-lint", validation_alias=AliasChoices("LOCAL_BRAIN_LINT_SKILL_NAME", "LINT_SKILL_NAME"))

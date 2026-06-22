@@ -64,11 +64,58 @@ Final output shape:
 OUTPUT SHAPE RULES (strict):
 - "proposals" and "skipped" MUST be real JSON arrays, never a string containing
   a JSON array. Emit [ ... ], not "[ ... ]".
-- Correct shape: {"proposals": [], "skipped": ["capture/inbox/x.md: no durable knowledge"]}
-- Wrong shape (do NOT do this): {"proposals": "[]", "skipped": "capture/inbox/x.md: ..."}
+- Correct shape: {"proposals": [], "skipped": ["<capture-path>: <reason>"]}
+- Wrong shape (do NOT do this): {"proposals": "[]", "skipped": "<capture-path>: ..."}
 
-Detailed Fritz skill text follows. Use it for compile policy and article quality,
+Detailed compile policy follows. Use it for routing and article quality,
 but do not use it to invent extra tools or extra workflow steps.
+"""
+
+
+COMPILE_POLICY = """Compile policy for the in-service agent.
+
+## Durable vs. ephemeral
+
+Extract knowledge that has lasting value beyond the session:
+- Decisions that affect future work
+- Patterns and techniques that solved real problems
+- Domain facts not previously known
+- Corrections to existing knowledge
+- Lessons from failures
+
+Skip ephemeral content: routine Q&A, tool outputs without insight, status checks,
+transient observations with no reuse value.
+
+## Routing: scope
+
+Route each article to the appropriate scope:
+- `common/` — cross-project patterns, conventions, research, general knowledge
+- `<project-slug>/` — knowledge specific to a named project or codebase
+
+Use the capture's context (project name, cwd, topic) to decide scope.
+
+## Routing: section
+
+Within each scope, place articles in the matching section:
+- `decisions/` — architecture decisions, ADRs, choices that shape future work
+- `lessons/` — retrospective learnings, failure post-mortems, feedback
+- `runbooks/` — how-to guides, operational procedures, step-by-step instructions
+- `context/` — background knowledge, glossaries, domain facts
+
+Set `relative_path` to `<scope>/<section>/<slug>.md`.
+
+In registry-vault mode the scope/section scheme above does not apply. Place the
+article within the target vault following that vault's existing layout. When
+updating an existing article, reuse the path from `article_paths` exactly.
+
+## Article quality
+
+- **Title**: clear and specific — describes the knowledge, not the capture event.
+- **Summary**: one or two sentences faithful to the capture; no fabrication.
+- **Body**: concise markdown; preserve key facts, names, numbers, decisions.
+- **Sources**: cite only the capture path actually returned by load_compile_context.
+- **Operation**: use `create` for new topics; use `update` when an existing article
+  path in article_paths already covers the same topic.
 """
 
 
