@@ -31,9 +31,9 @@ from .logs import append_global_log, append_reconciliation_undo
 from .manifests import load_manifest, resolve_manifest_path
 from .models import AppliedArticleWrite, ArticleWriteProposal, CompileRunRequest, CompileRunResult, ReconciliationOutcome
 from .paths import PathMapper
+from .prompts import COMPILE_POLICY
 from .registry import RegistryError, load_registry, registered_vault_paths
 from .security import PolicyError, validate_article_write, validate_store_article_write
-from .skill_loader import load_skill
 
 
 def _compile_capture_prompt(store_mode: bool, vault_names: list[str]) -> str:
@@ -285,7 +285,6 @@ async def run_compile(settings: Settings, request: CompileRunRequest) -> Compile
     capture_paths = capture_discovery.paths
     capture_hashes = {path.resolve(): capture_hash(path) for path in capture_paths}
     allowed_sources = {path.resolve() for path in capture_paths}
-    skill_text = load_skill(settings.skills_dir, settings.compile_skill_name)
     all_proposals: list[ArticleWriteProposal] = []
     all_skipped: list[str] = []
     nonfatal_warnings: list[str] = []
@@ -375,7 +374,7 @@ async def run_compile(settings: Settings, request: CompileRunRequest) -> Compile
         else:
             related = []
 
-        agent = build_compile_agent(settings, skill_text)
+        agent = build_compile_agent(settings, COMPILE_POLICY)
         deps = CompileDeps(
             capture_paths=[capture_path],
             vault_names=vault_names,
