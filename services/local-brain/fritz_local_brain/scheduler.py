@@ -26,6 +26,7 @@ async def scheduler_loop(settings: Settings) -> None:
                     result = await run_compile(
                         settings,
                         CompileRunRequest(dry_run=settings.scheduler_dry_run, max_captures=settings.compile_max_captures),
+                        trusted=True,
                     )
                     record_compile(result)
                     schedule_embedding_refresh_after_compile_result(settings, result, reason="scheduler compile")
