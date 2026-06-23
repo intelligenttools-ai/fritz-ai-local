@@ -458,6 +458,88 @@ def test_compile_capture_count_approval_gate_blocks_run_without_token(
     assert approved.errors == []
 
 
+def test_compile_trusted_flag_bypasses_large_batch_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The autonomous scheduler passes ``trusted=True`` to ``run_compile``, which
+    bypasses the human large-batch approval gate it would otherwise deadlock on for
+    any backlog larger than ``large_batch_threshold``. ``trusted`` is a run_compile
+    PARAMETER, not a field on ``CompileRunRequest``, so HTTP/MCP callers cannot set it.
+    """
+    brain_home, skills_dir = _manifest_vault(tmp_path)
+    captures = []
+    for index in range(3):  # threshold = 2 below → 3 > 2 would normally block
+        capture = brain_home / "capture" / "inbox" / f"cap-{index}.md"
+        capture.write_text(f"# Cap {index}\n\nFact {index}.\n", encoding="utf-8")
+        os.utime(capture, (100 + index, 100 + index))
+        captures.append(capture)
+
+    agent = SequenceCompileAgent(
+        [
+            CompileAgentOutput(
+                proposals=[
+                    ArticleWriteProposal(
+                        vault="test", relative_path=f"facts/cap-{i}.md", operation="create",
+                        title=f"F{i}", summary="s", sources=[str(captures[i])], body="b",
+                    )
+                ]
+            )
+            for i in range(3)
+        ]
+    )
+    settings = Settings(
+        LOCAL_BRAIN_HOME=brain_home,
+        LOCAL_BRAIN_SKILLS_DIR=skills_dir,
+        LOCAL_BRAIN_LARGE_BATCH_THRESHOLD=2,
+        APPROVAL_TOKEN="sekret",
+    )
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
+    # trusted=True, NO approval token, captures (3) > threshold (2): must NOT block.
+    result = asyncio.run(
+        compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False), trusted=True)
+    )
+    assert len(result.applied) == 3
+    assert not any("requires approval" in err for err in result.errors)
+
+
+def test_trusted_is_not_a_request_model_field() -> None:
+    """``trusted`` must NOT be a field on the wire request model, so an external HTTP
+    or MCP caller cannot send {"trusted": true} to bypass the approval gate."""
+    assert "trusted" not in CompileRunRequest.model_fields
+
+
+def test_scheduler_runs_compile_with_trusted_true(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``scheduler_loop`` must call ``run_compile`` with ``trusted=True`` so the
+    autonomous apply-mode drainer is exempt from the human large-batch approval gate."""
+    from fritz_local_brain import scheduler
+
+    captured: dict = {}
+
+    async def fake_run_compile(settings, request, trusted=False):
+        captured["trusted"] = trusted
+        settings.scheduler_enabled = False  # break the loop after one iteration
+        return None
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(scheduler, "run_compile", fake_run_compile)
+    monkeypatch.setattr(scheduler.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr(scheduler, "record_compile", lambda result: None)
+    monkeypatch.setattr(scheduler, "schedule_embedding_refresh_after_compile_result", lambda *a, **k: None)
+
+    settings = Settings(
+        LOCAL_BRAIN_HOME=tmp_path,
+        LOCAL_BRAIN_SKILLS_DIR=tmp_path,
+        SCHEDULER_ENABLED=True,
+        SCHEDULER_DRY_RUN=False,
+    )
+    asyncio.run(scheduler.scheduler_loop(settings))
+    assert captured.get("trusted") is True
+
+
 def test_compile_apply_keeps_unrepresented_capture_pending(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Captures the agent ignores (no proposal AND no explicit skip) stay PENDING.
 
