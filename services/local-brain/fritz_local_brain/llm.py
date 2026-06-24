@@ -56,6 +56,7 @@ def build_model(settings: Settings):
             base_url=settings.normalized_llm_base_url(),
             api_key=settings.normalized_api_key() or "local-brain-no-key",
             timeout=settings.llm_timeout_seconds,
+            max_retries=settings.llm_max_retries,
         )
         provider = OpenAIProvider(openai_client=client)
         return OpenAIChatModel(settings.llm_model, provider=provider)
@@ -65,6 +66,7 @@ def build_model(settings: Settings):
             base_url=settings.normalized_llm_base_url(),
             api_key=settings.normalized_api_key() or "local-brain-no-key",
             timeout=settings.llm_timeout_seconds,
+            max_retries=settings.llm_max_retries,
         )
         provider = AnthropicProvider(anthropic_client=client)
         return AnthropicModel(settings.llm_model, provider=provider)

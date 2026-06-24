@@ -36,6 +36,12 @@ class Settings(BaseSettings):
     llm_model: str = Field(default="local-instruct-model", validation_alias=AliasChoices("LOCAL_BRAIN_LLM_MODEL", "LLM_MODEL"))
     llm_api_key: str | None = Field(default=None, validation_alias=AliasChoices("LOCAL_BRAIN_LLM_API_KEY", "LLM_API_KEY"))
     llm_timeout_seconds: float = Field(default=120.0, validation_alias=AliasChoices("LOCAL_BRAIN_LLM_TIMEOUT_SECONDS", "LLM_TIMEOUT_SECONDS"))
+    # HTTP-client retry budget for transient LLM connection drops (e.g. a brief
+    # container->LAN-LLM link blip). The OpenAI/Anthropic SDKs apply exponential
+    # backoff with jitter on connection/timeout/5xx/429 errors, absorbing brief
+    # outages instead of failing the whole compile. Separate from the pydantic-ai
+    # AGENT_REQUEST_LIMIT, so it does not consume the agent request budget.
+    llm_max_retries: int = Field(default=6, ge=0, validation_alias=AliasChoices("LOCAL_BRAIN_LLM_MAX_RETRIES", "LLM_MAX_RETRIES"))
 
     embedding_enabled: bool = Field(default=False, validation_alias=AliasChoices("LOCAL_BRAIN_EMBEDDING_ENABLED", "EMBEDDING_ENABLED"))
     embedding_protocol: str = Field(default="openai-compatible", validation_alias=AliasChoices("LOCAL_BRAIN_EMBEDDING_PROTOCOL", "EMBEDDING_PROTOCOL"))
