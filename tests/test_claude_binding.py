@@ -395,3 +395,408 @@ def test_install_agent_claude_installs_colon_skills(tmp_path, monkeypatch):
     assert (skills / "fritz:brain-query" / "SKILL.md").exists()
     assert (skills / "fritz:brain-save" / "SKILL.md").exists()
     assert not (skills / "fritz-brain-query").exists()
+
+
+# --- #167 Fix A1: yaml-interpreter bootstrap ---------------------------------
+
+
+def _load_bootstrap():
+    spec = importlib.util.spec_from_file_location(
+        "_brain_bootstrap_167", HOOKS / "brain_bootstrap.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_a1_ensure_yaml_interpreter_noop_when_yaml_present():
+    """A1 — ensure_yaml_interpreter is a no-op (no re-exec) when yaml imports.
+
+    The test interpreter has yaml installed, so the call must return without
+    re-execing the process (os.execv would otherwise replace this process).
+    """
+    boot = _load_bootstrap()
+    # Returns normally (no exception, no process replacement).
+    assert boot.ensure_yaml_interpreter() is None
+
+
+def test_a1_resolve_yaml_interpreter_finds_capable_interpreter():
+    """A1 — the candidate resolver returns a yaml-capable interpreter.
+
+    Given a candidate list that includes the current sys.executable (which has
+    yaml), the resolver must return it.
+    """
+    boot = _load_bootstrap()
+    bogus = "/nonexistent/python3"
+    resolved = boot.resolve_yaml_interpreter([bogus, sys.executable])
+    assert resolved == sys.executable
+
+
+def test_a1_resolve_yaml_interpreter_returns_none_without_candidates():
+    """A1 — resolver returns None when no candidate is a real yaml interpreter."""
+    boot = _load_bootstrap()
+    assert boot.resolve_yaml_interpreter(["/nonexistent/python3"]) is None
+
+
+@pytest.mark.parametrize(
+    "script_name",
+    [
+        "brain_session_start.py",
+        "brain_prompt_check.py",
+        "brain_capture.py",
+        "brain_autocapture_hook.py",
+    ],
+)
+def test_a1_hook_calls_bootstrap_before_brain_common(script_name):
+    """A1 — each Claude hook entry script calls ensure_yaml_interpreter() before
+    importing the yaml-dependent module (brain_common / brain_autocapture).
+
+    If brain_common were imported first under a yaml-less python3, it would die
+    on ``import yaml`` before the bootstrap could re-exec — so import order is
+    load-bearing and asserted at the source level.
+    """
+    src = (HOOKS / script_name).read_text(encoding="utf-8")
+    call_idx = src.index("ensure_yaml_interpreter()")
+    # The first dependency import after sys.path setup.
+    if script_name == "brain_autocapture_hook.py":
+        dep_idx = src.index("from brain_autocapture import")
+    else:
+        dep_idx = src.index("from brain_common import")
+    assert call_idx < dep_idx, (
+        f"{script_name}: ensure_yaml_interpreter() must precede the yaml-dependent import"
+    )
+
+
+# --- #167 Fix A2: per-turn save policy parity with Pi ------------------------
+
+
+def test_a2_prompt_check_injects_save_policy(tmp_path):
+    """A2 — UserPromptSubmit injection now also carries a SAVE policy (Pi parity):
+    durable knowledge confirmed this turn must be SAVED via /fritz:brain-save,
+    not merely answered — in addition to the existing search-before-answer nudge.
+    """
+    brain = tmp_path / "home" / ".brain"
+    daily = brain / "capture" / "daily"
+    daily.mkdir(parents=True)
+    (daily / "2026-06-14.md").write_text("# Daily Log\n", encoding="utf-8")
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    script = PLUGIN / "hooks" / "brain_prompt_check.py"
+    payload = {
+        "cwd": str(proj),
+        "hook_event_name": "UserPromptSubmit",
+        "user_prompt": "how did we decide to do auth in this project?",
+    }
+    proc = _run_hook(script, payload, brain, proj)
+    assert proc.returncode == 0, proc.stderr
+    ctx = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+    # Existing search nudge still present.
+    assert "BRAIN CHECK" in ctx
+    # New save policy present.
+    assert "/fritz:brain-save" in ctx
+    assert "SAVE" in ctx
+
+
+# --- #167 Fix B: scheduler owns compile (no agent-side hand-compile) ----------
+
+
+def test_b_session_start_has_no_mandatory_compile_nudge():
+    """B — SessionStart no longer emits the MANDATORY background-compile spawn
+    nudge (the scheduler owns compile, #162/v1.3.54). The configuration decision
+    prompt path stays; the minimal-capture no-service fallback stays.
+    """
+    src = (HOOKS / "brain_session_start.py").read_text(encoding="utf-8")
+    assert "MANDATORY: Background brain compile needed" not in src
+    assert "spawn a **background subagent**" not in src
+    assert "autonomous maintenance task" not in src
+    # KEEP: the no-service minimal-capture fallback message.
+    assert "processing not active" in src
+    assert "run `/fritz:brain-compile` manually" in src
+
+
+def test_b_capture_does_not_auto_compile():
+    """B — brain_capture.py captures only; it never hand-compiles (Pi parity)."""
+    src = (HOOKS / "brain_capture.py").read_text(encoding="utf-8")
+    assert "auto_compile_after_capture" not in src
+
+
+def test_b_capture_still_writes_rollup_and_log_without_compile(tmp_path):
+    """B — capture still writes the daily rollup and a CAPTURE log line and
+    exits 0, with no compile step.
+    """
+    brain = tmp_path / "home" / ".brain"
+    brain.mkdir(parents=True)
+    (brain / "log.md").write_text("", encoding="utf-8")
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    transcript = proj / "session.jsonl"
+    _claude_transcript(
+        transcript,
+        [
+            {"type": "user", "message": {"role": "user", "content": "Let us design the authentication flow for the service."}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "We will use OAuth with short-lived tokens for the service auth."}]}},
+        ],
+    )
+    payload = {"cwd": str(proj), "hook_event_name": "Stop", "transcript_path": str(transcript)}
+    script = PLUGIN / "hooks" / "brain_capture.py"
+    proc = _run_hook(script, payload, brain, proj)
+    assert proc.returncode == 0, proc.stderr
+    daily = brain / "capture" / "daily"
+    assert daily.exists() and list(daily.glob("*.md")), "daily rollup must be written"
+    log = (brain / "log.md").read_text(encoding="utf-8")
+    assert "| CAPTURE |" in log
+
+
+# --- #167 Fix 2: re-exec unit tests for brain_bootstrap.py ------------------
+
+
+def test_a1_reexec_calls_execv_when_yaml_missing(monkeypatch):
+    """Fix 2 — ensure_yaml_interpreter re-execs under the yaml-capable interpreter
+    when yaml is not importable from the current interpreter.
+
+    Monkeypatches _has_yaml→False and resolve_yaml_interpreter→fake path.
+    Asserts os.execv is called with the fake python and argv preserved, and that
+    FRITZ_BRAIN_REEXEC is set in os.environ before the exec.
+    """
+    boot = _load_bootstrap()
+    fake_python = "/opt/fake/python3"
+    execv_calls = []
+
+    monkeypatch.setattr(boot, "_has_yaml", lambda: False)
+    monkeypatch.setattr(boot, "resolve_yaml_interpreter", lambda candidates: fake_python)
+    monkeypatch.delenv(boot._REEXEC_SENTINEL, raising=False)
+
+    def capture_execv(path, args):
+        execv_calls.append((path, list(args)))
+
+    monkeypatch.setattr(boot.os, "execv", capture_execv)
+    # Prevent same-interpreter guard from short-circuiting (fake != sys.executable).
+    monkeypatch.setattr(boot.os.path, "realpath", lambda p: p)
+
+    boot.ensure_yaml_interpreter()
+
+    assert len(execv_calls) == 1, "os.execv must be called exactly once"
+    assert execv_calls[0][0] == fake_python
+    assert execv_calls[0][1][0] == fake_python
+    assert execv_calls[0][1][1:] == sys.argv
+    assert os.environ.get(boot._REEXEC_SENTINEL) == "1"
+
+    # Cleanup sentinel so test isolation is preserved.
+    os.environ.pop(boot._REEXEC_SENTINEL, None)
+
+
+def test_a1_reexec_loop_guard_prevents_second_exec(monkeypatch):
+    """Fix 2 — if FRITZ_BRAIN_REEXEC is already set, ensure_yaml_interpreter must
+    NOT call os.execv again — it returns so the subsequent yaml import fails
+    loudly rather than looping infinitely.
+    """
+    boot = _load_bootstrap()
+    execv_calls = []
+
+    monkeypatch.setattr(boot, "_has_yaml", lambda: False)
+    monkeypatch.setattr(boot, "resolve_yaml_interpreter", lambda candidates: "/opt/fake/python3")
+    monkeypatch.setenv(boot._REEXEC_SENTINEL, "1")
+    monkeypatch.setattr(boot.os, "execv", lambda path, args: execv_calls.append((path, args)))
+
+    boot.ensure_yaml_interpreter()
+
+    assert execv_calls == [], "os.execv must NOT be called when FRITZ_BRAIN_REEXEC is already set"
+
+
+def test_a1_reexec_no_exec_when_no_capable_interpreter(monkeypatch):
+    """Fix 2 — when resolve_yaml_interpreter returns None (no yaml-capable
+    interpreter found), ensure_yaml_interpreter must return without calling
+    os.execv — the hook will subsequently fail loudly on import yaml.
+    """
+    boot = _load_bootstrap()
+    execv_calls = []
+
+    monkeypatch.setattr(boot, "_has_yaml", lambda: False)
+    monkeypatch.setattr(boot, "resolve_yaml_interpreter", lambda candidates: None)
+    monkeypatch.delenv(boot._REEXEC_SENTINEL, raising=False)
+    monkeypatch.setattr(boot.os, "execv", lambda path, args: execv_calls.append((path, args)))
+
+    boot.ensure_yaml_interpreter()
+
+    assert execv_calls == [], "os.execv must NOT be called when no capable interpreter is found"
+
+
+def test_a1_reexec_no_exec_when_same_interpreter(monkeypatch):
+    """Fix 2 — if the resolved interpreter is the same as sys.executable (after
+    realpath), ensure_yaml_interpreter must not re-exec to avoid an infinite loop
+    where the same yaml-less interpreter keeps re-execing itself.
+    """
+    boot = _load_bootstrap()
+    execv_calls = []
+
+    monkeypatch.setattr(boot, "_has_yaml", lambda: False)
+    # resolve returns the current interpreter (same realpath).
+    monkeypatch.setattr(boot, "resolve_yaml_interpreter", lambda candidates: sys.executable)
+    monkeypatch.delenv(boot._REEXEC_SENTINEL, raising=False)
+    monkeypatch.setattr(boot.os, "execv", lambda path, args: execv_calls.append((path, args)))
+
+    boot.ensure_yaml_interpreter()
+
+    assert execv_calls == [], "os.execv must NOT be called when resolved interpreter == sys.executable"
+
+
+# --- #167 Fix 3: additional save-policy injection tests ----------------------
+
+
+def test_a2_save_policy_on_substantive_non_query_prompt(tmp_path):
+    """Fix 3 — a SUBSTANTIVE prompt that does NOT match brain-query or
+    implementation signals must still inject the SAVE policy (Pi parity).
+    Previously such prompts produced no output; now they carry at least the
+    save nudge so every non-trivial turn reminds the agent to save durable facts.
+    """
+    brain = tmp_path / "home" / ".brain"
+    brain.mkdir(parents=True)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    script = PLUGIN / "hooks" / "brain_prompt_check.py"
+    # Substantive (>15 chars, no skip prefix) but no QUERY or IMPLEMENTATION signal.
+    payload = {
+        "cwd": str(proj),
+        "hook_event_name": "UserPromptSubmit",
+        "user_prompt": "The postgres password is in 1Password under prod-db",
+    }
+    proc = _run_hook(script, payload, brain, proj)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip(), "must produce output for a substantive non-query prompt"
+    out = json.loads(proc.stdout)
+    ctx = out["hookSpecificOutput"]["additionalContext"]
+    assert "/fritz:brain-save" in ctx, "save policy must be injected for substantive non-query prompts"
+    assert "SAVE" in ctx
+
+
+def test_a2_save_policy_and_brain_check_both_on_query_prompt(tmp_path):
+    """Fix 3 — a brain-query prompt carries BOTH the BRAIN CHECK nudge AND the
+    save policy (the save policy should not have replaced the search nudge).
+    """
+    brain = tmp_path / "home" / ".brain"
+    daily = brain / "capture" / "daily"
+    daily.mkdir(parents=True)
+    (daily / "2026-06-14.md").write_text("# Daily Log\n", encoding="utf-8")
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    script = PLUGIN / "hooks" / "brain_prompt_check.py"
+    payload = {
+        "cwd": str(proj),
+        "hook_event_name": "UserPromptSubmit",
+        "user_prompt": "what did we decide about the retry policy last week?",
+    }
+    proc = _run_hook(script, payload, brain, proj)
+    assert proc.returncode == 0, proc.stderr
+    ctx = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "BRAIN CHECK" in ctx
+    assert "/fritz:brain-save" in ctx
+    assert "SAVE" in ctx
+
+
+def test_a2_no_output_on_trivial_prompt(tmp_path):
+    """Fix 3 — trivial prompts produce NO output (save policy not injected there).
+
+    Pins the trivial-skip behaviour to ensure the Pi-parity save-policy injection
+    does not accidentally fire on short or skip-prefixed turns.
+    """
+    brain = tmp_path / "home" / ".brain"
+    brain.mkdir(parents=True)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    script = PLUGIN / "hooks" / "brain_prompt_check.py"
+    for trivial in ("ok", "yes", "no", "continue", "go", "!", "/help"):
+        payload = {
+            "cwd": str(proj),
+            "hook_event_name": "UserPromptSubmit",
+            "user_prompt": trivial,
+        }
+        proc = _run_hook(script, payload, brain, proj)
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.strip() == "", f"must produce no output for trivial prompt: {trivial!r}"
+
+
+def test_a2_output_schema_valid(tmp_path):
+    """Fix 3 — the emitted JSON for a substantive prompt is a valid
+    hookSpecificOutput with hookEventName == 'UserPromptSubmit' and a non-empty
+    string additionalContext.
+    """
+    brain = tmp_path / "home" / ".brain"
+    brain.mkdir(parents=True)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    script = PLUGIN / "hooks" / "brain_prompt_check.py"
+    payload = {
+        "cwd": str(proj),
+        "hook_event_name": "UserPromptSubmit",
+        "user_prompt": "The postgres password is in 1Password under prod-db",
+    }
+    proc = _run_hook(script, payload, brain, proj)
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert "hookSpecificOutput" in out
+    hso = out["hookSpecificOutput"]
+    assert hso.get("hookEventName") == "UserPromptSubmit"
+    assert isinstance(hso.get("additionalContext"), str)
+    assert hso["additionalContext"]  # non-empty
+
+
+# --- #167 Fix A (residual): off-level empty brain always emits save policy ----
+
+
+def test_fix_a_empty_brain_still_emits_save_policy(tmp_path):
+    """Fix A — a substantive query prompt against an EMPTY brain (no knowledge,
+    no captures) must still emit the save policy.
+
+    Before Fix A: the ``level == "off"`` path hit ``sys.exit(0)`` when
+    ``has_knowledge`` and ``has_captures`` were both False, producing NO output.
+    After Fix A: every post-trivial-gate exit routes through ``_emit``, so even
+    with an empty brain the save policy fires.
+    """
+    brain = tmp_path / "home" / ".brain"
+    brain.mkdir(parents=True)
+    # No capture/daily dir, no vault manifests — empty brain.
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    script = PLUGIN / "hooks" / "brain_prompt_check.py"
+    payload = {
+        "cwd": str(proj),
+        "hook_event_name": "UserPromptSubmit",
+        "user_prompt": "how did we decide to do auth in this project?",
+    }
+    proc = _run_hook(script, payload, brain, proj)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip(), "must produce output even with empty brain"
+    ctx = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "/fritz:brain-save" in ctx, "save policy must fire even for empty brain"
+    assert "SAVE" in ctx
+
+
+# --- #167 Fix B (residual): short substantive prompts not over-suppressed -----
+
+
+def test_fix_b_short_substantive_prompt_emits_save_policy(tmp_path):
+    """Fix B — a short but substantive prompt (< 15 chars, not a skip prefix)
+    must emit the save policy.
+
+    Before Fix B: ``_is_trivial`` returned True for ``len(lower) < 15``, so
+    ``"where is db?"`` (12 chars) was suppressed before reaching ``_emit``.
+    After Fix B: the length gate is removed; only empty/whitespace and
+    SKIP_PREFIXES remain as trivial markers.
+    """
+    brain = tmp_path / "home" / ".brain"
+    brain.mkdir(parents=True)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    script = PLUGIN / "hooks" / "brain_prompt_check.py"
+    # 12 chars — under the old < 15 gate but not a skip prefix.
+    payload = {
+        "cwd": str(proj),
+        "hook_event_name": "UserPromptSubmit",
+        "user_prompt": "where is db?",
+    }
+    proc = _run_hook(script, payload, brain, proj)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip(), "short substantive prompt must produce output"
+    ctx = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
+    assert "/fritz:brain-save" in ctx, "save policy must fire for short substantive prompts"
+    assert "SAVE" in ctx

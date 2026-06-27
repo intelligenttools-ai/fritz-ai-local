@@ -20,6 +20,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from brain_bootstrap import ensure_yaml_interpreter
+
+ensure_yaml_interpreter()
+
 from brain_common import (
     read_hook_input, find_vault_for_cwd, load_manifest, resolve_path,
     load_registry, get_setting, resolve_project_vault,
@@ -238,22 +242,13 @@ def main():
             if processing_active is False:
                 context_parts.append("\n## Brain captures pending — processing not active\n")
                 context_parts.append(f"There are **{topics} uncompiled topics** captured since {since}. Captures are being saved, but live processing is not active in minimal-capture mode. Enable `settings.local_brain_service.enabled` or run `/fritz:brain-compile` manually when you want to promote them.\n")
-            else:
-                context_parts.append("\n## MANDATORY: Background brain compile needed\n")
-                if not service_configured:
-                    context_parts.append(local_brain_configuration_decision_prompt())
-                    context_parts.append(f"There are **{topics} uncompiled topics** captured since {since}. Before choosing the compile path, ask the human to configure `settings.local_brain_service` in `~/.brain/registry.yaml` using the Local Brain Service Decision Needed choices above. Then run the selected service or local compile workflow.")
-                    context_parts.append("When the selected compile workflow completes, delete `~/.brain/.compile-needed`.\n")
-                elif service_available:
-                    context_parts.append(f"There are **{topics} uncompiled topics** captured since {since}. Before doing anything else, spawn a **background subagent** to run the Local Brain service compile path. The subagent MUST:")
-                    context_parts.append("1. Run the service-backed compile command shown in the Local Brain Service Active section above")
-                    context_parts.append("2. Delete `~/.brain/.compile-needed` when done\n")
-                else:
-                    context_parts.append(f"There are **{topics} uncompiled topics** captured since {since}. Before doing anything else, spawn a **background subagent** to run `/fritz:brain-compile`. The subagent MUST:")
-                    context_parts.append("1. Run the `/fritz:brain-compile` skill (it promotes raw captures to vault knowledge articles)")
-                    context_parts.append("2. Delete `~/.brain/.compile-needed` when done\n")
-                if service_configured:
-                    context_parts.append("Use `run_in_background: true` (or platform equivalent) so the user is NOT blocked. Do NOT ask the user for permission — this is an autonomous maintenance task.")
+            elif not service_configured:
+                # Service not yet configured: this is a CONFIGURATION decision
+                # prompt, not a hand-compile nudge. When the service IS active the
+                # scheduler owns compile (#162/v1.3.54) — the agent is told nothing.
+                context_parts.append("\n## Brain captures pending — configure processing\n")
+                context_parts.append(local_brain_configuration_decision_prompt())
+                context_parts.append(f"There are **{topics} uncompiled topics** captured since {since}. Ask the human to configure `settings.local_brain_service` in `~/.brain/registry.yaml` using the Local Brain Service Decision Needed choices above. Once the Docker service is active, its scheduler drains the backlog automatically.")
         except (json.JSONDecodeError, OSError):
             pass
 
