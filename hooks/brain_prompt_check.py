@@ -22,6 +22,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from brain_bootstrap import ensure_yaml_interpreter
+
+ensure_yaml_interpreter()
+
 from brain_common import (
     read_hook_input, load_registry, load_manifest, resolve_path,
     resolve_project_vault, get_context_injection_level,
@@ -30,6 +34,29 @@ from brain_common import (
     local_brain_setup_suggestion, local_brain_setup_suggestions_enabled,
     local_brain_service_configured, local_brain_configuration_decision_prompt,
 )
+
+
+# Always-on per-turn save policy (Pi parity — Pi injects this via
+# before_agent_start). Durable operational knowledge confirmed this turn must be
+# SAVED, not merely answered. Kept short because it is injected every turn.
+SAVE_POLICY = (
+    "BRAIN SAVE: If this turn confirms durable operational knowledge "
+    "(decisions, fixes, URLs, token/credential locations, runbook facts), SAVE it "
+    "via the /fritz:brain-save skill — do not merely answer it."
+)
+
+
+def _emit(hook_input: dict, context: str) -> None:
+    """Emit additionalContext (with the per-turn save policy appended) and exit."""
+    context = f"{context}\n\n{SAVE_POLICY}" if context else SAVE_POLICY
+    response = {
+        "hookSpecificOutput": {
+            "hookEventName": hook_input.get("hook_event_name", "UserPromptSubmit"),
+            "additionalContext": context,
+        }
+    }
+    print(json.dumps(response))
+    sys.exit(0)
 
 
 # Words that suggest the user is asking a question or requesting knowledge
@@ -65,9 +92,14 @@ BRAIN_SERVICE_ACTIONS = [
 ]
 
 # Skip enforcement for these
-SKIP_PREFIXES = [
-    "/", "!", "#", "yes", "no", "ok", "continue", "go ahead",
-    "commit", "push", "merge",
+# Punctuation markers: matched via startswith (slash/bang/hash commands).
+PUNCT_PREFIXES = ["/", "!", "#"]
+# Word tokens: trivial only when the prompt equals the token or starts with the
+# token followed by whitespace or simple punctuation — not as a loose prefix.
+# "go ahead" is kept for clarity but is already covered by "go".
+TRIVIAL_WORDS = [
+    "yes", "no", "ok", "go", "go ahead",
+    "continue", "commit", "push", "merge",
 ]
 
 
@@ -202,11 +234,8 @@ def should_check_brain(prompt: str) -> str | None:
     """
     lower = prompt.lower().strip()
 
-    if len(lower) < 15:
+    if _is_trivial(prompt):
         return None
-    for prefix in SKIP_PREFIXES:
-        if lower.startswith(prefix):
-            return None
 
     for signal in QUERY_SIGNALS:
         if signal in lower:
@@ -231,6 +260,26 @@ def should_suggest_local_brain_service(prompt: str) -> bool:
     return any(re.search(rf"\b{re.escape(action)}\b", lower) for action in BRAIN_SERVICE_ACTIONS)
 
 
+def _is_trivial(prompt: str) -> bool:
+    """Return True for empty/whitespace or trivial ack prompts.
+
+    Punctuation markers (/!#) match as true startswith (slash/bang/hash commands).
+    Word tokens match only when the prompt equals the token or starts with the
+    token followed by whitespace or punctuation, preventing false positives like
+    "google…" matching "go" or "normally…" matching "no".
+    """
+    lower = prompt.lower().strip()
+    if not lower:
+        return True
+    for marker in PUNCT_PREFIXES:
+        if lower.startswith(marker):
+            return True
+    for tok in TRIVIAL_WORDS:
+        if lower == tok or lower.startswith(tok + " ") or lower.startswith(tok + ",") or lower.startswith(tok + "."):
+            return True
+    return False
+
+
 def main():
     hook_input = read_hook_input()
 
@@ -248,9 +297,16 @@ def main():
     if not prompt:
         sys.exit(0)
 
+    # Truly trivial prompts: emit nothing (don't spam the save policy on "ok" etc.)
+    if _is_trivial(prompt):
+        sys.exit(0)
+
     prompt_type = should_check_brain(prompt)
     if not prompt_type:
-        sys.exit(0)
+        # Substantive prompt but not a brain-query/implementation — still inject the
+        # save policy so every non-trivial turn carries the Pi-parity save nudge.
+        _emit(hook_input, "")
+        return
 
     cwd = hook_input.get("cwd", "")
 
@@ -273,7 +329,8 @@ def main():
                 break
 
         if not has_knowledge and not has_captures:
-            sys.exit(0)
+            _emit(hook_input, "")
+            return
 
         if should_suggest_local_brain_service(prompt) and local_brain_service_available():
             reminder = (
@@ -295,14 +352,7 @@ def main():
             elif local_brain_setup_suggestions_enabled() and should_suggest_local_brain_service(prompt):
                 reminder = f"{reminder}\n\n{local_brain_setup_suggestion()}"
 
-        response = {
-            "hookSpecificOutput": {
-                "hookEventName": hook_input.get("hook_event_name", "UserPromptSubmit"),
-                "additionalContext": reminder,
-            }
-        }
-        print(json.dumps(response))
-        sys.exit(0)
+        _emit(hook_input, reminder)
 
     # Level: light or full — search and inject file paths
     if should_suggest_local_brain_service(prompt) and local_brain_service_available():
@@ -316,14 +366,7 @@ def main():
                 "\n\nMANDATORY (context_injection: full): You MUST spawn a subagent to run the service-backed query "
                 "and synthesize the results before responding. This is not optional."
             )
-        response = {
-            "hookSpecificOutput": {
-                "hookEventName": hook_input.get("hook_event_name", "UserPromptSubmit"),
-                "additionalContext": injection,
-            }
-        }
-        print(json.dumps(response))
-        sys.exit(0)
+        _emit(hook_input, injection)
 
     max_chars = get_max_injection_chars(fritz_local)
     project_name = fritz_local.get("project") if fritz_local else None
@@ -357,14 +400,7 @@ def main():
             "and return a summary with citations. This is not optional."
         )
 
-    response = {
-        "hookSpecificOutput": {
-            "hookEventName": hook_input.get("hook_event_name", "UserPromptSubmit"),
-            "additionalContext": injection,
-        }
-    }
-    print(json.dumps(response))
-    sys.exit(0)
+    _emit(hook_input, injection)
 
 
 if __name__ == "__main__":

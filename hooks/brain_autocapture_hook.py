@@ -42,6 +42,10 @@ _this_dir = Path(__file__).resolve().parent
 sys.path.insert(0, str(_this_dir))
 sys.path.insert(0, str(_this_dir.parent))
 
+from brain_bootstrap import ensure_yaml_interpreter  # noqa: E402
+
+ensure_yaml_interpreter()
+
 from brain_autocapture import maybe_auto_capture  # noqa: E402
 from adapters.registry import ADAPTERS, parse_transcript  # noqa: E402
 from adapters.base import CaptureEntry  # noqa: E402

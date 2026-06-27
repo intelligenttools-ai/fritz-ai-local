@@ -21,7 +21,11 @@ _this_dir = Path(__file__).resolve().parent
 sys.path.insert(0, str(_this_dir))
 sys.path.insert(0, str(_this_dir.parent))
 
-from brain_common import auto_compile_after_capture, read_hook_input, today_str, BRAIN_HOME
+from brain_bootstrap import ensure_yaml_interpreter
+
+ensure_yaml_interpreter()
+
+from brain_common import read_hook_input, today_str, BRAIN_HOME
 from adapters.registry import parse_transcript
 from adapters.base import CaptureEntry
 
@@ -114,10 +118,8 @@ def main():
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(f"{timestamp} | CAPTURE | {entry.agent} | {event}: {len(entry.topics)} topics from {entry.cwd or 'unknown'}\n")
 
-    compile_result = auto_compile_after_capture(daily_file)
-    if compile_result.status == "failed":
-        print(f"Fritz Brain auto-compile warning: {compile_result.message}", file=sys.stderr)
-
+    # Capture only captures. The scheduler owns compile (#162/v1.3.54); the
+    # hook never hand-compiles (Pi parity — Pi never compiles).
     sys.exit(0)
 
 

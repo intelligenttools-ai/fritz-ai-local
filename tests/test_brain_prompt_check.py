@@ -468,7 +468,72 @@ def test_auto_compile_disabled_records_processing_inactive(monkeypatch, tmp_path
     assert json.loads((tmp_path / ".compile-needed").read_text(encoding="utf-8"))["processing_active"] is False
 
 
-def test_brain_capture_warns_but_does_not_fail_when_auto_compile_fails(monkeypatch, capsys, tmp_path):
+def test_is_trivial_ack_tokens_match_whole_word_only():
+    """Ack tokens must NOT suppress substantive prompts that merely start with
+    the same letters.  Before the fix, startswith("go") suppressed "google…",
+    startswith("no") suppressed "normally…", and startswith("ok") suppressed
+    "okay so…".
+    """
+    # Substantive prompts that share a prefix with an ack token — NOT trivial
+    assert not brain_prompt_check._is_trivial("google the postgres connection string location")
+    assert not brain_prompt_check._is_trivial("going to store the API token in 1Password")
+    assert not brain_prompt_check._is_trivial("normally we skip this step")
+    assert not brain_prompt_check._is_trivial("okay so the token is in 1Password")
+
+    # Bare ack tokens — trivial
+    assert brain_prompt_check._is_trivial("go")
+    assert brain_prompt_check._is_trivial("ok")
+    assert brain_prompt_check._is_trivial("no")
+    assert brain_prompt_check._is_trivial("yes")
+    assert brain_prompt_check._is_trivial("continue")
+    assert brain_prompt_check._is_trivial("commit")
+    assert brain_prompt_check._is_trivial("push")
+    assert brain_prompt_check._is_trivial("merge")
+
+    # Ack token + trailing words — trivial
+    assert brain_prompt_check._is_trivial("go ahead")
+    assert brain_prompt_check._is_trivial("ok do it")
+    assert brain_prompt_check._is_trivial("no thanks")
+    assert brain_prompt_check._is_trivial("merge it")
+    assert brain_prompt_check._is_trivial("yes please")
+
+
+def test_google_prompt_produces_save_policy_output(monkeypatch, capsys, tmp_path):
+    """'google the postgres connection string location' starts with 'go' but is
+    NOT an ack — it must reach the save-policy injection path.
+    Before the fix, startswith("go") suppressed it.
+    """
+    context = _run_prompt_hook(
+        monkeypatch, capsys, tmp_path,
+        "google the postgres connection string location",
+    )
+    assert "/fritz:brain-save" in context, (
+        "'google…' was wrongly suppressed as trivial; save policy not injected"
+    )
+
+
+def test_going_prompt_produces_save_policy_output(monkeypatch, capsys, tmp_path):
+    """'going to store the API token in 1Password' starts with 'go' but is NOT
+    an ack — it must reach the save-policy injection path.
+    Before the fix, startswith("go") suppressed it.
+    """
+    context = _run_prompt_hook(
+        monkeypatch, capsys, tmp_path,
+        "going to store the API token in 1Password",
+    )
+    assert "/fritz:brain-save" in context, (
+        "'going…' was wrongly suppressed as trivial; save policy not injected"
+    )
+
+
+def test_brain_capture_only_captures_never_compiles(monkeypatch, tmp_path):
+    """#167 Fix B — capture only captures; it never hand-compiles (the scheduler
+    owns compile, #162/v1.3.54). The auto_compile_after_capture call was removed,
+    so the module must not even reference it; capture still exits 0 and writes the
+    daily rollup."""
+    # The removed dependency is no longer imported into the capture module.
+    assert not hasattr(brain_capture, "auto_compile_after_capture")
+
     monkeypatch.setattr(brain_capture, "BRAIN_HOME", tmp_path)
     monkeypatch.setattr(brain_capture, "CAPTURE_DIR", tmp_path / "capture" / "daily")
     monkeypatch.setattr(
@@ -481,14 +546,10 @@ def test_brain_capture_warns_but_does_not_fail_when_auto_compile_fails(monkeypat
         "parse_transcript",
         lambda hook_input, transcript_path: CaptureEntry(agent="test", cwd=str(ROOT), topics=["topic"]),
     )
-    monkeypatch.setattr(
-        brain_capture,
-        "auto_compile_after_capture",
-        lambda capture_path: brain_common.AutoCompileResult(status="failed", message="missing processor"),
-    )
 
     with pytest.raises(SystemExit) as exc:
         brain_capture.main()
 
     assert exc.value.code == 0
-    assert "Fritz Brain auto-compile warning: missing processor" in capsys.readouterr().err
+    daily = tmp_path / "capture" / "daily"
+    assert daily.exists() and list(daily.glob("*.md")), "daily rollup must still be written"
