@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     embedding_timeout_seconds: float = Field(default=60.0, validation_alias=AliasChoices("LOCAL_BRAIN_EMBEDDING_TIMEOUT_SECONDS", "EMBEDDING_TIMEOUT_SECONDS"))
     embedding_refresh_after_compile: bool = Field(default=True, validation_alias=AliasChoices("LOCAL_BRAIN_EMBEDDING_REFRESH_AFTER_COMPILE", "EMBEDDING_REFRESH_AFTER_COMPILE"))
     embedding_refresh_debounce_seconds: float = Field(default=300.0, ge=0.0, validation_alias=AliasChoices("LOCAL_BRAIN_EMBEDDING_REFRESH_DEBOUNCE_SECONDS", "EMBEDDING_REFRESH_DEBOUNCE_SECONDS"))
+    # Maximum characters fed to the embedding model per document. Embedding models
+    # differ in context length; mxbai-embed-large and similar 512-token models
+    # accept ~2000 chars at most — 1800 is a conservative safe default.
+    embedding_max_input_chars: int = Field(default=1800, ge=1, validation_alias=AliasChoices("LOCAL_BRAIN_EMBEDDING_MAX_INPUT_CHARS", "EMBEDDING_MAX_INPUT_CHARS"))
 
     api_host: str = Field(default="127.0.0.1", validation_alias=AliasChoices("LOCAL_BRAIN_API_HOST", "API_HOST"))
     api_port: int = Field(default=8765, validation_alias=AliasChoices("LOCAL_BRAIN_API_PORT", "API_PORT"))
