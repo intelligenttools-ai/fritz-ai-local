@@ -219,13 +219,13 @@ async def _refresh_embedding_index_unlocked(
         return result
     try:
         documents = _collect_embedding_documents(settings)
-        source_fingerprint = _source_fingerprint(settings, documents)
+        all_source_fingerprint = _source_fingerprint(settings, documents)
         if request and not request.force:
             try:
                 data = _read_index_data(settings)
             except (OSError, ValueError, json.JSONDecodeError):
                 data = None
-            if data is not None and _index_data_is_compatible(settings, data, source_fingerprint):
+            if data is not None and _index_data_is_compatible(settings, data, all_source_fingerprint):
                 result.indexed = True
                 result.documents_indexed = len(data.get("documents", [])) if isinstance(data.get("documents"), list) else 0
                 try:
@@ -235,11 +235,40 @@ async def _refresh_embedding_index_unlocked(
                 return result
 
         entries: list[dict[str, Any]] = []
+        indexed_documents: list[dict[str, Any]] = []  # source docs that were successfully embedded
+        skipped = 0
         for document in documents:
-            vector = await _embed_text(settings, document["text"])
+            try:
+                vector = await _embed_text(settings, document["text"])
+            except Exception as exc:  # noqa: BLE001 - per-document failures must not abort the whole index build.
+                doc_vault = document.get("vault", "")
+                doc_path = document.get("path", "")
+                append_global_log(settings.brain_home, "EMBEDDINGS", f"skipped {doc_vault}/{doc_path}: {exc}", False)
+                skipped += 1
+                continue
             persisted = {key: value for key, value in document.items() if key != "text"}
             entries.append({**persisted, "embedding": vector})
+            indexed_documents.append(document)
 
+        if skipped > 0:
+            append_global_log(
+                settings.brain_home,
+                "EMBEDDINGS",
+                f"indexed {len(entries)}, skipped {skipped}",
+                False,
+            )
+
+        # Guard: if ALL documents failed, do not overwrite the existing index.
+        # A transient endpoint outage must not destroy a previously-good index.
+        # Trade-off: a doc that fails on every refresh causes a rebuild each tick,
+        # but the char-cap fix makes that rare; a transient blip self-heals next tick.
+        if documents and not entries:
+            result.error = f"all {len(documents)} document(s) failed to embed; leaving existing index unchanged"
+            return result
+
+        # Store the fingerprint of ONLY successfully-embedded docs so the next
+        # non-force refresh detects skipped docs as "incompatible" and retries them.
+        source_fingerprint = _source_fingerprint(settings, indexed_documents)
         updated_at = datetime.now()
         embedding_dir = path.parent
         if embedding_dir.is_symlink() or path.is_symlink():
@@ -446,7 +475,7 @@ def _collect_embedding_documents(settings: Settings) -> list[dict[str, Any]]:
                     text = path.read_text(encoding="utf-8", errors="replace")
                 except OSError:
                     continue
-                documents.append(_document(_BRAIN_VAULT_NAME, str(path.relative_to(brain_store_root)), text, stat_result))
+                documents.append(_document(_BRAIN_VAULT_NAME, str(path.relative_to(brain_store_root)), text, stat_result, max_input_chars=settings.embedding_max_input_chars))
     else:
         for name, vault_path in vault_paths.items():
             manifest = manifests.get(name)
@@ -463,7 +492,7 @@ def _collect_embedding_documents(settings: Settings) -> list[dict[str, Any]]:
                     text = path.read_text(encoding="utf-8", errors="replace")
                 except OSError:
                     continue
-                documents.append(_document(name, str(path.relative_to(knowledge_root)), text, stat_result))
+                documents.append(_document(name, str(path.relative_to(knowledge_root)), text, stat_result, max_input_chars=settings.embedding_max_input_chars))
 
     for path in list_queryable_captures(settings.brain_home).paths:
         try:
@@ -472,7 +501,7 @@ def _collect_embedding_documents(settings: Settings) -> list[dict[str, Any]]:
             relpath = str(path.relative_to(settings.brain_home))
         except (OSError, UnicodeDecodeError, ValueError):
             continue
-        documents.append(_document("_captures", relpath, text, stat_result))
+        documents.append(_document("_captures", relpath, text, stat_result, max_input_chars=settings.embedding_max_input_chars))
     return documents
 
 
@@ -487,9 +516,9 @@ def _is_regular_knowledge_file(path: Path, knowledge_root: Path) -> bool:
     return path.is_file()
 
 
-def _document(vault: str, path: str, text: str, stat_result: os.stat_result) -> dict[str, Any]:
+def _document(vault: str, path: str, text: str, stat_result: os.stat_result, *, max_input_chars: int = 1800) -> dict[str, Any]:
     title = _title_for(path, text)
-    indexed_text = text[:4000]
+    indexed_text = text[:max_input_chars]
     return {
         "vault": vault,
         "path": path,
