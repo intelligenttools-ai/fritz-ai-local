@@ -237,6 +237,7 @@ async def _refresh_embedding_index_unlocked(
         entries: list[dict[str, Any]] = []
         indexed_documents: list[dict[str, Any]] = []  # source docs that were successfully embedded
         skipped = 0
+        skipped_keys: list[list[str]] = []
         for document in documents:
             try:
                 vector = await _embed_text(settings, document["text"])
@@ -245,6 +246,7 @@ async def _refresh_embedding_index_unlocked(
                 doc_path = document.get("path", "")
                 append_global_log(settings.brain_home, "EMBEDDINGS", f"skipped {doc_vault}/{doc_path}: {exc}", False)
                 skipped += 1
+                skipped_keys.append([str(doc_vault), str(doc_path)])
                 continue
             persisted = {key: value for key, value in document.items() if key != "text"}
             entries.append({**persisted, "embedding": vector})
@@ -268,6 +270,8 @@ async def _refresh_embedding_index_unlocked(
 
         # Store the fingerprint of ONLY successfully-embedded docs so the next
         # non-force refresh detects skipped docs as "incompatible" and retries them.
+        # Separately, record skipped_keys so the search-side freshness check can
+        # exclude permanently-skipped (un-embeddable) docs instead of reading stale.
         source_fingerprint = _source_fingerprint(settings, indexed_documents)
         updated_at = datetime.now()
         embedding_dir = path.parent
@@ -287,6 +291,7 @@ async def _refresh_embedding_index_unlocked(
                     "provider_fingerprint": _provider_fingerprint(settings),
                     "updated_at": updated_at.isoformat(),
                     "source_fingerprint": source_fingerprint,
+                    "skipped_keys": skipped_keys,
                     "documents": entries,
                 },
                 indent=2,
@@ -336,7 +341,7 @@ def embedding_index_unavailable_reason(settings: Settings) -> str | None:
     if data is None:
         return "Embedding index is missing; waiting for compile/ingest refresh"
     current_documents = _collect_embedding_documents(settings)
-    source_fingerprint = _source_fingerprint(settings, current_documents)
+    source_fingerprint = _effective_source_fingerprint(settings, data, current_documents)
     if not _index_data_is_compatible(settings, data, source_fingerprint):
         return "Embedding index is stale; waiting for compile/ingest refresh"
     return None
@@ -351,9 +356,11 @@ async def search_embedding_index(
     if limit <= 0 or not settings.embedding_enabled:
         return []
     data = _read_index_data(settings)
+    if data is None:
+        return []
     current_documents = _collect_embedding_documents(settings)
-    source_fingerprint = _source_fingerprint(settings, current_documents)
-    if data is None or not _index_data_is_compatible(settings, data, source_fingerprint):
+    source_fingerprint = _effective_source_fingerprint(settings, data, current_documents)
+    if not _index_data_is_compatible(settings, data, source_fingerprint):
         return []
     documents = data.get("documents", [])
     query_vector = await _embed_text(settings, query)
@@ -416,6 +423,30 @@ def _source_fingerprint(settings: Settings, documents: list[dict[str, Any]]) -> 
             digest.update(str(document.get(key, "")).encode("utf-8"))
             digest.update(b"\0")
     return digest.hexdigest()
+
+
+def _skipped_keys_from_data(data: dict[str, Any]) -> set[tuple[str, str]]:
+    raw = data.get("skipped_keys")
+    if not isinstance(raw, list):
+        return set()
+    keys: set[tuple[str, str]] = set()
+    for item in raw:
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            keys.add((str(item[0]), str(item[1])))
+    return keys
+
+
+def _effective_source_fingerprint(settings: Settings, data: dict[str, Any], documents: list[dict[str, Any]]) -> str:
+    """Fingerprint over the docs the index is expected to cover: all current
+    documents minus the keys skipped at build time. A stable set of permanently
+    un-embeddable docs therefore does not mark the index stale for search."""
+    skipped = _skipped_keys_from_data(data)
+    effective = [
+        document
+        for document in documents
+        if (str(document.get("vault", "")), str(document.get("path", ""))) not in skipped
+    ]
+    return _source_fingerprint(settings, effective)
 
 
 def _provider_fingerprint(settings: Settings) -> str:

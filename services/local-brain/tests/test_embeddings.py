@@ -290,6 +290,145 @@ def test_skipped_docs_retried_on_next_refresh(tmp_path: Path, monkeypatch: pytes
 
 
 # ---------------------------------------------------------------------------
+# 1b. Permanently-skipped docs must not mark the index stale for search (#170)
+# ---------------------------------------------------------------------------
+
+
+def test_oversize_doc_does_not_mark_index_stale_for_search(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ACCEPTANCE (#170): a permanently un-embeddable doc must not disable vector search."""
+    settings = _settings(tmp_path)
+
+    doc_ok = {
+        "vault": "brain",
+        "path": "ok.md",
+        "title": "Ok",
+        "snippet": "ok snippet",
+        "source_mtime_ns": 1,
+        "source_size": 8,
+        "content_hash": "def",
+        "text": "ok content",
+    }
+    doc_oversize = {
+        "vault": "brain",
+        "path": "huge.md",
+        "title": "Huge",
+        "snippet": "huge snippet",
+        "source_mtime_ns": 2,
+        "source_size": 9999,
+        "content_hash": "ghi",
+        "text": "oversize content",
+    }
+
+    monkeypatch.setattr(emb, "_collect_embedding_documents", lambda s: [doc_ok, doc_oversize])
+
+    async def fake_embed(settings, text: str) -> list[float]:
+        if text == "oversize content":
+            raise RuntimeError("400: input length exceeds context length")
+        # ok doc text AND the query text both get the same fixed vector → high cosine.
+        return [0.1, 0.2, 0.3]
+
+    monkeypatch.setattr(emb, "_embed_text", fake_embed)
+    monkeypatch.setattr(emb, "append_global_log", lambda *a, **kw: None)
+
+    result = asyncio.run(_refresh_embedding_index_unlocked(settings, EmbeddingIndexRequest(force=True)))
+    assert result.indexed is True, f"Expected indexed=True, error: {result.error}"
+    assert result.documents_indexed == 1
+
+    index_file = settings.brain_home / "embeddings" / "index.json"
+    data = json.loads(index_file.read_text(encoding="utf-8"))
+    skipped_keys = data.get("skipped_keys")
+    assert skipped_keys == [["brain", "huge.md"]], f"Expected skipped_keys for the oversize doc, got {skipped_keys}"
+
+    # The oversize doc is permanently skipped, so search-side freshness must be OK.
+    assert emb.embedding_index_unavailable_reason(settings) is None
+
+    matches = asyncio.run(emb.search_embedding_index(settings, "query text", 3))
+    assert matches, "Vector search must return the ok doc, not [] due to a stale-index verdict"
+    assert any(m.path == "ok.md" for m in matches)
+
+
+def test_changed_indexed_doc_still_marks_index_stale(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A genuine change to an indexed doc must still invalidate the index (no skips case)."""
+    settings = _settings(tmp_path)
+
+    doc = {
+        "vault": "brain",
+        "path": "ok.md",
+        "title": "Ok",
+        "snippet": "ok snippet",
+        "source_mtime_ns": 1,
+        "source_size": 8,
+        "content_hash": "def",
+        "text": "ok content",
+    }
+
+    monkeypatch.setattr(emb, "_collect_embedding_documents", lambda s: [dict(doc)])
+
+    async def fake_embed(settings, text: str) -> list[float]:
+        return [0.1, 0.2, 0.3]
+
+    monkeypatch.setattr(emb, "_embed_text", fake_embed)
+    monkeypatch.setattr(emb, "append_global_log", lambda *a, **kw: None)
+
+    result = asyncio.run(_refresh_embedding_index_unlocked(settings, EmbeddingIndexRequest(force=True)))
+    assert result.indexed is True
+    assert result.documents_indexed == 1
+    assert emb.embedding_index_unavailable_reason(settings) is None
+
+    # Now the doc's content/mtime change → must read as stale.
+    changed = dict(doc)
+    changed["content_hash"] = "CHANGED"
+    changed["source_mtime_ns"] = 999
+    monkeypatch.setattr(emb, "_collect_embedding_documents", lambda s: [changed])
+
+    assert emb.embedding_index_unavailable_reason(settings) == "Embedding index is stale; waiting for compile/ingest refresh"
+    assert asyncio.run(emb.search_embedding_index(settings, "query text", 3)) == []
+
+
+def test_new_unskipped_doc_marks_index_stale(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A brand-new doc (not in skipped_keys) must invalidate the index."""
+    settings = _settings(tmp_path)
+
+    doc = {
+        "vault": "brain",
+        "path": "ok.md",
+        "title": "Ok",
+        "snippet": "ok snippet",
+        "source_mtime_ns": 1,
+        "source_size": 8,
+        "content_hash": "def",
+        "text": "ok content",
+    }
+
+    monkeypatch.setattr(emb, "_collect_embedding_documents", lambda s: [dict(doc)])
+
+    async def fake_embed(settings, text: str) -> list[float]:
+        return [0.1, 0.2, 0.3]
+
+    monkeypatch.setattr(emb, "_embed_text", fake_embed)
+    monkeypatch.setattr(emb, "append_global_log", lambda *a, **kw: None)
+
+    result = asyncio.run(_refresh_embedding_index_unlocked(settings, EmbeddingIndexRequest(force=True)))
+    assert result.indexed is True
+    assert emb.embedding_index_unavailable_reason(settings) is None
+
+    # Add a brand-new doc that was never skipped → must invalidate.
+    new_doc = {
+        "vault": "brain",
+        "path": "brand-new.md",
+        "title": "New",
+        "snippet": "new snippet",
+        "source_mtime_ns": 5,
+        "source_size": 3,
+        "content_hash": "new",
+        "text": "new content",
+    }
+    monkeypatch.setattr(emb, "_collect_embedding_documents", lambda s: [dict(doc), new_doc])
+
+    assert emb.embedding_index_unavailable_reason(settings) == "Embedding index is stale; waiting for compile/ingest refresh"
+
+
+# ---------------------------------------------------------------------------
 # 2. Input truncation to embedding_max_input_chars
 # ---------------------------------------------------------------------------
 
