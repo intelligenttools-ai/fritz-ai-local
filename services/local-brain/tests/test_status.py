@@ -195,6 +195,35 @@ def test_status_backlog_scan_is_bounded(tmp_path) -> None:
     assert any("capped at 2 files" in warning for warning in backlog.warnings)
 
 
+def test_status_reports_baked_version(tmp_path, monkeypatch) -> None:
+    version_file = tmp_path / "VERSION"
+    version_file.write_text("1.3.58\n", encoding="utf-8")
+    monkeypatch.setattr(status_module, "_SERVICE_VERSION_PATH", version_file)
+
+    result = status_module.build_status(_Settings(tmp_path, scheduler_enabled=True))
+
+    assert result.version == "1.3.58"
+
+
+def test_status_version_none_when_unavailable(tmp_path, monkeypatch) -> None:
+    missing = tmp_path / "does-not-exist" / "VERSION"
+    monkeypatch.setattr(status_module, "_SERVICE_VERSION_PATH", missing)
+
+    result = status_module.build_status(_Settings(tmp_path, scheduler_enabled=True))
+
+    assert result.version is None
+
+
+def test_status_version_none_on_non_utf8_file(tmp_path, monkeypatch) -> None:
+    version_file = tmp_path / "VERSION"
+    version_file.write_bytes(b"\xff\xfe\x00bad")
+    monkeypatch.setattr(status_module, "_SERVICE_VERSION_PATH", version_file)
+
+    result = status_module.build_status(_Settings(tmp_path, scheduler_enabled=True))
+
+    assert result.version is None
+
+
 def test_status_backlog_warns_when_scan_limit_reached_between_sources(tmp_path) -> None:
     inbox_dir = tmp_path / "capture" / "inbox"
     daily_dir = tmp_path / "capture" / "daily"

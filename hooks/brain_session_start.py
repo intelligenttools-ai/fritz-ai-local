@@ -29,6 +29,7 @@ from brain_common import (
     load_registry, get_setting, resolve_project_vault,
     get_context_injection_level, get_fritz_version,
     local_brain_service_available, local_brain_service_instructions,
+    get_local_brain_service_version,
     local_brain_service_configured, local_brain_configuration_decision_prompt,
     get_local_brain_service_desired, local_brain_service_operational,
     local_brain_service_setup_forcing_instruction,
@@ -103,6 +104,66 @@ def check_for_updates(context_parts: list[str]):
     except (subprocess.TimeoutExpired, OSError):
         # Network/auth failure — don't cache, allow retry next session
         pass
+
+
+def _version_is_behind(running: str, repo: str) -> bool:
+    """True only when `running` is a strictly-older dotted version than `repo`."""
+    def parse(value: str) -> list[int]:
+        parts = []
+        for token in value.strip().lstrip("v").split("."):
+            digits = "".join(ch for ch in token if ch.isdigit())
+            parts.append(int(digits) if digits else 0)
+        return parts
+    running_parts = parse(running)
+    repo_parts = parse(repo)
+    length = max(len(running_parts), len(repo_parts))
+    running_parts += [0] * (length - len(running_parts))
+    repo_parts += [0] * (length - len(repo_parts))
+    return running_parts < repo_parts
+
+
+def check_service_version_drift(context_parts: list[str]):
+    """Nudge when the running Local Brain service image is behind the local repo VERSION.
+
+    Independent of the origin/main "update available" nudge: this compares the
+    RUNNING CONTAINER's version to the local repo VERSION and points at
+    /fritz:brain-service-setup (rebuild & redeploy), not /fritz:update.
+    """
+    if not get_setting("update_check", True):
+        return
+    # ~24h throttle, separate from the repo-update .update-check file so the two
+    # nudges don't suppress each other.
+    check_file = BRAIN_HOME / ".service-version-check"
+    now = time.time()
+    if check_file.exists():
+        try:
+            last_check = float(check_file.read_text().strip())
+            if now - last_check < 86400:
+                return
+        except (ValueError, OSError):
+            pass
+
+    if not local_brain_service_available():
+        return
+    running_version = get_local_brain_service_version()
+    repo_version = get_fritz_version()
+    if not running_version or not repo_version:
+        # Could not determine both versions — do not record the throttle, retry next session.
+        return
+
+    # Record the check only once both versions are known, so the nudge fires at most ~once/24h.
+    try:
+        check_file.write_text(str(now))
+    except OSError:
+        pass
+
+    if _version_is_behind(running_version, repo_version):
+        context_parts.append(
+            f"\n## Local Brain service is behind (running v{running_version}, repo at v{repo_version})\n"
+        )
+        context_parts.append(
+            "The running container predates the merged code. Run `/fritz:brain-service-setup` to rebuild & redeploy.\n"
+        )
 
 
 def inject_project_context(context_parts: list[str], vault_path: Path, manifest: dict, fritz_local: dict | None):
@@ -254,6 +315,7 @@ def main():
 
     # Check for updates (max once per 24h)
     check_for_updates(context_parts)
+    check_service_version_drift(context_parts)
 
     full_context = "\n".join(context_parts)
 
