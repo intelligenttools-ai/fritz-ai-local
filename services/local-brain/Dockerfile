@@ -13,6 +13,7 @@ RUN apt-get update \
 COPY services/local-brain/pyproject.toml /app/pyproject.toml
 COPY services/local-brain/fritz_local_brain /app/fritz_local_brain
 COPY skills /app/skills
+COPY VERSION /app/VERSION
 
 RUN pip install --no-cache-dir .
 

@@ -18,6 +18,17 @@ _STATUS_CAPTURE_SCAN_LIMIT = 1000
 _STATUS_CAPTURE_HASH_BYTE_LIMIT = 1024 * 1024
 _STATUS_CAPTURE_HASH_TOTAL_BYTE_LIMIT = 4 * 1024 * 1024
 
+_SERVICE_VERSION_PATH = Path("/app/VERSION")
+
+
+def _read_service_version() -> str | None:
+    """Return the VERSION baked into the image, or None if unavailable."""
+    try:
+        version = _SERVICE_VERSION_PATH.read_text(encoding="utf-8").strip()
+    except (OSError, ValueError):
+        return None
+    return version or None
+
 
 @dataclass(frozen=True)
 class _StatusBacklog:
@@ -50,6 +61,7 @@ def build_status(
 
     return StatusResult(
         service_running=service_running,
+        version=_read_service_version(),
         scheduler_enabled=settings.scheduler_enabled,
         scheduler_dry_run=scheduler_dry_run,
         processing_mode=processing_mode,

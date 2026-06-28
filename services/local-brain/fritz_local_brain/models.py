@@ -319,6 +319,7 @@ class StatusResult(BaseModel):
 
     service: str = "local-brain"
     service_running: bool = True
+    version: str | None = None
     scheduler_enabled: bool
     scheduler_dry_run: bool
     processing_mode: Literal["dry-run", "apply"]

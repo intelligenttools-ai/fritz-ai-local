@@ -590,6 +590,27 @@ def _clear_compile_markers() -> None:
             pass
 
 
+def get_local_brain_service_version(timeout: float = 0.4) -> str | None:
+    """Return the running Local Brain service's reported version from /v1/status, or None."""
+    base_url = _validated_local_brain_base_url() or "http://127.0.0.1:8765"
+    try:
+        headers = {"accept": "application/json"}
+        token = get_local_brain_api_token()
+        if token:
+            headers["authorization"] = f"Bearer {token}"
+        req = request.Request(f"{base_url}/v1/status", headers=headers, method="GET")
+        with request.urlopen(req, timeout=timeout) as response:
+            if response.status != 200:
+                return None
+            data = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    version = data.get("version")
+    return str(version) if version else None
+
+
 def local_brain_service_available(timeout: float = 0.4) -> bool:
     """Return True when service routing is enabled and the service is reachable."""
 
