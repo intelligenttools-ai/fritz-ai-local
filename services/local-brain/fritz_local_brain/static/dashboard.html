@@ -316,6 +316,9 @@ function saveToken() {
   const t = document.getElementById("token-input").value.trim();
   if (!t) return;
   setToken(t);
+  // Dismiss the overlay optimistically; a wrong token re-shows it via the 401
+  // path in apiFetch (clearToken + showAuthOverlay(true)).
+  hideAuthOverlay();
   loadAll();
 }
 
