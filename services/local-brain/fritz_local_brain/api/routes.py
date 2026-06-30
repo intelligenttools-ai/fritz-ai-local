@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import secrets
+import time
 from time import perf_counter
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic_ai.exceptions import ModelAPIError, UsageLimitExceeded
 
 from .. import usage
 from ..compile_workflow import run_compile
 from ..config import get_settings
-from ..telemetry import record_query_event
+from ..telemetry import latest_event_id, record_query_event
 from ..embeddings import (
     embedding_status,
     probe_embedding_dimensions,
@@ -227,6 +231,103 @@ async def usage_summary(
     agent: str | None = Query(default=None),
 ) -> UsageSummaryResult:
     return UsageSummaryResult(**usage.summary(get_settings(), since=from_, until=to, agent=agent))
+
+
+# ---------------------------------------------------------------------------
+# Live updates via Server-Sent Events (#198)
+#
+# AUTH MODEL — why a short-lived stream ticket, not the Bearer token:
+# The browser EventSource API cannot set an Authorization header, and the
+# long-lived Bearer token must NOT be placed in the URL/query string because it
+# would leak into server access logs and the browser history. Instead the
+# already-authenticated dashboard exchanges its Bearer token (via the POST below,
+# which IS Bearer-protected) for a single-purpose, cryptographically-random
+# ticket with a short TTL. That ticket may appear in the stream URL: it is NOT
+# the Bearer token, it expires quickly, and it only authorizes the read-only
+# event stream. Reuse within the TTL is allowed so a reconnect works; expiry
+# still bounds exposure.
+# ---------------------------------------------------------------------------
+
+STREAM_TICKET_TTL_S = 60.0  # short-lived; bounds exposure of a leaked ticket
+STREAM_POLL_S = 2.0  # how often the stream checks for new telemetry events
+STREAM_HEARTBEAT_S = 15.0  # keep-alive comment cadence (proxies/idle timeouts)
+
+# In-process ticket store: {ticket -> expiry on time.monotonic()}. Single-process
+# service, so an in-memory dict is sufficient (no cross-worker sharing needed).
+_stream_tickets: dict[str, float] = {}
+
+
+def _prune_stream_tickets(now: float) -> None:
+    """Drop expired tickets. Called on every issue/validate so the dict stays small."""
+    expired = [t for t, exp in _stream_tickets.items() if exp <= now]
+    for t in expired:
+        _stream_tickets.pop(t, None)
+
+
+def _issue_stream_ticket() -> str:
+    now = time.monotonic()
+    _prune_stream_tickets(now)
+    ticket = secrets.token_urlsafe(32)
+    _stream_tickets[ticket] = now + STREAM_TICKET_TTL_S
+    return ticket
+
+
+def _valid_stream_ticket(ticket: str | None) -> bool:
+    now = time.monotonic()
+    _prune_stream_tickets(now)
+    if not ticket:
+        return False
+    expiry = _stream_tickets.get(ticket)
+    return expiry is not None and expiry > now
+
+
+@router.post("/v1/usage/stream-ticket", dependencies=[Depends(require_token)])
+async def usage_stream_ticket() -> dict[str, object]:
+    """Issue a short-lived ticket the browser EventSource can pass in the URL."""
+    return {"ticket": _issue_stream_ticket(), "expires_in": int(STREAM_TICKET_TTL_S)}
+
+
+async def _stream_events(request: Request, settings):
+    """Async generator yielding SSE frames until the client disconnects.
+
+    Emits an initial ``hello``, then polls ``latest_event_id`` every
+    ``STREAM_POLL_S``; whenever it grows a ``changed`` frame is emitted. A
+    heartbeat comment keeps idle connections alive. Stops cleanly on client
+    disconnect or cancellation so no task is leaked.
+    """
+    yield "event: hello\ndata: {}\n\n"
+    last_id = latest_event_id(settings)
+    since_heartbeat = 0.0
+    try:
+        while True:
+            if await request.is_disconnected():
+                return
+            await asyncio.sleep(STREAM_POLL_S)
+            current = latest_event_id(settings)
+            if current > last_id:
+                last_id = current
+                yield f"event: changed\ndata: {json.dumps({'latest_id': current})}\n\n"
+                since_heartbeat = 0.0
+                continue
+            since_heartbeat += STREAM_POLL_S
+            if since_heartbeat >= STREAM_HEARTBEAT_S:
+                since_heartbeat = 0.0
+                yield ": ping\n\n"
+    except (asyncio.CancelledError, GeneratorExit):
+        # Client went away / server shutdown — exit quietly, no leaked task.
+        return
+
+
+@router.get("/v1/usage/stream")
+async def usage_stream(request: Request, ticket: str | None = Query(default=None)) -> StreamingResponse:
+    """SSE live-update stream. Authorized by a short-lived ticket (see AUTH MODEL)."""
+    if not _valid_stream_ticket(ticket):
+        raise HTTPException(status_code=401, detail="Invalid or expired stream ticket")
+    return StreamingResponse(
+        _stream_events(request, get_settings()),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/v1/lint/run", response_model=LintRunResult, dependencies=[Depends(require_token)])

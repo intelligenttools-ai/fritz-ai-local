@@ -16,11 +16,16 @@ dependencies = [
 [project.optional-dependencies]
 test = [
   "pytest>=8.0",
+  "pytest-timeout>=2.3",
 ]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
 testpaths = ["tests"]
+# Hard per-test timeout: a runaway hang (e.g. reading an infinite SSE body via
+# TestClient, which never propagates disconnect) becomes a failing test instead
+# of an indefinitely-hung merge gate. 60s is far above any real unit test here.
+addopts = "--timeout=60"
 
 [project.scripts]
 fritz-local-brain = "fritz_local_brain.app:main"

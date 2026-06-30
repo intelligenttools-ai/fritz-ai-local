@@ -301,6 +301,29 @@ def prune_old_events_quietly(settings: "Settings") -> None:
         pass
 
 
+def latest_event_id(settings: "Settings") -> int:
+    """Return ``MAX(id)`` from the events table, or 0 when there is nothing.
+
+    Cheap single-query change detector for the SSE live-update stream (#198):
+    the stream polls this and emits a ``changed`` event whenever it grows.
+    Defensive — returns 0 (no change source) when telemetry is disabled, no db
+    file exists yet, or the table is empty.
+    """
+
+    if not settings.telemetry_enabled:
+        return 0
+    path = _db_path(settings)
+    if not path.exists():
+        return 0
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    try:
+        row = conn.execute("SELECT MAX(id) FROM events").fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+    finally:
+        conn.close()
+
+
 def read_events(settings: "Settings") -> list[dict[str, Any]]:
     """Return all events ordered by id (insertion order). Test/helper read path.
 
