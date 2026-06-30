@@ -92,6 +92,13 @@
     cursor: pointer;
   }
   #refresh-btn:hover { border-color: var(--accent); color: var(--accent); }
+  #auto-refresh-select {
+    background: var(--surface2); border: 1px solid var(--border);
+    color: var(--muted); padding: .3rem .5rem;
+    border-radius: 4px; font-family: inherit; font-size: .8rem;
+    cursor: pointer;
+  }
+  #auto-refresh-select:focus { outline: none; border-color: var(--accent); }
   #last-updated { color: var(--muted); font-size: .75rem; }
 
   main { padding: 1.25rem 1.5rem; max-width: 1200px; }
@@ -200,6 +207,87 @@
   .pct-green { background: rgba(74,222,128,.15); color: var(--green); }
   .pct-yellow { background: rgba(251,191,36,.15); color: var(--yellow); }
   .pct-red    { background: rgba(248,113,113,.15); color: var(--red); }
+
+  /* ---- actions panel ---- */
+  .actions-note {
+    color: var(--muted); font-size: .75rem; font-style: italic;
+    margin-bottom: .85rem;
+  }
+  .action-groups { display: flex; flex-wrap: wrap; gap: 1rem; }
+  .action-group {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 6px; padding: .75rem 1rem; min-width: 200px; flex: 1;
+  }
+  .action-group-label {
+    color: var(--muted); font-size: .7rem; text-transform: uppercase;
+    letter-spacing: .07em; margin-bottom: .6rem;
+  }
+  .action-btns { display: flex; flex-wrap: wrap; gap: .45rem; }
+  .btn-action {
+    background: var(--surface2); border: 1px solid var(--border);
+    color: var(--text); padding: .3rem .7rem;
+    border-radius: 4px; font-family: inherit; font-size: .8rem;
+    cursor: pointer; display: inline-flex; align-items: center; gap: .35rem;
+    white-space: nowrap;
+  }
+  .btn-action:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .btn-action:disabled { opacity: .45; cursor: not-allowed; }
+  .btn-action.apply {
+    border-color: var(--yellow); color: var(--yellow);
+  }
+  .btn-action.apply:hover:not(:disabled) { background: rgba(251,191,36,.12); }
+  .btn-action.destructive {
+    border-color: var(--red); color: var(--red);
+  }
+  .btn-action.destructive:hover:not(:disabled) { background: rgba(248,113,113,.12); }
+  .btn-spinner { display: none; }
+  .btn-action.running .btn-spinner { display: inline; }
+  .btn-action.running .btn-label { opacity: .6; }
+
+  /* toast */
+  #action-toast {
+    margin-top: .85rem;
+    padding: .55rem .85rem;
+    border-radius: 5px;
+    font-size: .8rem;
+    display: none;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    position: relative;
+  }
+  #action-toast.success { border-color: var(--green); color: var(--green); }
+  #action-toast.error   { border-color: var(--red);   color: var(--red); }
+  #action-toast .toast-close {
+    position: absolute; top: .3rem; right: .5rem;
+    background: none; border: none; color: inherit;
+    cursor: pointer; font-family: inherit; font-size: .85rem; opacity: .7;
+  }
+  #action-toast .toast-close:hover { opacity: 1; }
+
+  /* approval gate */
+  #approval-gate {
+    display: none;
+    margin-top: .75rem;
+    padding: .65rem .85rem;
+    background: var(--surface);
+    border: 1px solid var(--yellow);
+    border-radius: 5px;
+    font-size: .8rem;
+  }
+  #approval-gate p { color: var(--yellow); margin-bottom: .5rem; }
+  #approval-gate input {
+    background: var(--bg); border: 1px solid var(--border);
+    color: var(--text); padding: .3rem .6rem;
+    border-radius: 4px; font-family: inherit; font-size: .8rem;
+    margin-right: .5rem; width: 220px;
+  }
+  #approval-gate button {
+    background: var(--surface2); border: 1px solid var(--yellow);
+    color: var(--yellow); padding: .3rem .65rem;
+    border-radius: 4px; font-family: inherit; font-size: .8rem;
+    cursor: pointer;
+  }
+  #approval-gate button:hover { background: rgba(251,191,36,.15); }
 </style>
 </head>
 <body>
@@ -220,7 +308,13 @@
 <header>
   <h1>Fritz Brain</h1>
   <span class="subtitle">Usage Dashboard</span>
-  <button id="refresh-btn" onclick="loadAll()">Refresh</button>
+  <button id="refresh-btn" onclick="manualRefresh()">Refresh</button>
+  <select id="auto-refresh-select" onchange="onIntervalChange()">
+    <option value="0">Auto-refresh: off</option>
+    <option value="15">Every 15s</option>
+    <option value="30" selected>Every 30s</option>
+    <option value="60">Every 60s</option>
+  </select>
   <span id="last-updated"></span>
 </header>
 
@@ -233,7 +327,66 @@
     </div>
   </div>
 
-  <!-- 2. Activity over time -->
+  <!-- 2. Actions panel -->
+  <h2>Actions</h2>
+  <div class="section" id="actions-panel">
+    <p class="actions-note">Operator-initiated runs. The scheduler owns autonomous draining — use these for on-demand or diagnostic purposes.</p>
+    <div class="action-groups">
+      <div class="action-group">
+        <div class="action-group-label">Compile</div>
+        <div class="action-btns">
+          <button class="btn-action" id="btn-compile-dry" onclick="runCompile(true)">
+            <span class="btn-spinner">⟳</span><span class="btn-label">Compile (dry-run)</span>
+          </button>
+          <button class="btn-action apply" id="btn-compile-apply" onclick="runCompile(false)">
+            <span class="btn-spinner">⟳</span><span class="btn-label">Compile (apply)</span>
+          </button>
+        </div>
+      </div>
+      <div class="action-group">
+        <div class="action-group-label">Sync</div>
+        <div class="action-btns">
+          <button class="btn-action" id="btn-sync-dry" onclick="runSync(true)">
+            <span class="btn-spinner">⟳</span><span class="btn-label">Sync (dry-run)</span>
+          </button>
+          <button class="btn-action apply" id="btn-sync-apply" onclick="runSync(false)">
+            <span class="btn-spinner">⟳</span><span class="btn-label">Sync (apply)</span>
+          </button>
+        </div>
+      </div>
+      <div class="action-group">
+        <div class="action-group-label">Embeddings</div>
+        <div class="action-btns">
+          <button class="btn-action destructive" id="btn-embed-index" onclick="runEmbedIndex()">
+            <span class="btn-spinner">⟳</span><span class="btn-label">Rebuild index</span>
+          </button>
+        </div>
+      </div>
+      <div class="action-group">
+        <div class="action-group-label">Lint</div>
+        <div class="action-btns">
+          <button class="btn-action" id="btn-lint" onclick="runLint()">
+            <span class="btn-spinner">⟳</span><span class="btn-label">Lint</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Approval gate (shown when apply compile returns approval-required) -->
+    <div id="approval-gate">
+      <p id="approval-message">Large compile run requires approval. Provide an approval token to proceed.</p>
+      <input type="text" id="approval-token-input" placeholder="Approval token">
+      <button onclick="retryApplyCompile()">Retry with token</button>
+    </div>
+
+    <!-- Result toast -->
+    <div id="action-toast">
+      <button class="toast-close" onclick="dismissToast()">✕</button>
+      <span id="action-toast-msg"></span>
+    </div>
+  </div>
+
+  <!-- 3. Activity over time -->
   <h2>Activity over time</h2>
   <div class="section">
     <div class="toggle-group" id="activity-by-toggle">
@@ -592,9 +745,328 @@ function renderProjects(data) {
   </table>`;
 }
 
+// ---- actions ----------------------------------------------------------------
+
+/**
+ * POST helper — mirrors apiFetch but for mutating operations.
+ * Returns { status, json } on success; null if 401 (auth overlay shown).
+ * Throws on network error.
+ */
+async function postAction(path, body) {
+  const token = getToken();
+  showLoader(true);
+  try {
+    const resp = await fetch(path, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+    if (resp.status === 401) {
+      clearToken();
+      showAuthOverlay(true);
+      return null;
+    }
+    const json = await resp.json().catch(() => null);
+    return { status: resp.status, json };
+  } catch (e) {
+    console.error("Action error:", path, e);
+    throw e;
+  } finally {
+    showLoader(false);
+  }
+}
+
+// ---- toast ------------------------------------------------------------------
+
+let _toastTimer = null;
+
+function showToast(msg, isError) {
+  const el  = document.getElementById("action-toast");
+  const txt = document.getElementById("action-toast-msg");
+  txt.innerHTML = msg; // msg is already esc()-escaped by callers
+  el.className = isError ? "error" : "success";
+  el.style.display = "block";
+  if (_toastTimer) clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(dismissToast, isError ? 8000 : 5000);
+}
+
+function dismissToast() {
+  document.getElementById("action-toast").style.display = "none";
+  if (_toastTimer) { clearTimeout(_toastTimer); _toastTimer = null; }
+}
+
+// ---- approval gate ----------------------------------------------------------
+
+function showApprovalGate(msg) {
+  const gate = document.getElementById("approval-gate");
+  document.getElementById("approval-message").textContent = msg;
+  document.getElementById("approval-token-input").value = "";
+  gate.style.display = "block";
+}
+
+function hideApprovalGate() {
+  document.getElementById("approval-gate").style.display = "none";
+}
+
+async function retryApplyCompile() {
+  const token = document.getElementById("approval-token-input").value.trim();
+  if (!token) return;
+  hideApprovalGate();
+  await _runCompileWith(false, token);
+}
+
+// ---- button state helpers ---------------------------------------------------
+
+function setBtnRunning(id, running) {
+  const btn = document.getElementById(id);
+  if (!btn) return;
+  btn.disabled = running;
+  btn.classList.toggle("running", running);
+}
+
+// ---- action handlers --------------------------------------------------------
+
+async function runCompile(dryRun) {
+  if (!dryRun) {
+    if (!confirm("Run compile in APPLY mode? This will write compiled articles to the knowledge base.")) return;
+  }
+  hideApprovalGate();
+  await _runCompileWith(dryRun, null);
+}
+
+async function _runCompileWith(dryRun, approvalToken) {
+  const btnId = dryRun ? "btn-compile-dry" : "btn-compile-apply";
+  setBtnRunning(btnId, true);
+  dismissToast();
+  try {
+    const body = { dry_run: dryRun };
+    if (approvalToken) body.approval_token = approvalToken;
+    const result = await postAction("/v1/compile/run", body);
+    if (!result) return; // 401 — auth overlay shown
+
+    const { status, json } = result;
+
+    // Defensive 403 path (unlikely but guard it)
+    if (status === 403) {
+      showApprovalGate(json?.detail ?? "Large compile requires approval. Provide a token to proceed.");
+      return;
+    }
+
+    if (!json) { showToast("Compile: no response body", true); return; }
+
+    // Detect the 200+errors approval-required path:
+    // applied is empty AND errors contains a message matching the approval pattern.
+    const requiresApproval =
+      !dryRun &&
+      Array.isArray(json.applied) && json.applied.length === 0 &&
+      Array.isArray(json.errors) &&
+      json.errors.some(e => /requires approval|exceeds threshold/i.test(e));
+
+    if (requiresApproval) {
+      const approvalMsg = json.errors.find(e => /requires approval|exceeds threshold/i.test(e)) || "Large compile requires approval.";
+      showApprovalGate(approvalMsg);
+      return;
+    }
+
+    const applied    = Array.isArray(json.applied)   ? json.applied.length   : 0;
+    const considered = json.captures_considered       ?? "?";
+    const errCount   = Array.isArray(json.errors)    ? json.errors.length    : 0;
+    const skipped    = Array.isArray(json.skipped)   ? json.skipped.length   : 0;
+    const mode       = dryRun ? " [dry-run]" : "";
+    let msg = `Compile${esc(mode)}: applied ${applied} / considered ${considered}, ${errCount} error(s), ${skipped} skipped`;
+    if (errCount > 0) msg += ` — ${esc(json.errors[0])}`;
+    showToast(msg, errCount > 0);
+    if (!dryRun && errCount === 0) loadAll();
+  } catch (e) {
+    showToast(`Compile error: ${esc(String(e))}`, true);
+  } finally {
+    setBtnRunning(btnId, false);
+  }
+}
+
+async function runSync(dryRun) {
+  if (!dryRun) {
+    if (!confirm("Run sync in APPLY mode? This will push changes to remote vaults.")) return;
+  }
+  const btnId = dryRun ? "btn-sync-dry" : "btn-sync-apply";
+  setBtnRunning(btnId, true);
+  dismissToast();
+  try {
+    const result = await postAction("/v1/sync/run", { dry_run: dryRun });
+    if (!result) return;
+    const { json } = result;
+    if (!json) { showToast("Sync: no response body", true); return; }
+    const vaults   = Array.isArray(json.results) ? json.results.length : 0;
+    const errCount = Array.isArray(json.errors)  ? json.errors.length  : 0;
+    const mode     = dryRun ? " [dry-run]" : "";
+    let msg = `Sync${esc(mode)}: ${vaults} vault(s), ${errCount} error(s)`;
+    if (errCount > 0) msg += ` — ${esc(json.errors[0])}`;
+    showToast(msg, errCount > 0);
+    if (!dryRun && errCount === 0) loadAll();
+  } catch (e) {
+    showToast(`Sync error: ${esc(String(e))}`, true);
+  } finally {
+    setBtnRunning(btnId, false);
+  }
+}
+
+async function runEmbedIndex() {
+  if (!confirm("Force-rebuild the embedding index? This re-indexes all documents and may take a while.")) return;
+  setBtnRunning("btn-embed-index", true);
+  dismissToast();
+  try {
+    const result = await postAction("/v1/embeddings/index/run", { force: true });
+    if (!result) return;
+    const { json } = result;
+    if (!json) { showToast("Embed index: no response body", true); return; }
+    const isError = !!json.error || !json.indexed;
+    let msg;
+    if (json.error) {
+      msg = `Embed index error: ${esc(json.error)}`;
+    } else {
+      msg = `Embed index: indexed ${json.documents_indexed ?? 0} document(s)`;
+    }
+    showToast(msg, isError);
+    if (!isError) loadAll();
+  } catch (e) {
+    showToast(`Embed index error: ${esc(String(e))}`, true);
+  } finally {
+    setBtnRunning("btn-embed-index", false);
+  }
+}
+
+async function runLint() {
+  setBtnRunning("btn-lint", true);
+  dismissToast();
+  try {
+    const result = await postAction("/v1/lint/run", {});
+    if (!result) return;
+    const { json } = result;
+    if (!json) { showToast("Lint: no response body", true); return; }
+    const findings = Array.isArray(json.findings) ? json.findings.length : 0;
+    const errCount = Array.isArray(json.errors)   ? json.errors.length   : 0;
+    let msg = `Lint: ${findings} finding(s), ${errCount} error(s)`;
+    if (errCount > 0) msg += ` — ${esc(json.errors[0])}`;
+    showToast(msg, errCount > 0);
+  } catch (e) {
+    showToast(`Lint error: ${esc(String(e))}`, true);
+  } finally {
+    setBtnRunning("btn-lint", false);
+  }
+}
+
+// ---- auto-refresh -----------------------------------------------------------
+
+const REFRESH_INTERVAL_KEY = "fritz_dashboard_refresh_interval";
+const DEFAULT_INTERVAL_S   = 30;
+
+let _lastUpdatedAt  = null;  // Date or null
+let _refreshTimer   = null;  // setInterval handle for auto-refresh ticks
+let _tickTimer      = null;  // setInterval handle for the 1s countdown ticker
+let _inFlight       = false; // guard against overlapping loadAll calls
+
+/** Read the persisted interval (seconds); returns 0 for "off". */
+function getSavedInterval() {
+  const raw = localStorage.getItem(REFRESH_INTERVAL_KEY);
+  const n   = parseInt(raw, 10);
+  const valid = [0, 15, 30, 60];
+  return valid.includes(n) ? n : DEFAULT_INTERVAL_S;
+}
+
+/** Restore the select value from localStorage, selecting the matching option. */
+function restoreIntervalSelect() {
+  const saved = getSavedInterval();
+  const sel   = document.getElementById("auto-refresh-select");
+  // Find a matching option; fall back to the first that matches or leave default
+  const opt = [...sel.options].find(o => parseInt(o.value, 10) === saved);
+  if (opt) sel.value = String(saved);
+}
+
+/** Update #last-updated text once. Called by the 1s ticker. */
+function renderLastUpdated() {
+  const el  = document.getElementById("last-updated");
+  const sel = document.getElementById("auto-refresh-select");
+  const intervalS = parseInt(sel.value, 10);
+
+  if (!_lastUpdatedAt) {
+    el.textContent = "";
+    return;
+  }
+
+  const timeStr = _lastUpdatedAt.toLocaleTimeString();
+  if (intervalS === 0) {
+    // No auto-refresh — just show when it was last updated
+    el.textContent = "Updated " + timeStr;
+    return;
+  }
+
+  const elapsedS  = Math.round((Date.now() - _lastUpdatedAt.getTime()) / 1000);
+  const nextInS   = Math.max(0, intervalS - elapsedS);
+  el.textContent  = `Updated ${timeStr} · next in ${nextInS}s`;
+}
+
+/** Start the 1s display ticker (idempotent). */
+function startTicker() {
+  if (_tickTimer) return;
+  _tickTimer = setInterval(renderLastUpdated, 1000);
+}
+
+/** Stop and clear the auto-refresh timer (does not touch the ticker). */
+function clearRefreshTimer() {
+  if (_refreshTimer) {
+    clearInterval(_refreshTimer);
+    _refreshTimer = null;
+  }
+}
+
+/** Start (or restart) the auto-refresh timer for the current interval. */
+function startRefreshTimer() {
+  clearRefreshTimer();
+  const sel = document.getElementById("auto-refresh-select");
+  const intervalS = parseInt(sel.value, 10);
+  if (intervalS === 0) return; // off
+  _refreshTimer = setInterval(() => {
+    if (_inFlight) return; // skip tick if a load is already running
+    if (document.hidden) return; // extra guard (visibility handler clears the timer, but belt+suspenders)
+    loadAll();
+  }, intervalS * 1000);
+}
+
+/** Called when the user changes the interval select. */
+function onIntervalChange() {
+  const sel = document.getElementById("auto-refresh-select");
+  localStorage.setItem(REFRESH_INTERVAL_KEY, sel.value);
+  startRefreshTimer();
+  renderLastUpdated(); // immediately update the countdown text
+}
+
+/** Manual refresh button — calls loadAll and resets the countdown. */
+function manualRefresh() {
+  if (_inFlight) return;
+  loadAll();
+  // Reset the auto-refresh timer so the next automatic tick is a full interval away
+  startRefreshTimer();
+}
+
+// Pause when hidden; resume immediately + restart timer when visible again
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    clearRefreshTimer();
+  } else {
+    // Tab became visible — do an immediate refresh then restart the timer
+    if (!_inFlight) loadAll();
+    startRefreshTimer();
+  }
+});
+
 // ---- main load --------------------------------------------------------------
 
 async function loadAll() {
+  if (_inFlight) return;
+  _inFlight = true;
   document.getElementById("last-updated").textContent = "Loading…";
 
   const [summary, activity, queries, knowledge, projects] = await Promise.all([
@@ -605,6 +1077,8 @@ async function loadAll() {
     apiFetch("/v1/usage/projects"),
   ]);
 
+  _inFlight = false;
+
   // If any returned null due to 401, the overlay is already shown
   if (!getToken()) return;
 
@@ -614,13 +1088,16 @@ async function loadAll() {
   renderKnowledge(knowledge);
   renderProjects(projects);
 
-  document.getElementById("last-updated").textContent =
-    "Updated " + new Date().toLocaleTimeString();
+  _lastUpdatedAt = new Date();
+  renderLastUpdated();
 }
 
 // ---- startup ----------------------------------------------------------------
 
 (function init() {
+  restoreIntervalSelect();
+  startTicker();
+  startRefreshTimer();
   if (getToken()) {
     hideAuthOverlay();
     loadAll();
