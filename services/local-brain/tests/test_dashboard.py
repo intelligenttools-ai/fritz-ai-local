@@ -223,3 +223,66 @@ def test_dashboard_sse_falls_back_to_polling() -> None:
     fn = body[start:end]
     assert 'addEventListener("error"' in fn, "SSE error handler missing"
     assert "_sseRetried" in fn, "single-reconnect guard missing"
+
+
+# ---------------------------------------------------------------------------
+# Visual overhaul (#197): inline-SVG charts, states, theme toggle.
+# Dependency-free by construction — no CDN/library/asset is permitted.
+# ---------------------------------------------------------------------------
+
+def test_dashboard_has_inline_svg_charts() -> None:
+    """The overhaul replaces div-bar time-series with hand-drawn inline SVG.
+    The served body must contain inline <svg> markup (no charting lib)."""
+    body = _client().get("/dashboard").text
+    assert "<svg" in body, "inline SVG charts missing"
+
+
+def test_dashboard_has_svg_chart_render_helpers() -> None:
+    """The new SVG renderers (sparkline + time-series line/area) must be present."""
+    body = _client().get("/dashboard").text
+    assert "function sparkline(" in body, "sparkline SVG helper missing"
+    assert "function renderTimeChart(" in body, "renderTimeChart helper missing"
+    # The line/area chart emits <path> elements for the line and fill.
+    assert "class=\"data-line\"" in body, "SVG data line class missing"
+
+
+def test_dashboard_has_error_and_empty_states() -> None:
+    """Endpoints returning null/500 must surface an error card, and empty data
+    must show a 'No data' message rather than a broken panel."""
+    body = _client().get("/dashboard").text
+    assert "function renderError(" in body, "renderError state helper missing"
+    assert "error-state" in body, "error-state styling missing"
+    assert "No data yet" in body, "empty-state messaging missing"
+    assert "skeleton" in body, "loading skeleton missing"
+
+
+def test_dashboard_has_theme_toggle() -> None:
+    """The optional light/dark toggle must be wired and persist its choice."""
+    body = _client().get("/dashboard").text
+    assert 'id="theme-toggle"' in body, "theme-toggle control missing"
+    assert "function toggleTheme(" in body, "toggleTheme handler missing"
+    assert 'data-theme="light"' in body, "light theme variant missing"
+
+
+def test_dashboard_chart_tooltips_are_escaped() -> None:
+    """XSS guard for new chart code: per-day breakdown tooltips built into SVG
+    innerHTML must esc() the untrusted bucket keys."""
+    body = _client().get("/dashboard").text
+    start = body.index("function renderTimeChart(")
+    end = body.index("function ", start + 1)
+    fn = body[start:end]
+    assert "esc(k)" in fn, "bucket keys not escaped in chart tooltips"
+    assert "esc(day)" in fn, "day label not escaped in chart tooltips"
+
+
+def test_dashboard_is_dependency_free() -> None:
+    """Hard constraint: no external script/link/font references. The dashboard
+    must remain a single self-contained offline file."""
+    body = _client().get("/dashboard").text
+    lowered = body.lower()
+    # No remote document fetches of any kind (cdn hosts, fonts, etc.).
+    assert "//cdn" not in lowered, "unexpected CDN reference"
+    assert "https://" not in body and "http://" not in body, "external URL reference present"
+    assert "<script src=" not in lowered, "external script tag present"
+    assert "<link " not in lowered, "external link tag present"
+    assert "@import" not in lowered, "external CSS import present"
