@@ -555,6 +555,12 @@ async def run_compile(settings: Settings, request: CompileRunRequest, trusted: b
 
     sync_log_to_telemetry_quietly(settings)
 
+    try:
+        from .kb_health import invalidate_kb_health_cache
+        invalidate_kb_health_cache(settings)
+    except Exception:  # noqa: BLE001 - cache invalidation must never break compile
+        pass
+
     return CompileRunResult(
         run_id=run_id,
         started_at=started,
