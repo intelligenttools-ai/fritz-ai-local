@@ -77,3 +77,76 @@ def test_savetoken_dismisses_auth_overlay() -> None:
     end = body.index("}", start)
     save_token_body = body[start:end]
     assert "hideAuthOverlay()" in save_token_body
+
+
+def test_dashboard_auto_refresh_feature() -> None:
+    """Regression guard (#195): auto-refresh control, visibility-pause, and
+    localStorage persistence must all be present in the served dashboard body.
+    A regression that removes any of these wiring points will fail this test."""
+    body = _client().get("/dashboard").text
+    assert "auto-refresh-select" in body, "auto-refresh select element id missing"
+    assert "visibilitychange" in body, "visibilitychange listener missing"
+    assert "localStorage" in body, "localStorage persistence missing"
+
+
+# ---------------------------------------------------------------------------
+# Actions panel (#196)
+# ---------------------------------------------------------------------------
+
+def test_dashboard_actions_panel_container() -> None:
+    """The Actions section must be present with the expected container id."""
+    body = _client().get("/dashboard").text
+    assert 'id="actions-panel"' in body, "actions-panel container id missing"
+
+
+def test_dashboard_actions_post_helper() -> None:
+    """postAction helper must be declared in the served body."""
+    body = _client().get("/dashboard").text
+    assert "function postAction(" in body, "postAction function missing"
+
+
+def test_dashboard_actions_compile_endpoint() -> None:
+    body = _client().get("/dashboard").text
+    assert "/v1/compile/run" in body, "/v1/compile/run endpoint reference missing"
+
+
+def test_dashboard_actions_sync_endpoint() -> None:
+    body = _client().get("/dashboard").text
+    assert "/v1/sync/run" in body, "/v1/sync/run endpoint reference missing"
+
+
+def test_dashboard_actions_embeddings_endpoint() -> None:
+    body = _client().get("/dashboard").text
+    assert "/v1/embeddings/index/run" in body, "/v1/embeddings/index/run endpoint reference missing"
+
+
+def test_dashboard_actions_lint_endpoint() -> None:
+    body = _client().get("/dashboard").text
+    assert "/v1/lint/run" in body, "/v1/lint/run endpoint reference missing"
+
+
+def test_dashboard_actions_approval_token_input() -> None:
+    """Approval-token input must be present for the large-batch approval retry flow."""
+    body = _client().get("/dashboard").text
+    assert 'id="approval-token-input"' in body, "approval-token-input id missing"
+
+
+def test_dashboard_actions_approval_gate() -> None:
+    """Approval gate container must be present."""
+    body = _client().get("/dashboard").text
+    assert 'id="approval-gate"' in body, "approval-gate container id missing"
+
+
+def test_dashboard_actions_toast() -> None:
+    """Action result toast must be present."""
+    body = _client().get("/dashboard").text
+    assert 'id="action-toast"' in body, "action-toast element id missing"
+
+
+def test_dashboard_actions_esc_used_in_post_results() -> None:
+    """XSS guard: response-derived strings in action handlers must go through esc().
+    Check that esc() calls appear in the postAction / action-handler block."""
+    body = _client().get("/dashboard").text
+    # The action handlers use esc() for error messages and mode strings.
+    # Count occurrences — there must be more than just the original renderBarChart uses.
+    assert body.count("esc(") >= 10, "too few esc() calls — XSS guard may have regressed"
