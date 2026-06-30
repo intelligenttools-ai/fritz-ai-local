@@ -65,3 +65,15 @@ def test_dashboard_has_html_escape_helper() -> None:
     dropped, this fails."""
     resp = _client().get("/dashboard")
     assert "function esc(" in resp.text
+
+
+def test_savetoken_dismisses_auth_overlay() -> None:
+    """Regression guard (#193): saveToken() must hide the auth overlay after
+    storing the token, otherwise the overlay stays up after a valid token is
+    entered. A DOM test isn't feasible at the Python layer, so assert the
+    saveToken function body calls hideAuthOverlay()."""
+    body = _client().get("/dashboard").text
+    start = body.index("function saveToken(")
+    end = body.index("}", start)
+    save_token_body = body[start:end]
+    assert "hideAuthOverlay()" in save_token_body
