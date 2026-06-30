@@ -296,6 +296,107 @@ def test_summary_headline_numbers(monkeypatch, tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# agents discovery + per-agent filtering (#199)
+# ---------------------------------------------------------------------------
+
+def test_agents_discovered_dynamically_with_counts_and_seen(monkeypatch, tmp_path) -> None:
+    """/v1/usage/agents returns distinct agents with counts + first/last seen,
+    discovered from the store. Includes the literal "unknown" value AND a
+    brand-new agent ("novelagent") with NO code change — the anti-hardcoding
+    acceptance for #199."""
+    settings = _settings(tmp_path)
+    _seed(settings, "query", agent="pi", day="2026-06-01", time="08:00:00")
+    _seed(settings, "query", agent="pi", day="2026-06-03", time="20:00:00")
+    _seed(settings, "compile", agent="unknown", day="2026-06-02")
+    # A runtime that did not exist when this code was written. It MUST appear.
+    _seed(settings, "capture", agent="novelagent", day="2026-06-05")
+    # Empty/None agent must normalize to "unknown" (merges with the literal one).
+    _seed(settings, "compile", agent=None, day="2026-06-04")
+    client = _client(monkeypatch, settings)
+
+    body = client.get("/v1/usage/agents", headers=_AUTH).json()
+    by_agent = {a["agent"]: a for a in body["agents"]}
+
+    # Brand-new value appears with zero code change (anti-hardcoding assertion).
+    assert "novelagent" in by_agent
+    assert by_agent["novelagent"]["count"] == 1
+
+    # "unknown" is a normal, selectable value; None merged into it -> count 2.
+    assert by_agent["unknown"]["count"] == 2
+
+    # pi: count 2, first/last seen span the two days.
+    assert by_agent["pi"]["count"] == 2
+    assert by_agent["pi"]["first_seen"].startswith("2026-06-01")
+    assert by_agent["pi"]["last_seen"].startswith("2026-06-03")
+
+    # Sorted by count desc, then agent asc: pi(2), unknown(2), novelagent(1).
+    assert [a["agent"] for a in body["agents"]] == ["pi", "unknown", "novelagent"]
+
+
+def test_agents_empty_store(monkeypatch, tmp_path) -> None:
+    settings = _settings(tmp_path)
+    client = _client(monkeypatch, settings)
+    assert client.get("/v1/usage/agents", headers=_AUTH).json()["agents"] == []
+
+
+def test_agent_filter_scopes_activity(monkeypatch, tmp_path) -> None:
+    settings = _settings(tmp_path)
+    _seed(settings, "compile", agent="pi", day="2026-06-01")
+    _seed(settings, "compile", agent="pi", day="2026-06-01")
+    _seed(settings, "compile", agent="codex", day="2026-06-01")
+    client = _client(monkeypatch, settings)
+
+    # Unfiltered: both agents counted by type.
+    all_b = client.get("/v1/usage/activity?by=agent", headers=_AUTH).json()["buckets"]
+    assert all_b == {"2026-06-01": {"pi": 2, "codex": 1}}
+
+    # agent=pi excludes codex entirely.
+    pi_b = client.get("/v1/usage/activity?by=agent&agent=pi", headers=_AUTH).json()["buckets"]
+    assert pi_b == {"2026-06-01": {"pi": 2}}
+
+
+def test_agent_filter_scopes_queries(monkeypatch, tmp_path) -> None:
+    settings = _settings(tmp_path)
+    _seed(settings, "query", agent="pi", payload={"hit": True})
+    _seed(settings, "query", agent="pi", payload={"hit": True})
+    _seed(settings, "query", agent="codex", payload={"hit": False})
+    client = _client(monkeypatch, settings)
+
+    body = client.get("/v1/usage/queries?agent=pi", headers=_AUTH).json()
+    assert body["total"] == 2
+    assert body["by_agent"] == {"pi": 2}  # codex excluded
+
+
+def test_agent_filter_scopes_summary(monkeypatch, tmp_path) -> None:
+    settings = _settings(tmp_path)
+    monkeypatch.setattr(routes.usage, "compute_kb_health", lambda s: {"articles_total": 0, "backlog": {}})
+    _seed(settings, "compile", agent="pi")
+    _seed(settings, "query", agent="pi", payload={"hit": True})
+    _seed(settings, "query", agent="codex", payload={"hit": False})
+    client = _client(monkeypatch, settings)
+
+    body = client.get("/v1/usage/summary?agent=pi", headers=_AUTH).json()
+    assert body["total_events"] == 2  # codex query excluded
+    assert body["distinct_agents"] == 1
+    assert body["events_by_type"] == {"compile": 1, "query": 1}
+
+
+def test_agent_filter_scopes_projects(monkeypatch, tmp_path) -> None:
+    settings = _settings(tmp_path)
+    monkeypatch.setattr(
+        routes.usage, "compute_kb_health",
+        lambda s: {"articles_by_vault": {}, "articles_total": 0, "backlog": {}},
+    )
+    _seed(settings, "compile", agent="pi", vault="a")
+    _seed(settings, "compile", agent="codex", vault="a")
+    client = _client(monkeypatch, settings)
+
+    projects = {p["vault"]: p for p in
+                client.get("/v1/usage/projects?agent=pi", headers=_AUTH).json()["projects"]}
+    assert projects["a"]["event_count"] == 1  # only pi's event
+
+
+# ---------------------------------------------------------------------------
 # AUTH: every endpoint 401 without bearer token
 # ---------------------------------------------------------------------------
 
@@ -304,6 +405,7 @@ def test_all_usage_endpoints_require_auth(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(routes.usage, "compute_kb_health", lambda s: {"articles_total": 0, "backlog": {}})
     client = _client(monkeypatch, settings)
     for path in (
+        "/v1/usage/agents",
         "/v1/usage/activity",
         "/v1/usage/queries",
         "/v1/usage/knowledge",
@@ -326,6 +428,7 @@ def test_all_usage_endpoints_empty_store(monkeypatch, tmp_path) -> None:
     )
     client = _client(monkeypatch, settings)
 
+    assert client.get("/v1/usage/agents", headers=_AUTH).json()["agents"] == []
     assert client.get("/v1/usage/activity", headers=_AUTH).json()["buckets"] == {}
     q = client.get("/v1/usage/queries", headers=_AUTH).json()
     assert q["total"] == 0 and q["hit_rate"] is None

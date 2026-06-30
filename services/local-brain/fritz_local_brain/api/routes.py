@@ -39,6 +39,7 @@ from ..models import (
     SyncRunRequest,
     SyncRunResult,
     UsageActivityResult,
+    UsageAgentsResult,
     UsageKnowledgeResult,
     UsageProjectsResult,
     UsageQueriesResult,
@@ -175,14 +176,23 @@ async def search_run(
     return await _run_query_with_telemetry(settings, request, agent, use_vector=True)
 
 
+@router.get("/v1/usage/agents", response_model=UsageAgentsResult, dependencies=[Depends(require_token)])
+async def usage_agents(
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = Query(default=None, alias="to"),
+) -> UsageAgentsResult:
+    return UsageAgentsResult(agents=usage.agents(get_settings(), since=from_, until=to))
+
+
 @router.get("/v1/usage/activity", response_model=UsageActivityResult, dependencies=[Depends(require_token)])
 async def usage_activity(
     from_: str | None = Query(default=None, alias="from"),
     to: str | None = Query(default=None, alias="to"),
     bucket: str = "day",
     by: str = "type",
+    agent: str | None = Query(default=None),
 ) -> UsageActivityResult:
-    buckets = usage.activity(get_settings(), since=from_, until=to, bucket=bucket, by=by)
+    buckets = usage.activity(get_settings(), since=from_, until=to, bucket=bucket, by=by, agent=agent)
     return UsageActivityResult(bucket="day", by=(by if by in {"type", "agent", "vault"} else "type"), buckets=buckets)
 
 
@@ -191,8 +201,9 @@ async def usage_queries(
     from_: str | None = Query(default=None, alias="from"),
     to: str | None = Query(default=None, alias="to"),
     limit: int = 10,
+    agent: str | None = Query(default=None),
 ) -> UsageQueriesResult:
-    return UsageQueriesResult(**usage.queries(get_settings(), since=from_, until=to, limit=limit))
+    return UsageQueriesResult(**usage.queries(get_settings(), since=from_, until=to, limit=limit, agent=agent))
 
 
 @router.get("/v1/usage/knowledge", response_model=UsageKnowledgeResult, dependencies=[Depends(require_token)])
@@ -204,16 +215,18 @@ async def usage_knowledge() -> UsageKnowledgeResult:
 async def usage_projects(
     from_: str | None = Query(default=None, alias="from"),
     to: str | None = Query(default=None, alias="to"),
+    agent: str | None = Query(default=None),
 ) -> UsageProjectsResult:
-    return UsageProjectsResult(projects=usage.projects(get_settings(), since=from_, until=to))
+    return UsageProjectsResult(projects=usage.projects(get_settings(), since=from_, until=to, agent=agent))
 
 
 @router.get("/v1/usage/summary", response_model=UsageSummaryResult, dependencies=[Depends(require_token)])
 async def usage_summary(
     from_: str | None = Query(default=None, alias="from"),
     to: str | None = Query(default=None, alias="to"),
+    agent: str | None = Query(default=None),
 ) -> UsageSummaryResult:
-    return UsageSummaryResult(**usage.summary(get_settings(), since=from_, until=to))
+    return UsageSummaryResult(**usage.summary(get_settings(), since=from_, until=to, agent=agent))
 
 
 @router.post("/v1/lint/run", response_model=LintRunResult, dependencies=[Depends(require_token)])
