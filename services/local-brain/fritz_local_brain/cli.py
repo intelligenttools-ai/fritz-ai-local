@@ -102,7 +102,7 @@ def _dispatch(args: argparse.Namespace) -> Any:
 def _request(args: argparse.Namespace, method: str, path: str, body: dict[str, Any] | None = None) -> Any:
     connection = resolve_connection(args)
     data = None
-    headers = {"accept": "application/json"}
+    headers = {"accept": "application/json", "x-brain-agent": os.environ.get("FRITZ_AGENT") or "cli"}
     if body is not None:
         clean_body = {key: value for key, value in body.items() if value is not None}
         data = json.dumps(clean_body).encode("utf-8")

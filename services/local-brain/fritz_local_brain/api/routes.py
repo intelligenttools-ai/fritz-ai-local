@@ -11,7 +11,7 @@ from pydantic_ai.exceptions import ModelAPIError, UsageLimitExceeded
 
 from ..compile_workflow import run_compile
 from ..config import get_settings
-from ..telemetry import record_event
+from ..telemetry import record_query_event
 from ..embeddings import (
     embedding_status,
     probe_embedding_dimensions,
@@ -138,29 +138,14 @@ async def _run_query_with_telemetry(
     start = perf_counter()
     result = await run_query(settings, request, use_vector=use_vector, ensure_index=False)
     duration_ms = int((perf_counter() - start) * 1000)
-    try:
-        payload: dict = {
-            "result_count": len(result.matches),
-            "hit": len(result.matches) > 0,
-            "scope": request.scope,
-            "use_vector": use_vector,
-            "skipped": result.skipped,
-            "errors": result.errors,
-        }
-        if settings.telemetry_store_query_text:
-            payload["query"] = request.query
-        record_event(
-            settings,
-            "search" if use_vector else "query",
-            agent=agent,
-            vault=request.vault,
-            run_id=result.run_id,
-            status="error" if result.errors else "ok",
-            duration_ms=duration_ms,
-            payload=payload,
-        )
-    except Exception:  # noqa: BLE001 - telemetry must never break the query path.
-        pass
+    record_query_event(
+        settings,
+        use_vector=use_vector,
+        request=request,
+        result=result,
+        agent=agent,
+        duration_ms=duration_ms,
+    )
     return result
 
 

@@ -185,3 +185,58 @@ def test_cli_rejects_malformed_loopback_netloc() -> None:
                 allow_remote=False,
             )
         )
+
+
+# ---------------------------------------------------------------------------
+# Read-side attribution: every CLI request sends X-Brain-Agent (#179).
+# ---------------------------------------------------------------------------
+
+def _capture_request_header(monkeypatch, header: str) -> dict:
+    captured: dict = {}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self) -> bytes:
+            return b"{}"
+
+    def fake_urlopen(req, timeout):
+        # urllib title-cases header keys; req.headers.get is case-insensitive-ish
+        # only via capitalize(), so fetch with the capitalized form.
+        captured["value"] = req.headers.get(header)
+        return _Response()
+
+    monkeypatch.setattr(cli.request, "urlopen", fake_urlopen)
+    return captured
+
+
+def test_cli_request_sends_default_cli_agent_header(monkeypatch) -> None:
+    monkeypatch.delenv("FRITZ_AGENT", raising=False)
+    captured = _capture_request_header(monkeypatch, "X-brain-agent")
+
+    cli._request(
+        Namespace(base_url="http://127.0.0.1:8765", token=None, token_env=None, registry=None, allow_remote=False),
+        "POST",
+        "/v1/query/run",
+        {"query": "hello"},
+    )
+
+    assert captured["value"] == "cli"
+
+
+def test_cli_request_agent_header_from_fritz_agent_env(monkeypatch) -> None:
+    monkeypatch.setenv("FRITZ_AGENT", "pi")
+    captured = _capture_request_header(monkeypatch, "X-brain-agent")
+
+    cli._request(
+        Namespace(base_url="http://127.0.0.1:8765", token=None, token_env=None, registry=None, allow_remote=False),
+        "POST",
+        "/v1/search/run",
+        {"query": "hello"},
+    )
+
+    assert captured["value"] == "pi"

@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from fritz_local_brain.config import Settings
+    from fritz_local_brain.models import QueryRunRequest, QueryRunResult
 
 # Individual DDL statements executed one-by-one so any error surfaces immediately.
 _DDL = (
@@ -102,6 +103,49 @@ def record_event(
         conn.commit()
     finally:
         conn.close()
+
+
+def record_query_event(
+    settings: "Settings",
+    *,
+    use_vector: bool,
+    request: "QueryRunRequest",
+    result: "QueryRunResult",
+    agent: str,
+    duration_ms: int,
+) -> None:
+    """Record one read-side query/search telemetry event.
+
+    Shared by the HTTP routes (#178) and the in-process MCP tools (#179) so both
+    record IDENTICALLY (critical for #181 aggregation). ``request``/``result`` are
+    duck-typed (only the read attributes are accessed). The query text is included
+    only when ``settings.telemetry_store_query_text``. Wrapped defensively so
+    telemetry never breaks the caller's query path.
+    """
+
+    try:
+        payload: dict[str, Any] = {
+            "result_count": len(result.matches),
+            "hit": len(result.matches) > 0,
+            "scope": request.scope,
+            "use_vector": use_vector,
+            "skipped": result.skipped,
+            "errors": result.errors,
+        }
+        if settings.telemetry_store_query_text:
+            payload["query"] = request.query
+        record_event(
+            settings,
+            "search" if use_vector else "query",
+            agent=agent,
+            vault=request.vault,
+            run_id=result.run_id,
+            status="error" if result.errors else "ok",
+            duration_ms=duration_ms,
+            payload=payload,
+        )
+    except Exception:  # noqa: BLE001 - telemetry must never break the query path.
+        pass
 
 
 _BACKFILL_STATE_FILE = "telemetry_backfill.json"

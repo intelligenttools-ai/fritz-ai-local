@@ -451,13 +451,18 @@ def _is_compile_already_running(exc: Exception) -> bool:
     return exc.__class__.__name__ == "OperationAlreadyRunning" or "Compile already running" in str(exc)
 
 
+def _resolve_client_agent() -> str:
+    """Client-side agent attribution for X-Brain-Agent (#179): FRITZ_AGENT, else 'unknown'."""
+    return (os.environ.get("FRITZ_AGENT") or "").strip() or "unknown"
+
+
 def _try_service_compile(timeout: float = 30.0) -> tuple[str, int | None] | None:
     base_url = _validated_local_brain_base_url()
     if base_url is None:
         return None
 
     payload = json.dumps({"dry_run": False}).encode("utf-8")
-    headers = {"accept": "application/json", "content-type": "application/json"}
+    headers = {"accept": "application/json", "content-type": "application/json", "x-brain-agent": _resolve_client_agent()}
     token = get_local_brain_api_token()
     if token:
         headers["authorization"] = f"Bearer {token}"
@@ -488,7 +493,7 @@ def _try_service_embedding_refresh_schedule(timeout: float = 2.0) -> None:
     if base_url is None:
         return
 
-    headers = {"accept": "application/json"}
+    headers = {"accept": "application/json", "x-brain-agent": _resolve_client_agent()}
     token = get_local_brain_api_token()
     if token:
         headers["authorization"] = f"Bearer {token}"
@@ -741,6 +746,7 @@ def local_brain_service_instructions() -> str:
 
     base_url = get_local_brain_base_url().rstrip("/")
     auth = _local_brain_auth_header()
+    agent = _resolve_client_agent()
     return (
         "## Local Brain Service Active\n\n"
         f"The Dockerized Local Brain service is reachable at `{base_url}`. "
@@ -748,10 +754,10 @@ def local_brain_service_instructions() -> str:
         "Agent integration order: use registered MCP tools first when available and authorized (`brain_search`, `brain_query`, `brain_compile`, `brain_sync`, `brain_lint`), "
         "then HTTP calls from the host. The optional CLI is for installed local packages only; do not assume it is on the host PATH.\n\n"
         "Supported service-backed workflows:\n"
-        f"- Search/brain check, semantic when embeddings are enabled: `curl -fsS -X POST {base_url}/v1/search/run{auth} -H 'content-type: application/json' -d '{{\"query\":\"<query>\"}}'`\n"
-        f"- Exact query compatibility only, not the default brain check: `curl -fsS -X POST {base_url}/v1/query/run{auth} -H 'content-type: application/json' -d '{{\"query\":\"<query>\"}}'`\n"
-        f"- Compile: `curl -fsS -X POST {base_url}/v1/compile/run{auth} -H 'content-type: application/json' -d '{{\"dry_run\":true}}'`\n"
-        f"- Sync: `curl -fsS -X POST {base_url}/v1/sync/run{auth} -H 'content-type: application/json' -d '{{\"dry_run\":true}}'`\n"
+        f"- Search/brain check, semantic when embeddings are enabled: `curl -fsS -X POST {base_url}/v1/search/run{auth} -H 'content-type: application/json' -H 'X-Brain-Agent: {agent}' -d '{{\"query\":\"<query>\"}}'`\n"
+        f"- Exact query compatibility only, not the default brain check: `curl -fsS -X POST {base_url}/v1/query/run{auth} -H 'content-type: application/json' -H 'X-Brain-Agent: {agent}' -d '{{\"query\":\"<query>\"}}'`\n"
+        f"- Compile: `curl -fsS -X POST {base_url}/v1/compile/run{auth} -H 'content-type: application/json' -H 'X-Brain-Agent: {agent}' -d '{{\"dry_run\":true}}'`\n"
+        f"- Sync: `curl -fsS -X POST {base_url}/v1/sync/run{auth} -H 'content-type: application/json' -H 'X-Brain-Agent: {agent}' -d '{{\"dry_run\":true}}'`\n"
         f"- Lint: `curl -fsS -X POST {base_url}/v1/lint/run{auth} -H 'content-type: application/json' -d '{{}}'`\n"
         f"- Embeddings: `curl -fsS {base_url}/v1/embeddings/status{auth}` and `curl -fsS -X POST {base_url}/v1/embeddings/probe{auth} -H 'content-type: application/json' -d '{{\"dry_run\":true}}'`\n\n"
         "Do not also run `/fritz:brain-query`, `/fritz:brain-compile`, `/fritz:brain-sync`, or `/fritz:brain-lint` "

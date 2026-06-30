@@ -21,6 +21,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from fritz_local_brain import telemetry
 from fritz_local_brain.api import routes
 from fritz_local_brain.config import Settings
 from fritz_local_brain.models import QueryMatch, QueryRunRequest, QueryRunResult
@@ -254,11 +255,17 @@ def test_telemetry_failure_does_not_break_query_response(monkeypatch, tmp_path) 
     expected_result = _result(matches=2)
     monkeypatch.setattr(routes, "get_settings", lambda: settings)
     monkeypatch.setattr(routes, "run_query", _fake_run_query(expected_result))
-    monkeypatch.setattr(routes, "record_event", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom")))
+    # Patch the ACTUAL writer invoked inside record_query_event (not routes), so a
+    # write failure is genuinely raised on the recording path and must be swallowed.
+    monkeypatch.setattr(
+        telemetry, "record_event", lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
 
     actual = asyncio.run(routes.query_run(QueryRunRequest(query="q")))
 
+    # Query result is returned unchanged AND the failed write recorded nothing.
     assert actual is expected_result
+    assert read_events(settings) == []
 
 
 # ---------------------------------------------------------------------------
