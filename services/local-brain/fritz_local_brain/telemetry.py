@@ -277,3 +277,130 @@ def read_events(settings: "Settings") -> list[dict[str, Any]]:
         return [dict(row) for row in rows]
     finally:
         conn.close()
+
+
+def _normalize_until(until: str) -> str:
+    """Make a bare ``YYYY-MM-DD`` ``until`` inclusive of the whole day.
+
+    Returns an EXCLUSIVE upper bound for ``ts`` comparison. A bare date is
+    bumped to the next day (00:00) so the full day is included. A full ISO
+    value is used as-is (exclusive). Canonical-UTC TEXT ordering makes the
+    string comparison ``ts < until_exclusive`` correct.
+    """
+    from datetime import timedelta
+
+    if len(until) == 10:  # bare YYYY-MM-DD
+        try:
+            day = datetime.strptime(until, "%Y-%m-%d").date()
+        except ValueError:
+            return until
+        return (day + timedelta(days=1)).isoformat()
+    return until
+
+
+def _normalize_bound(value: str | None, *, is_until: bool) -> str | None:
+    """Return a comparable canonical-UTC string for a date/datetime bound.
+
+    Stored ``ts`` is a canonical-UTC ISO string ("...+00:00"), compared
+    lexicographically, so every bound must be normalized to the SAME form
+    before comparison or it silently mis-filters:
+
+    - A bare ``YYYY-MM-DD`` is validated via strptime. ``since`` is used as-is
+      (inclusive start); ``until`` is bumped to the next day so the whole day
+      is inclusive (:func:`_normalize_until`). A malformed bare date such as
+      "2026-06-3" fails to parse and is IGNORED (returns None) rather than
+      sorting greater than real timestamps and dropping valid events.
+    - A full ISO datetime (possibly with a non-UTC offset, e.g. "+02:00") is
+      parsed and converted to canonical UTC, so the comparison happens on the
+      same instant rather than on differing offset text.
+
+    Any parse failure returns None (skip the filter). Never raises.
+    """
+    if value is None:
+        return None
+
+    # Bare date: validate, then apply since/until day semantics.
+    if len(value) == 10:
+        try:
+            datetime.strptime(value, "%Y-%m-%d")
+        except ValueError:
+            return None  # malformed bare date -> ignore the filter
+        return _normalize_until(value) if is_until else value
+
+    # Full ISO datetime: normalize to canonical UTC for instant comparison.
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
+def query_events(
+    settings: "Settings",
+    *,
+    since: str | None = None,
+    until: str | None = None,
+    event_types: "set[str] | None" = None,
+) -> list[dict[str, Any]]:
+    """Return telemetry events filtered by date range and optional event types.
+
+    ``since``/``until`` accept either ``YYYY-MM-DD`` or a full ISO string;
+    each bound is normalized to a canonical-UTC string (:func:`_normalize_bound`)
+    so the lexicographic comparison against the canonical-UTC ``ts`` TEXT
+    (``ts >= since`` AND ``ts < until_exclusive``) is correct even for non-UTC
+    offsets. A bare ``until`` date is INCLUSIVE of that whole day; an
+    unparseable bound is ignored (no filter). ``event_types`` filters by
+    lowercased event_type. The ``payload`` of each returned event is
+    json-decoded into a dict under the ``"payload"`` key (default ``{}``).
+
+    No-op safe: returns ``[]`` when telemetry is disabled or no db exists.
+    """
+    if not settings.telemetry_enabled:
+        return []
+
+    rows = read_events(settings)
+    since_bound = _normalize_bound(since, is_until=False)
+    until_exclusive = _normalize_bound(until, is_until=True)
+
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        ts = row.get("ts") or ""
+        if since_bound and ts < since_bound:
+            continue
+        if until_exclusive and ts >= until_exclusive:
+            continue
+        if event_types is not None and row.get("event_type") not in event_types:
+            continue
+        event = dict(row)
+        raw = event.get("payload")
+        if isinstance(raw, str):
+            try:
+                decoded = json.loads(raw)
+            except (ValueError, TypeError):
+                decoded = {}
+        elif isinstance(raw, dict):
+            decoded = raw
+        else:
+            decoded = {}
+        event["payload"] = decoded if isinstance(decoded, dict) else {}
+        out.append(event)
+    return out
+
+
+def _percentile(sorted_values: "list[float]", p: float) -> float | None:
+    """Nearest-rank percentile of an already-sorted, non-empty list.
+
+    ``p`` is a percentile in [0, 100]. Uses the nearest-rank method:
+    ``rank = ceil(p/100 * n)`` (1-indexed), clamped to [1, n]. Returns None
+    when the list is empty.
+    """
+    import math
+
+    n = len(sorted_values)
+    if n == 0:
+        return None
+    rank = math.ceil((p / 100.0) * n)
+    rank = max(1, min(rank, n))
+    return sorted_values[rank - 1]

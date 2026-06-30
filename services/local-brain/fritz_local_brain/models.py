@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ArticleWriteProposal(BaseModel):
@@ -313,6 +313,90 @@ class LintRunResult(BaseModel):
     dry_run: bool
     findings: list[LintFinding] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+
+
+class UsageActivityResult(BaseModel):
+    """Time-series of event counts (#181).
+
+    ``buckets`` maps a bucket key (``YYYY-MM-DD`` for bucket=day) to a
+    ``{dimension_value: count}`` dict, where the dimension is ``by``
+    (type|agent|vault). A vault/agent of None is keyed under ``"(none)"``.
+    """
+
+    bucket: str = "day"
+    by: str = "type"
+    buckets: dict[str, dict[str, int]] = Field(default_factory=dict)
+
+
+class UsageLatency(BaseModel):
+    """Latency percentiles in milliseconds; nulls when no data."""
+
+    p50: float | None = None
+    p95: float | None = None
+    p99: float | None = None
+
+
+class UsageTopQuery(BaseModel):
+    """One frequent query text and its count."""
+
+    query: str
+    count: int
+
+
+class UsageQueriesResult(BaseModel):
+    """Query/search aggregates over the date range (#181)."""
+
+    total: int = 0
+    hit_rate: float | None = None
+    latency_ms: UsageLatency = Field(default_factory=UsageLatency)
+    by_agent: dict[str, int] = Field(default_factory=dict)
+    top_queries: list[UsageTopQuery] = Field(default_factory=list)
+
+
+class UsageKnowledgeResult(BaseModel):
+    """KB-health snapshot from ``compute_kb_health`` (#180/#181).
+
+    ``extra="allow"`` so a future key added to ``compute_kb_health`` is passed
+    through the response rather than silently dropped by response_model
+    serialization.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    articles_total: int = 0
+    articles_by_status: dict[str, int] = Field(default_factory=dict)
+    articles_by_vault: dict[str, int] = Field(default_factory=dict)
+    growth_by_day: dict[str, int] = Field(default_factory=dict)
+    embedding: dict[str, Any] = Field(default_factory=dict)
+    compile: dict[str, Any] = Field(default_factory=dict)
+    backlog: dict[str, Any] = Field(default_factory=dict)
+
+
+class UsageProject(BaseModel):
+    """Per-vault rollup combining event activity and KB article counts."""
+
+    vault: str
+    event_count: int = 0
+    events_by_type: dict[str, int] = Field(default_factory=dict)
+    article_count: int = 0
+
+
+class UsageProjectsResult(BaseModel):
+    """Per-vault rollup list (#181)."""
+
+    projects: list[UsageProject] = Field(default_factory=list)
+
+
+class UsageSummaryResult(BaseModel):
+    """Headline usage numbers for the dashboard landing page (#181)."""
+
+    total_events: int = 0
+    events_by_type: dict[str, int] = Field(default_factory=dict)
+    total_queries: int = 0
+    hit_rate: float | None = None
+    total_articles: int = 0
+    backlog_pending: int = 0
+    distinct_agents: int = 0
 
 
 class StatusResult(BaseModel):
