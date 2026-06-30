@@ -76,6 +76,7 @@ class Settings(BaseSettings):
     compile_max_captures: int | None = Field(default=DEFAULT_COMPILE_MAX_CAPTURES, ge=1, validation_alias=AliasChoices("LOCAL_BRAIN_COMPILE_MAX_CAPTURES", "COMPILE_MAX_CAPTURES"))
     correlation_top_k: int = Field(default=5, ge=0, validation_alias=AliasChoices("LOCAL_BRAIN_CORRELATION_TOP_K", "CORRELATION_TOP_K"))
     correlation_max_chars: int = Field(default=4000, ge=0, validation_alias=AliasChoices("LOCAL_BRAIN_CORRELATION_MAX_CHARS", "CORRELATION_MAX_CHARS"))
+    telemetry_enabled: bool = Field(default=True, validation_alias=AliasChoices("LOCAL_BRAIN_TELEMETRY_ENABLED", "TELEMETRY_ENABLED"))
     reconciliation_enabled: bool = Field(default=True, validation_alias=AliasChoices("LOCAL_BRAIN_RECONCILIATION_ENABLED", "RECONCILIATION_ENABLED"))
     reconciliation_autonomy: str = Field(default="apply", validation_alias=AliasChoices("LOCAL_BRAIN_RECONCILIATION_AUTONOMY", "RECONCILIATION_AUTONOMY"))
     bulk_supersession_threshold: int = Field(default=5, ge=1, validation_alias=AliasChoices("LOCAL_BRAIN_BULK_SUPERSESSION_THRESHOLD", "BULK_SUPERSESSION_THRESHOLD"))
