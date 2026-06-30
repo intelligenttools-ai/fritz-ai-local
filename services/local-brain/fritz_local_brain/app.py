@@ -13,13 +13,14 @@ from fastapi.responses import FileResponse
 from .api.routes import router
 from .config import get_settings
 from .scheduler import scheduler_loop
-from .telemetry import sync_log_to_telemetry_quietly
+from .telemetry import prune_old_events_quietly, sync_log_to_telemetry_quietly
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
     sync_log_to_telemetry_quietly(settings)
+    prune_old_events_quietly(settings)
     task: asyncio.Task | None = None
     if settings.scheduler_enabled:
         task = asyncio.create_task(scheduler_loop(settings))

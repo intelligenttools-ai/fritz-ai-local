@@ -14,7 +14,7 @@ from .models import CompileRunRequest
 from .operation_locks import OperationAlreadyRunning, compile_lock
 from .rereconciliation import run_rereconciliation_sweep
 from .run_history import record_compile, record_failure
-from .telemetry import sync_log_to_telemetry_quietly
+from .telemetry import prune_old_events_quietly, sync_log_to_telemetry_quietly
 
 
 async def scheduler_loop(settings: Settings) -> None:
@@ -38,6 +38,7 @@ async def scheduler_loop(settings: Settings) -> None:
         except OperationAlreadyRunning:
             pass
         sync_log_to_telemetry_quietly(settings)
+        prune_old_events_quietly(settings)
 
 
 async def mirror_scheduler_loop(settings: Settings) -> None:

@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -256,6 +256,47 @@ def sync_log_to_telemetry_quietly(settings: "Settings") -> None:
 
     try:
         sync_log_to_telemetry(settings)
+    except Exception:  # noqa: BLE001 - telemetry must never break the core path.
+        pass
+
+
+def prune_old_events(settings: "Settings") -> int:
+    """Delete telemetry events older than the configured retention window.
+
+    Returns the number of rows deleted. No-op (returns 0) when telemetry is
+    disabled, ``telemetry_retention_days`` is <= 0 (keep forever), or no db
+    file exists yet. The cutoff is ``now-UTC - retention_days`` as a canonical
+    ISO-8601 UTC string; since ``ts`` is stored in the same canonical form the
+    lexicographic ``ts < cutoff`` comparison is a valid time range.
+    """
+
+    if not settings.telemetry_enabled or settings.telemetry_retention_days <= 0:
+        return 0
+
+    path = _db_path(settings)
+    if not path.exists():
+        return 0
+
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=settings.telemetry_retention_days)).isoformat()
+
+    conn = _connect(settings)
+    try:
+        cursor = conn.execute("DELETE FROM events WHERE ts < :cutoff", {"cutoff": cutoff})
+        conn.commit()
+        return cursor.rowcount
+    finally:
+        conn.close()
+
+
+def prune_old_events_quietly(settings: "Settings") -> None:
+    """Wiring helper: run :func:`prune_old_events`, swallowing all errors.
+
+    Telemetry must never break a core path, so callers at startup/scheduler
+    choke points use this fire-and-forget wrapper.
+    """
+
+    try:
+        prune_old_events(settings)
     except Exception:  # noqa: BLE001 - telemetry must never break the core path.
         pass
 

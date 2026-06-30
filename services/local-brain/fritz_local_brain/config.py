@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     correlation_max_chars: int = Field(default=4000, ge=0, validation_alias=AliasChoices("LOCAL_BRAIN_CORRELATION_MAX_CHARS", "CORRELATION_MAX_CHARS"))
     telemetry_enabled: bool = Field(default=True, validation_alias=AliasChoices("LOCAL_BRAIN_TELEMETRY_ENABLED", "TELEMETRY_ENABLED"))
     telemetry_store_query_text: bool = Field(default=True, validation_alias=AliasChoices("LOCAL_BRAIN_TELEMETRY_STORE_QUERY_TEXT", "TELEMETRY_STORE_QUERY_TEXT"))
+    # Telemetry retention: events older than this many days are pruned. 0 keeps
+    # everything forever (pruning disabled).
+    telemetry_retention_days: int = Field(default=90, ge=0, validation_alias=AliasChoices("LOCAL_BRAIN_TELEMETRY_RETENTION_DAYS", "TELEMETRY_RETENTION_DAYS"))
     reconciliation_enabled: bool = Field(default=True, validation_alias=AliasChoices("LOCAL_BRAIN_RECONCILIATION_ENABLED", "RECONCILIATION_ENABLED"))
     reconciliation_autonomy: str = Field(default="apply", validation_alias=AliasChoices("LOCAL_BRAIN_RECONCILIATION_AUTONOMY", "RECONCILIATION_AUTONOMY"))
     bulk_supersession_threshold: int = Field(default=5, ge=1, validation_alias=AliasChoices("LOCAL_BRAIN_BULK_SUPERSESSION_THRESHOLD", "BULK_SUPERSESSION_THRESHOLD"))

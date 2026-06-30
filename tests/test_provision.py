@@ -1006,6 +1006,156 @@ class TestReconciliationAutonomy:
             parser.parse_args(["provision", "--reconciliation-autonomy", "invalid"])
 
 
+class TestTelemetryProvisioning:
+    """Tests for telemetry flags/env keys (#183): _config_to_env_map, allowlists, argparse."""
+
+    def test_env_map_defaults_include_telemetry_keys(self):
+        mod = load_engine()
+        cfg = mod.ProvisionConfig()
+        env = mod._config_to_env_map(cfg, "tok-tel")
+        assert env["TELEMETRY_ENABLED"] == "true"
+        assert env["TELEMETRY_STORE_QUERY_TEXT"] == "true"
+        assert env["TELEMETRY_RETENTION_DAYS"] == "90"
+
+    def test_env_map_non_default_telemetry_values(self):
+        mod = load_engine()
+        cfg = mod.ProvisionConfig(
+            telemetry_enabled=False,
+            telemetry_store_query_text=False,
+            telemetry_retention_days=7,
+        )
+        env = mod._config_to_env_map(cfg, "tok-tel")
+        assert env["TELEMETRY_ENABLED"] == "false"
+        assert env["TELEMETRY_STORE_QUERY_TEXT"] == "false"
+        assert env["TELEMETRY_RETENTION_DAYS"] == "7"
+
+    def test_telemetry_keys_in_managed_allowlists(self):
+        mod = load_engine()
+        for key in ("TELEMETRY_ENABLED", "TELEMETRY_STORE_QUERY_TEXT", "TELEMETRY_RETENTION_DAYS"):
+            assert key in mod.PROVISION_ENV_KEYS
+            assert key in mod.DRIFT_TRACKED_KEYS
+
+    def test_argparse_telemetry_defaults_are_none_sentinels(self):
+        """Flagless run yields None so _resolve_telemetry_from_args can preserve .env."""
+        import argparse
+
+        mod = load_engine()
+        parser = argparse.ArgumentParser()
+        sub = parser.add_subparsers()
+        mod.add_provision_subparser(sub)
+
+        ns = parser.parse_args(["provision"])
+        assert ns.telemetry_enabled is None
+        assert ns.telemetry_store_query_text is None
+        assert ns.telemetry_retention_days is None
+
+    def test_argparse_telemetry_overrides_parse_into_config(self):
+        import argparse
+
+        mod = load_engine()
+        parser = argparse.ArgumentParser()
+        sub = parser.add_subparsers()
+        mod.add_provision_subparser(sub)
+
+        ns = parser.parse_args([
+            "provision",
+            "--no-telemetry-enabled",
+            "--no-telemetry-store-query-text",
+            "--telemetry-retention-days",
+            "14",
+        ])
+        assert ns.telemetry_enabled is False
+        assert ns.telemetry_store_query_text is False
+        assert ns.telemetry_retention_days == 14
+
+    def test_reconfigure_argparse_has_telemetry_flags(self):
+        import argparse
+
+        mod = load_engine()
+        parser = argparse.ArgumentParser()
+        sub = parser.add_subparsers()
+        mod.add_reconfigure_subparser(sub)
+
+        ns = parser.parse_args(["reconfigure", "--no-telemetry-enabled", "--telemetry-retention-days", "5"])
+        assert ns.telemetry_enabled is False
+        assert ns.telemetry_retention_days == 5
+
+
+class TestTelemetryRedeployStability:
+    """#183 acceptance: a flagless redeploy must NOT flip an operator's TELEMETRY_* settings."""
+
+    def _ns(self, **overrides):
+        # Default sentinels = flagless run (nothing passed).
+        base = dict(telemetry_enabled=None, telemetry_store_query_text=None, telemetry_retention_days=None)
+        base.update(overrides)
+        return SimpleNamespace(**base)
+
+    def test_flagless_redeploy_preserves_disabled_telemetry(self, tmp_path):
+        """Operator previously set TELEMETRY_*=false; a flagless provision keeps them false."""
+        mod = load_engine()
+        env_path = tmp_path / ".env"
+        env_path.write_text(
+            "TELEMETRY_ENABLED=false\n"
+            "TELEMETRY_STORE_QUERY_TEXT=false\n"
+            "TELEMETRY_RETENTION_DAYS=30\n",
+            encoding="utf-8",
+        )
+
+        # Resolve as cli_provision would on a flagless run.
+        enabled, store_text, retention = mod._resolve_telemetry_from_args(self._ns(), env_path)
+        assert enabled is False
+        assert store_text is False
+        assert retention == 30
+
+        # Full chain: cfg -> env map -> merge back to disk must NOT flip to true.
+        cfg = mod.ProvisionConfig(
+            telemetry_enabled=enabled,
+            telemetry_store_query_text=store_text,
+            telemetry_retention_days=retention,
+        )
+        merged = mod._merge_dotenv(env_path.read_text(), mod._config_to_env_map(cfg, "tok-x"))
+        env_path.write_text(merged, encoding="utf-8")
+
+        parsed = mod._parse_dotenv(env_path.read_text())
+        assert parsed["TELEMETRY_ENABLED"] == "false"
+        assert parsed["TELEMETRY_STORE_QUERY_TEXT"] == "false"
+        assert parsed["TELEMETRY_RETENTION_DAYS"] == "30"
+
+    def test_explicit_flag_overrides_existing_env(self, tmp_path):
+        """Explicitly passing --telemetry-store-query-text sets true even if .env had false."""
+        mod = load_engine()
+        env_path = tmp_path / ".env"
+        env_path.write_text("TELEMETRY_STORE_QUERY_TEXT=false\nTELEMETRY_ENABLED=false\n", encoding="utf-8")
+
+        ns = self._ns(telemetry_store_query_text=True, telemetry_enabled=True, telemetry_retention_days=7)
+        enabled, store_text, retention = mod._resolve_telemetry_from_args(ns, env_path)
+        assert enabled is True
+        assert store_text is True
+        assert retention == 7
+
+    def test_first_run_no_env_uses_defaults(self, tmp_path):
+        """No existing .env -> defaults True / True / 90."""
+        mod = load_engine()
+        env_path = tmp_path / ".env"  # does not exist
+        assert not env_path.exists()
+
+        enabled, store_text, retention = mod._resolve_telemetry_from_args(self._ns(), env_path)
+        assert enabled is True
+        assert store_text is True
+        assert retention == 90
+
+    def test_partial_env_falls_back_to_defaults_for_missing_keys(self, tmp_path):
+        """Keys absent from .env fall back to defaults; present keys are preserved."""
+        mod = load_engine()
+        env_path = tmp_path / ".env"
+        env_path.write_text("TELEMETRY_ENABLED=false\n", encoding="utf-8")  # only one key set
+
+        enabled, store_text, retention = mod._resolve_telemetry_from_args(self._ns(), env_path)
+        assert enabled is False        # preserved from .env
+        assert store_text is True      # absent -> default
+        assert retention == 90         # absent -> default
+
+
 class TestRegistryMergePreservesSubKeys:
     """Item B: _run_write_registry must MERGE existing local_brain_service sub-keys."""
 

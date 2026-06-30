@@ -227,7 +227,22 @@ If yes, ask one follow-up sub-question:
 
 ---
 
-After all eleven questions (plus sub-questions) are answered, proceed to Phase 2.
+**Q12 — Telemetry (usage dashboard)**
+
+> "The service can record usage telemetry that powers the `/dashboard` view.
+>
+>   - Enable usage telemetry? (yes / no, default: yes)
+>   - Store the full query text in telemetry? (yes / no, default: yes —
+>     answer no for privacy; only counts/metadata are kept)
+>   - Telemetry retention in days? (default: 90; 0 = keep forever)"
+
+Records `telemetry_enabled`, `telemetry_store_query_text`,
+`telemetry_retention_days`. Defaults: enabled, store query text, 90-day
+retention.
+
+---
+
+After all twelve questions (plus sub-questions) are answered, proceed to Phase 2.
 
 ---
 
@@ -308,6 +323,9 @@ python scripts/local-brain-service.py provision \
   [--api-token <token>] \
   [--approval-token <token>] \
   [--reconciliation-autonomy apply|propose] \
+  [--telemetry-enabled | --no-telemetry-enabled] \
+  [--telemetry-store-query-text | --no-telemetry-store-query-text] \
+  [--telemetry-retention-days <days>] \
   [--drain-backlog [--drain-approval-token <token>]]
 ```
 
@@ -324,6 +342,11 @@ safe to re-run to reconfigure. Pass flags that match the confirmed answers:
 | persistent approval token provided (Q8) | `--approval-token <token>` |
 | reconciliation autonomy = propose (Q9) | `--reconciliation-autonomy propose` |
 | reconciliation autonomy = apply (Q9) | `--reconciliation-autonomy apply` (default; may omit) |
+| telemetry enabled (Q12) | `--telemetry-enabled` (default; may omit) |
+| telemetry disabled (Q12) | `--no-telemetry-enabled` |
+| store query text (Q12) | `--telemetry-store-query-text` (default; may omit) |
+| do not store query text (Q12) | `--no-telemetry-store-query-text` |
+| telemetry retention (Q12) | `--telemetry-retention-days <days>` (default 90; 0 = keep forever) |
 | drain backlog yes | `--drain-backlog` |
 | drain backlog yes + one-time approval token | `--drain-backlog --drain-approval-token <token>` |
 
