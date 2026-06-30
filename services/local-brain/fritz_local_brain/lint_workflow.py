@@ -8,6 +8,7 @@ from uuid import uuid4
 from .agents.lint_agent import BrainLintAgent
 from .config import Settings
 from .logs import append_global_log
+from .telemetry import sync_log_to_telemetry_quietly
 from .manifests import load_manifest
 from .models import LintRunRequest, LintRunResult
 from .paths import PathMapper
@@ -33,6 +34,7 @@ async def run_lint(settings: Settings, request: LintRunRequest) -> LintRunResult
     if request.vault and request.vault not in vault_paths:
         errors.append(f"Unknown vault: {request.vault}")
     append_global_log(settings.brain_home, "LINT", f"Processed {len(vault_paths)} vaults ({len(findings)} findings)", request.dry_run)
+    sync_log_to_telemetry_quietly(settings)
     return LintRunResult(
         run_id=str(uuid4()),
         started_at=started,

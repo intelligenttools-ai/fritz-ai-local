@@ -11,6 +11,7 @@ the first ``record_event`` call (only when telemetry is enabled).
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -101,6 +102,118 @@ def record_event(
         conn.commit()
     finally:
         conn.close()
+
+
+_BACKFILL_STATE_FILE = "telemetry_backfill.json"
+
+
+def _backfill_state_path(settings: "Settings") -> Path:
+    return Path(settings.brain_home).expanduser() / _BACKFILL_STATE_FILE
+
+
+def _read_imported_count(settings: "Settings") -> int:
+    path = _backfill_state_path(settings)
+    if not path.exists():
+        return 0
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return int(data.get("global_log_lines_imported", 0))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return 0
+
+
+def _write_imported_count(settings: "Settings", count: int) -> None:
+    path = _backfill_state_path(settings)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # Atomic write: a crash mid-write must not corrupt the state file (a corrupt
+    # file reads back as 0 and would re-import the entire log, duplicating every
+    # event). Write to a temp sibling, then os.replace() (atomic rename).
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(json.dumps({"global_log_lines_imported": count}), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def sync_log_to_telemetry(settings: "Settings") -> int:
+    """Idempotently import ``$BRAIN_HOME/log.md`` lines into the telemetry store.
+
+    Uses an append-only high-water mark persisted in
+    ``$BRAIN_HOME/telemetry_backfill.json`` so the one-time historical backfill
+    and the ongoing sync are the SAME operation: only lines after the recorded
+    count are imported, so re-running never duplicates. If the log has fewer
+    lines than the recorded mark (rotation/truncation) the mark is reset to 0
+    and the file is re-imported from the start (rare edge, accepted).
+
+    Returns the number of newly-imported lines. No-op (returns 0) when telemetry
+    is disabled or the log does not exist. File IO is wrapped defensively so a
+    malformed log can never crash callers.
+    """
+
+    if not settings.telemetry_enabled:
+        return 0
+
+    log_path = Path(settings.brain_home).expanduser() / "log.md"
+    if not log_path.exists():
+        return 0
+
+    try:
+        raw = log_path.read_text(encoding="utf-8")
+    except OSError:
+        return 0
+
+    lines = raw.splitlines()
+    # The host capture hook may be mid-append (bind-mounted log.md): a file not
+    # ending in a newline has an incomplete final line. Leave it for the next
+    # sync so it is imported exactly once when complete — and keep the
+    # high-water mark below it so it is not silently skipped as malformed.
+    if lines and not raw.endswith("\n"):
+        lines = lines[:-1]
+
+    already = _read_imported_count(settings)
+    if len(lines) < already:  # log rotated/truncated -> re-import from start.
+        already = 0
+
+    new_lines = lines[already:]
+    imported = 0
+    for line in new_lines:
+        if not line.strip():
+            continue
+        parts = line.split(" | ", 3)
+        if len(parts) < 4:  # malformed line -> skip defensively.
+            continue
+        ts_str, operation, source, summary = parts
+        event_type = operation.strip().lower()
+        agent = source.strip()
+        lowered = summary.lower()
+        status = "error" if any(k in lowered for k in ("failed", "crash")) else "ok"
+        try:
+            ts = datetime.strptime(ts_str.strip(), "%Y-%m-%d %H:%M")
+        except ValueError:
+            ts = None
+        record_event(
+            settings,
+            event_type,
+            agent=agent,
+            status=status,
+            ts=ts,
+            payload={"summary": summary},
+        )
+        imported += 1
+
+    _write_imported_count(settings, len(lines))
+    return imported
+
+
+def sync_log_to_telemetry_quietly(settings: "Settings") -> None:
+    """Wiring helper: run :func:`sync_log_to_telemetry`, swallowing all errors.
+
+    Telemetry must never break a core path, so callers at workflow/scheduler
+    choke points use this fire-and-forget wrapper.
+    """
+
+    try:
+        sync_log_to_telemetry(settings)
+    except Exception:  # noqa: BLE001 - telemetry must never break the core path.
+        pass
 
 
 def read_events(settings: "Settings") -> list[dict[str, Any]]:

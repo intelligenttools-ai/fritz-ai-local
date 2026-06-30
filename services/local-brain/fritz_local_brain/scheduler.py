@@ -14,6 +14,7 @@ from .models import CompileRunRequest
 from .operation_locks import OperationAlreadyRunning, compile_lock
 from .rereconciliation import run_rereconciliation_sweep
 from .run_history import record_compile, record_failure
+from .telemetry import sync_log_to_telemetry_quietly
 
 
 async def scheduler_loop(settings: Settings) -> None:
@@ -35,7 +36,8 @@ async def scheduler_loop(settings: Settings) -> None:
                     record_failure("compile", started, datetime.now(), settings.scheduler_dry_run, summary)
                     append_global_log(settings.brain_home, "COMPILE", summary, settings.scheduler_dry_run)
         except OperationAlreadyRunning:
-            continue
+            pass
+        sync_log_to_telemetry_quietly(settings)
 
 
 async def mirror_scheduler_loop(settings: Settings) -> None:

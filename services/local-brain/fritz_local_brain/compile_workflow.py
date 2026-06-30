@@ -34,6 +34,7 @@ from .paths import PathMapper
 from .prompts import COMPILE_POLICY
 from .registry import RegistryError, load_registry, registered_vault_paths
 from .security import PolicyError, validate_article_write, validate_store_article_write
+from .telemetry import sync_log_to_telemetry_quietly
 
 
 def _compile_capture_prompt(store_mode: bool, vault_names: list[str]) -> str:
@@ -551,6 +552,8 @@ async def run_compile(settings: Settings, request: CompileRunRequest, trusted: b
         f"-> {len(applied)} proposals applied ({len(errors)} errors)",
         request.dry_run,
     )
+
+    sync_log_to_telemetry_quietly(settings)
 
     return CompileRunResult(
         run_id=run_id,

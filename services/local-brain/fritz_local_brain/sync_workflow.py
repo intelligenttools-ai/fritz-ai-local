@@ -8,6 +8,7 @@ from uuid import uuid4
 from .agents.sync_agent import BrainSyncAgent
 from .config import Settings
 from .logs import append_global_log, append_vault_log
+from .telemetry import sync_log_to_telemetry_quietly
 from .manifests import load_manifest
 from .models import SyncRunRequest, SyncRunResult
 from .paths import PathMapper
@@ -47,6 +48,7 @@ async def run_sync(settings: Settings, request: SyncRunRequest) -> SyncRunResult
 
     pushed = sum(1 for result in results if result.pushed)
     append_global_log(settings.brain_home, "SYNC", f"Processed {len(results)} vaults ({pushed} git pushes)", request.dry_run)
+    sync_log_to_telemetry_quietly(settings)
     return SyncRunResult(
         run_id=run_id,
         started_at=started,
