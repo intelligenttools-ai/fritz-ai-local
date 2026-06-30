@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.responses import FileResponse
 
 from .api.routes import router
 from .config import get_settings
@@ -30,9 +32,19 @@ async def lifespan(app: FastAPI):
             task.cancel()
 
 
+_DASHBOARD = Path(__file__).parent / "static" / "dashboard.html"
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="Fritz Local Brain", version="0.1.0", lifespan=lifespan)
     app.include_router(router)
+
+    # Unauthenticated shell page — the page itself supplies the Bearer token
+    # to the /v1/usage/* data endpoints via sessionStorage.
+    @app.get("/dashboard", include_in_schema=False)
+    async def dashboard() -> FileResponse:
+        return FileResponse(_DASHBOARD, media_type="text/html")
+
     return app
 
 

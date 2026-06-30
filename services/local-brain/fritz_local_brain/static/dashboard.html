@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<!--
+  Fritz Local Brain — Usage Dashboard
+  Single self-contained file: inline CSS + vanilla JS, zero external deps.
+  No CDN, no npm build step, fully offline. Runs fine in an air-gapped container.
+
+  AUTH STRATEGY
+  The page itself is unauthenticated (just a shell). Every fetch to /v1/usage/*
+  requires a Bearer token. We store it in sessionStorage so it survives page
+  refreshes within the tab but is discarded when the tab closes. On a 401 the
+  stored token is cleared and the prompt re-appears. This avoids embedding the
+  token in the URL or a cookie while keeping the workflow simple for an internal
+  ops dashboard.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fritz Brain — Usage Dashboard</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d27;
+    --surface2: #22253a;
+    --border: #2e3250;
+    --text: #e2e4f0;
+    --muted: #8b90b0;
+    --accent: #6c8bef;
+    --accent2: #a78bfa;
+    --green: #4ade80;
+    --red: #f87171;
+    --yellow: #fbbf24;
+    --bar-bg: #2a2e47;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: ui-monospace, "Cascadia Code", "Fira Mono", monospace;
+    font-size: 13px;
+    line-height: 1.5;
+    min-height: 100vh;
+  }
+
+  #auth-overlay {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,.75);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 999;
+  }
+  #auth-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 2rem;
+    width: 340px;
+  }
+  #auth-box h2 { color: var(--accent); margin-bottom: .75rem; font-size: 1rem; }
+  #auth-box p  { color: var(--muted); margin-bottom: 1rem; font-size: .85rem; }
+  #auth-box input {
+    width: 100%; padding: .5rem .75rem;
+    background: var(--bg); border: 1px solid var(--border);
+    border-radius: 4px; color: var(--text);
+    font-family: inherit; font-size: .9rem;
+    margin-bottom: .75rem;
+  }
+  #auth-box button {
+    width: 100%; padding: .5rem;
+    background: var(--accent); color: #fff;
+    border: none; border-radius: 4px;
+    font-family: inherit; font-size: .9rem;
+    cursor: pointer;
+  }
+  #auth-box button:hover { opacity: .85; }
+  #auth-error { color: var(--red); font-size: .8rem; margin-top: .5rem; display: none; }
+
+  header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: .75rem 1.5rem;
+    display: flex; align-items: center; gap: 1rem;
+  }
+  header h1 { font-size: 1rem; color: var(--accent); }
+  header .subtitle { color: var(--muted); font-size: .8rem; }
+  #refresh-btn {
+    margin-left: auto;
+    background: var(--surface2); border: 1px solid var(--border);
+    color: var(--text); padding: .3rem .75rem;
+    border-radius: 4px; font-family: inherit; font-size: .8rem;
+    cursor: pointer;
+  }
+  #refresh-btn:hover { border-color: var(--accent); color: var(--accent); }
+  #last-updated { color: var(--muted); font-size: .75rem; }
+
+  main { padding: 1.25rem 1.5rem; max-width: 1200px; }
+
+  h2 {
+    font-size: .85rem; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--muted); margin: 1.5rem 0 .75rem;
+    padding-bottom: .4rem; border-bottom: 1px solid var(--border);
+  }
+  h2:first-child { margin-top: 0; }
+
+  /* ---- stat cards ---- */
+  .cards { display: flex; flex-wrap: wrap; gap: .75rem; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 6px; padding: .85rem 1.1rem; min-width: 130px; flex: 1;
+  }
+  .card .label { color: var(--muted); font-size: .75rem; margin-bottom: .25rem; }
+  .card .value { font-size: 1.4rem; color: var(--text); font-weight: 700; }
+  .card .value.green { color: var(--green); }
+  .card .value.yellow { color: var(--yellow); }
+  .card .value.muted  { color: var(--muted); font-size: 1rem; }
+
+  /* ---- horizontal bar chart ---- */
+  .bar-chart { display: flex; flex-direction: column; gap: .35rem; }
+  .bar-row { display: flex; align-items: center; gap: .5rem; }
+  .bar-label { width: 140px; min-width: 140px; color: var(--muted); font-size: .78rem;
+               text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+  .bar-track { flex: 1; background: var(--bar-bg); border-radius: 3px; height: 14px; }
+  .bar-fill  { height: 100%; border-radius: 3px; transition: width .3s; }
+  .bar-count { width: 50px; text-align: right; color: var(--text); font-size: .78rem; }
+
+  /* ---- time-series chart (day bars) ---- */
+  .time-chart {
+    display: flex; align-items: flex-end; gap: 3px;
+    height: 80px; padding: 0 2px;
+    border-bottom: 1px solid var(--border);
+  }
+  .time-bar { flex: 1; background: var(--accent); border-radius: 2px 2px 0 0;
+              min-width: 4px; transition: height .3s; position: relative; }
+  .time-bar:hover .time-tip {
+    display: block;
+  }
+  .time-tip {
+    display: none; position: absolute; bottom: calc(100% + 4px); left: 50%;
+    transform: translateX(-50%);
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 4px; padding: .2rem .4rem;
+    white-space: nowrap; font-size: .7rem; color: var(--text);
+    pointer-events: none; z-index: 10;
+  }
+  .time-labels {
+    display: flex; gap: 3px; padding: 2px 2px 0;
+  }
+  .time-labels span {
+    flex: 1; text-align: center; color: var(--muted); font-size: .6rem;
+    min-width: 4px; overflow: hidden;
+  }
+
+  /* ---- toggle group ---- */
+  .toggle-group {
+    display: inline-flex; border: 1px solid var(--border); border-radius: 4px;
+    overflow: hidden; margin-bottom: .75rem;
+  }
+  .toggle-group button {
+    background: none; border: none; color: var(--muted);
+    padding: .25rem .65rem; font-family: inherit; font-size: .75rem;
+    cursor: pointer; border-right: 1px solid var(--border);
+  }
+  .toggle-group button:last-child { border-right: none; }
+  .toggle-group button.active { background: var(--accent); color: #fff; }
+  .toggle-group button:hover:not(.active) { color: var(--text); }
+
+  /* ---- table ---- */
+  table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+  th { text-align: left; color: var(--muted); padding: .35rem .5rem;
+       border-bottom: 1px solid var(--border); font-weight: 400; }
+  td { padding: .3rem .5rem; border-bottom: 1px solid var(--border); color: var(--text); }
+  tr:hover td { background: var(--surface2); }
+
+  /* ---- latency row ---- */
+  .latency-row { display: flex; gap: 1rem; }
+  .lat-card { background: var(--surface); border: 1px solid var(--border);
+              border-radius: 6px; padding: .6rem .85rem; }
+  .lat-card .label { color: var(--muted); font-size: .7rem; }
+  .lat-card .value { font-size: 1.1rem; font-weight: 700; }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  @media(max-width: 700px) { .grid2 { grid-template-columns: 1fr; } }
+
+  .section { margin-bottom: 1.5rem; }
+
+  .no-data { color: var(--muted); font-size: .8rem; font-style: italic; }
+
+  #loading {
+    position: fixed; top: 0; left: 0; right: 0; height: 2px;
+    background: var(--accent); animation: slide .8s ease-in-out infinite alternate;
+    display: none;
+  }
+  @keyframes slide { from { opacity: .4; } to { opacity: 1; } }
+
+  .pct-badge {
+    display: inline-block; padding: .1rem .4rem;
+    border-radius: 3px; font-size: .75rem; font-weight: 700;
+  }
+  .pct-green { background: rgba(74,222,128,.15); color: var(--green); }
+  .pct-yellow { background: rgba(251,191,36,.15); color: var(--yellow); }
+  .pct-red    { background: rgba(248,113,113,.15); color: var(--red); }
+</style>
+</head>
+<body>
+
+<div id="loading"></div>
+
+<!-- Auth overlay — shown when no token is in sessionStorage or on 401 -->
+<div id="auth-overlay">
+  <div id="auth-box">
+    <h2>Fritz Brain Dashboard</h2>
+    <p>Enter the API Bearer token to load usage data.</p>
+    <input type="password" id="token-input" placeholder="Bearer token" autofocus>
+    <button onclick="saveToken()">Continue</button>
+    <div id="auth-error">Invalid token — please try again.</div>
+  </div>
+</div>
+
+<header>
+  <h1>Fritz Brain</h1>
+  <span class="subtitle">Usage Dashboard</span>
+  <button id="refresh-btn" onclick="loadAll()">Refresh</button>
+  <span id="last-updated"></span>
+</header>
+
+<main>
+  <!-- 1. Headline summary -->
+  <h2>Summary</h2>
+  <div class="section">
+    <div class="cards" id="summary-cards">
+      <div class="no-data">Loading…</div>
+    </div>
+  </div>
+
+  <!-- 2. Activity over time -->
+  <h2>Activity over time</h2>
+  <div class="section">
+    <div class="toggle-group" id="activity-by-toggle">
+      <button class="active" data-by="type" onclick="setActivityBy('type',this)">by type</button>
+      <button data-by="agent" onclick="setActivityBy('agent',this)">by agent</button>
+      <button data-by="vault" onclick="setActivityBy('vault',this)">by vault</button>
+    </div>
+    <div id="activity-chart"><div class="no-data">Loading…</div></div>
+  </div>
+
+  <!-- 3. Queries -->
+  <h2>Queries</h2>
+  <div class="section grid2">
+    <div>
+      <div class="cards" id="query-cards" style="margin-bottom:.75rem">
+        <div class="no-data">Loading…</div>
+      </div>
+      <div class="latency-row" id="latency-row" style="display:none"></div>
+    </div>
+    <div>
+      <div style="color:var(--muted);font-size:.75rem;margin-bottom:.4rem">Top queries</div>
+      <div id="top-queries-chart"><div class="no-data">Loading…</div></div>
+    </div>
+  </div>
+
+  <!-- 4. KB health -->
+  <h2>Knowledge Base Health</h2>
+  <div class="section grid2">
+    <div>
+      <div style="color:var(--muted);font-size:.75rem;margin-bottom:.4rem">Articles by status</div>
+      <div id="kb-status-chart" style="margin-bottom:1rem"><div class="no-data">Loading…</div></div>
+      <div class="cards" id="kb-cards" style="margin-bottom:.75rem">
+        <div class="no-data">Loading…</div>
+      </div>
+    </div>
+    <div>
+      <div style="color:var(--muted);font-size:.75rem;margin-bottom:.4rem">Growth (articles per day)</div>
+      <div id="kb-growth-chart"><div class="no-data">Loading…</div></div>
+    </div>
+  </div>
+
+  <!-- 5. Per-project table -->
+  <h2>Projects / Vaults</h2>
+  <div class="section">
+    <div id="projects-table"><div class="no-data">Loading…</div></div>
+  </div>
+</main>
+
+<script>
+// ---- helpers ----------------------------------------------------------------
+
+const TOKEN_KEY = "fritz_dashboard_token";
+
+// SECURITY: every untrusted value (agent ids, vault names, event types, query
+// text, status labels — all agent-supplied and telemetry-stored) MUST be passed
+// through esc() before it enters an innerHTML string, in BOTH text and attribute
+// (title="...") contexts. Without this a malicious stored query text can inject
+// markup and exfiltrate the Bearer token (stored XSS). Numbers are safe.
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c =>
+    ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+}
+
+function getToken() { return sessionStorage.getItem(TOKEN_KEY); }
+function setToken(t) { sessionStorage.setItem(TOKEN_KEY, t); }
+function clearToken() { sessionStorage.removeItem(TOKEN_KEY); }
+
+function showAuthOverlay(showError) {
+  document.getElementById("auth-overlay").style.display = "flex";
+  document.getElementById("auth-error").style.display = showError ? "block" : "none";
+  document.getElementById("token-input").value = "";
+  document.getElementById("token-input").focus();
+}
+
+function hideAuthOverlay() {
+  document.getElementById("auth-overlay").style.display = "none";
+}
+
+function saveToken() {
+  const t = document.getElementById("token-input").value.trim();
+  if (!t) return;
+  setToken(t);
+  loadAll();
+}
+
+// Allow pressing Enter in the token input
+document.getElementById("token-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") saveToken();
+});
+
+// ---- fetch wrapper ----------------------------------------------------------
+
+let _loading = 0;
+function showLoader(on) {
+  _loading += on ? 1 : -1;
+  document.getElementById("loading").style.display = _loading > 0 ? "block" : "none";
+}
+
+async function apiFetch(path, params) {
+  const token = getToken();
+  const url = new URL(path, window.location.href);
+  if (params) Object.entries(params).forEach(([k, v]) => { if (v != null) url.searchParams.set(k, v); });
+
+  showLoader(true);
+  try {
+    const resp = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${token}` }
+    });
+    if (resp.status === 401) {
+      clearToken();
+      showAuthOverlay(true);
+      return null;
+    }
+    if (!resp.ok) throw new Error(`${resp.status} ${resp.statusText}`);
+    return await resp.json();
+  } catch (e) {
+    console.error("Fetch error:", path, e);
+    return null;
+  } finally {
+    showLoader(false);
+  }
+}
+
+// ---- rendering helpers ------------------------------------------------------
+
+const PALETTE = [
+  "#6c8bef","#a78bfa","#4ade80","#fbbf24","#f87171",
+  "#38bdf8","#fb923c","#e879f9","#34d399","#f472b6"
+];
+
+function pctBadge(rate) {
+  if (rate == null) return '<span class="pct-badge" style="color:var(--muted)">—</span>';
+  const p = Math.round(rate * 100);
+  const cls = p >= 80 ? "pct-green" : p >= 50 ? "pct-yellow" : "pct-red";
+  return `<span class="pct-badge ${cls}">${p}%</span>`;
+}
+
+function fmtMs(v) { return v == null ? "—" : `${v} ms`; }
+function fmtBytes(b) {
+  if (b == null) return "—";
+  if (b < 1024) return `${b} B`;
+  if (b < 1024*1024) return `${(b/1024).toFixed(1)} KB`;
+  return `${(b/(1024*1024)).toFixed(1)} MB`;
+}
+
+function renderCards(containerId, cards) {
+  document.getElementById(containerId).innerHTML = cards.map(c => `
+    <div class="card">
+      <div class="label">${c.label}</div>
+      <div class="value ${c.cls||''}">${c.value}</div>
+    </div>`).join("");
+}
+
+/** Horizontal bar chart. items = [{label, count}] */
+function renderBarChart(containerId, items, color) {
+  const el = document.getElementById(containerId);
+  if (!items || !items.length) { el.innerHTML = '<div class="no-data">No data yet.</div>'; return; }
+  const max = Math.max(...items.map(i => i.count), 1);
+  el.innerHTML = '<div class="bar-chart">' + items.map((item, idx) => {
+    const w = Math.round((item.count / max) * 100);
+    const c = color || PALETTE[idx % PALETTE.length];
+    return `<div class="bar-row">
+      <div class="bar-label" title="${esc(item.label)}">${esc(item.label)}</div>
+      <div class="bar-track"><div class="bar-fill" style="width:${w}%;background:${c}"></div></div>
+      <div class="bar-count">${item.count}</div>
+    </div>`;
+  }).join("") + '</div>';
+}
+
+/** Time-series chart. buckets = {"YYYY-MM-DD": {key:count}} */
+function renderTimeChart(containerId, buckets) {
+  const el = document.getElementById(containerId);
+  if (!buckets || !Object.keys(buckets).length) {
+    el.innerHTML = '<div class="no-data">No activity recorded yet.</div>'; return;
+  }
+  const days = Object.keys(buckets).sort();
+  const totals = days.map(d => Object.values(buckets[d]).reduce((a, b) => a + b, 0));
+  const maxTotal = Math.max(...totals, 1);
+
+  const bars = days.map((day, i) => {
+    const pct = Math.round((totals[i] / maxTotal) * 100);
+    const keys = Object.entries(buckets[day]).map(([k,v]) => `${esc(k)}: ${v}`).join(", ");
+    return `<div class="time-bar" style="height:${pct}%" title="${esc(day)}: ${totals[i]}">
+      <div class="time-tip">${esc(day)}<br>${keys}</div>
+    </div>`;
+  }).join("");
+
+  // Show only a few x-axis labels to avoid crowding
+  const stride = Math.max(1, Math.floor(days.length / 8));
+  const labels = days.map((d, i) => `<span>${i % stride === 0 ? esc(d.slice(5)) : ""}</span>`).join("");
+
+  el.innerHTML = `<div class="time-chart">${bars}</div><div class="time-labels">${labels}</div>`;
+}
+
+// ---- section renderers ------------------------------------------------------
+
+function renderSummary(data) {
+  if (!data) { document.getElementById("summary-cards").innerHTML = '<div class="no-data">Could not load.</div>'; return; }
+
+  const hitRateBadge = pctBadge(data.hit_rate);
+  renderCards("summary-cards", [
+    { label: "Total events",    value: data.total_events ?? 0 },
+    { label: "Total queries",   value: data.total_queries ?? 0 },
+    { label: "Hit rate",        value: hitRateBadge },
+    { label: "Total articles",  value: data.total_articles ?? 0 },
+    { label: "Backlog pending", value: data.backlog_pending ?? 0, cls: (data.backlog_pending ?? 0) > 0 ? "yellow" : "green" },
+    { label: "Distinct agents", value: data.distinct_agents ?? 0 },
+  ]);
+}
+
+let _activityBy = "type";
+let _activityCache = null;
+
+async function setActivityBy(by, btn) {
+  _activityBy = by;
+  document.querySelectorAll("#activity-by-toggle button").forEach(b => b.classList.remove("active"));
+  btn.classList.add("active");
+  _activityCache = null; // force re-fetch
+  await loadActivity();
+}
+
+async function loadActivity() {
+  const data = await apiFetch("/v1/usage/activity", { by: _activityBy });
+  renderTimeChart("activity-chart", data ? data.buckets : null);
+}
+
+function renderQueries(data) {
+  if (!data) {
+    document.getElementById("query-cards").innerHTML = '<div class="no-data">Could not load.</div>';
+    return;
+  }
+
+  renderCards("query-cards", [
+    { label: "Total queries", value: data.total ?? 0 },
+    { label: "Hit rate", value: pctBadge(data.hit_rate) },
+  ]);
+
+  const lat = data.latency_ms || {};
+  const latRow = document.getElementById("latency-row");
+  if (lat.p50 != null || lat.p95 != null || lat.p99 != null) {
+    latRow.style.display = "flex";
+    latRow.innerHTML = [
+      { label: "p50", v: lat.p50 },
+      { label: "p95", v: lat.p95 },
+      { label: "p99", v: lat.p99 },
+    ].map(l => `<div class="lat-card">
+      <div class="label">${l.label}</div>
+      <div class="value">${fmtMs(l.v)}</div>
+    </div>`).join("");
+  } else {
+    latRow.style.display = "none";
+  }
+
+  const top = data.top_queries || [];
+  renderBarChart("top-queries-chart", top.map(q => ({ label: q.query, count: q.count })));
+
+  // by_agent as additional bar chart if present
+  const byAgent = data.by_agent ? Object.entries(data.by_agent).sort((a,b) => b[1]-a[1]) : [];
+  if (byAgent.length) {
+    const existing = document.getElementById("query-by-agent");
+    const container = existing || (() => {
+      const d = document.createElement("div");
+      d.id = "query-by-agent";
+      d.style.marginTop = ".75rem";
+      document.getElementById("query-cards").after(d);
+      return d;
+    })();
+    container.innerHTML = `<div style="color:var(--muted);font-size:.75rem;margin-bottom:.4rem">Queries by agent</div>`;
+    const tmpId = "qa-inner-" + Date.now();
+    container.innerHTML += `<div id="${tmpId}"></div>`;
+    renderBarChart(tmpId, byAgent.map(([k,v]) => ({ label: k, count: v })));
+  }
+}
+
+function renderKnowledge(data) {
+  if (!data) {
+    document.getElementById("kb-status-chart").innerHTML = '<div class="no-data">Could not load.</div>';
+    document.getElementById("kb-cards").innerHTML = "";
+    document.getElementById("kb-growth-chart").innerHTML = "";
+    return;
+  }
+
+  // Articles by status
+  const byStatus = data.articles_by_status || {};
+  const statusItems = Object.entries(byStatus)
+    .sort((a,b) => b[1]-a[1])
+    .map(([k,v]) => ({ label: k, count: v }));
+  const statusColors = {
+    active: "#4ade80", corroborated: "#38bdf8",
+    deprecated: "#fbbf24", superseded: "#a78bfa", historical: "#8b90b0"
+  };
+  const kbStatusEl = document.getElementById("kb-status-chart");
+  if (!statusItems.length) {
+    kbStatusEl.innerHTML = '<div class="no-data">No articles yet.</div>';
+  } else {
+    kbStatusEl.innerHTML = '<div class="bar-chart">' + statusItems.map(item => {
+      const max = Math.max(...statusItems.map(i => i.count), 1);
+      const w = Math.round((item.count / max) * 100);
+      const c = statusColors[item.label] || "#6c8bef";
+      return `<div class="bar-row">
+        <div class="bar-label">${esc(item.label)}</div>
+        <div class="bar-track"><div class="bar-fill" style="width:${w}%;background:${c}"></div></div>
+        <div class="bar-count">${item.count}</div>
+      </div>`;
+    }).join("") + '</div>';
+  }
+
+  // Embedding + compile summary cards
+  const emb = data.embedding || {};
+  const comp = data.compile || {};
+  const bl = (data.backlog || {});
+  const backlogTotal = Object.values(bl.pending_captures_by_source || {}).reduce((a,b) => a+b, 0);
+  renderCards("kb-cards", [
+    { label: "Total articles",    value: data.articles_total ?? 0 },
+    { label: "Indexed docs",      value: emb.documents_indexed ?? 0 },
+    { label: "Skipped (embed)",   value: emb.skipped ?? 0 },
+    { label: "Index size",        value: fmtBytes(emb.index_size_bytes) },
+    { label: "Compile total",     value: comp.total ?? 0 },
+    { label: "Compile success",   value: pctBadge(comp.success_rate) },
+    { label: "Backlog pending",   value: backlogTotal, cls: backlogTotal > 0 ? "yellow" : "green" },
+  ]);
+
+  // Growth chart
+  const growth = data.growth_by_day || {};
+  const growthBuckets = {};
+  Object.entries(growth).forEach(([day, count]) => {
+    growthBuckets[day] = { articles: count };
+  });
+  renderTimeChart("kb-growth-chart", growthBuckets);
+}
+
+function renderProjects(data) {
+  const el = document.getElementById("projects-table");
+  const projects = data ? (data.projects || []) : [];
+  if (!projects.length) {
+    el.innerHTML = '<div class="no-data">No project data yet.</div>';
+    return;
+  }
+  const rows = projects.map(p => {
+    const typeSummary = Object.entries(p.events_by_type || {})
+      .sort((a,b) => b[1]-a[1]).slice(0,3)
+      .map(([k,v]) => `${esc(k)}:${v}`).join(", ") || "—";
+    return `<tr>
+      <td>${esc(p.vault)}</td>
+      <td style="text-align:right">${p.event_count}</td>
+      <td style="text-align:right">${p.article_count}</td>
+      <td style="color:var(--muted)">${typeSummary}</td>
+    </tr>`;
+  }).join("");
+  el.innerHTML = `<table>
+    <thead><tr><th>Vault</th><th style="text-align:right">Events</th><th style="text-align:right">Articles</th><th>Top event types</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+// ---- main load --------------------------------------------------------------
+
+async function loadAll() {
+  document.getElementById("last-updated").textContent = "Loading…";
+
+  const [summary, activity, queries, knowledge, projects] = await Promise.all([
+    apiFetch("/v1/usage/summary"),
+    apiFetch("/v1/usage/activity", { by: _activityBy }),
+    apiFetch("/v1/usage/queries"),
+    apiFetch("/v1/usage/knowledge"),
+    apiFetch("/v1/usage/projects"),
+  ]);
+
+  // If any returned null due to 401, the overlay is already shown
+  if (!getToken()) return;
+
+  renderSummary(summary);
+  renderTimeChart("activity-chart", activity ? activity.buckets : null);
+  renderQueries(queries);
+  renderKnowledge(knowledge);
+  renderProjects(projects);
+
+  document.getElementById("last-updated").textContent =
+    "Updated " + new Date().toLocaleTimeString();
+}
+
+// ---- startup ----------------------------------------------------------------
+
+(function init() {
+  if (getToken()) {
+    hideAuthOverlay();
+    loadAll();
+  } else {
+    showAuthOverlay(false);
+  }
+})();
+</script>
+</body>
+</html>
