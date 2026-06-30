@@ -6,9 +6,10 @@ import asyncio
 from time import perf_counter
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic_ai.exceptions import ModelAPIError, UsageLimitExceeded
 
+from .. import usage
 from ..compile_workflow import run_compile
 from ..config import get_settings
 from ..telemetry import record_query_event
@@ -37,6 +38,11 @@ from ..models import (
     StatusResult,
     SyncRunRequest,
     SyncRunResult,
+    UsageActivityResult,
+    UsageKnowledgeResult,
+    UsageProjectsResult,
+    UsageQueriesResult,
+    UsageSummaryResult,
 )
 from ..operation_locks import OperationAlreadyRunning, compile_lock, lint_lock, sync_lock
 from ..query_workflow import run_query
@@ -167,6 +173,47 @@ async def search_run(
     settings = get_settings()
     agent = _resolve_agent(x_brain_agent, request)
     return await _run_query_with_telemetry(settings, request, agent, use_vector=True)
+
+
+@router.get("/v1/usage/activity", response_model=UsageActivityResult, dependencies=[Depends(require_token)])
+async def usage_activity(
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = Query(default=None, alias="to"),
+    bucket: str = "day",
+    by: str = "type",
+) -> UsageActivityResult:
+    buckets = usage.activity(get_settings(), since=from_, until=to, bucket=bucket, by=by)
+    return UsageActivityResult(bucket="day", by=(by if by in {"type", "agent", "vault"} else "type"), buckets=buckets)
+
+
+@router.get("/v1/usage/queries", response_model=UsageQueriesResult, dependencies=[Depends(require_token)])
+async def usage_queries(
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = Query(default=None, alias="to"),
+    limit: int = 10,
+) -> UsageQueriesResult:
+    return UsageQueriesResult(**usage.queries(get_settings(), since=from_, until=to, limit=limit))
+
+
+@router.get("/v1/usage/knowledge", response_model=UsageKnowledgeResult, dependencies=[Depends(require_token)])
+async def usage_knowledge() -> UsageKnowledgeResult:
+    return UsageKnowledgeResult(**usage.knowledge(get_settings()))
+
+
+@router.get("/v1/usage/projects", response_model=UsageProjectsResult, dependencies=[Depends(require_token)])
+async def usage_projects(
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = Query(default=None, alias="to"),
+) -> UsageProjectsResult:
+    return UsageProjectsResult(projects=usage.projects(get_settings(), since=from_, until=to))
+
+
+@router.get("/v1/usage/summary", response_model=UsageSummaryResult, dependencies=[Depends(require_token)])
+async def usage_summary(
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = Query(default=None, alias="to"),
+) -> UsageSummaryResult:
+    return UsageSummaryResult(**usage.summary(get_settings(), since=from_, until=to))
 
 
 @router.post("/v1/lint/run", response_model=LintRunResult, dependencies=[Depends(require_token)])
