@@ -62,3 +62,13 @@ def test_mirror_scheduler_defaults(tmp_path) -> None:
     settings = Settings(_env_file=None, LOCAL_BRAIN_HOME=tmp_path)
     assert settings.mirror_enabled is False
     assert settings.mirror_interval_minutes == 60
+
+
+def test_telemetry_retention_days_defaults_to_90(tmp_path) -> None:
+    settings = Settings(_env_file=None, LOCAL_BRAIN_HOME=tmp_path)
+    assert settings.telemetry_retention_days == 90
+
+
+def test_telemetry_retention_days_env_override(tmp_path) -> None:
+    settings = Settings(_env_file=None, LOCAL_BRAIN_HOME=tmp_path, TELEMETRY_RETENTION_DAYS="7")
+    assert settings.telemetry_retention_days == 7

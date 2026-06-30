@@ -323,6 +323,27 @@ curl -X POST http://127.0.0.1:8765/v1/lint/run \
   -d '{"dry_run": true}'
 ```
 
+## Telemetry & usage dashboard
+
+The service records usage telemetry (compile/sync/query/search events) to
+`$BRAIN_HOME/telemetry.db` and renders it at:
+
+```
+http://127.0.0.1:8765/dashboard
+```
+
+The dashboard page is served unauthenticated, but its data endpoints
+(`/v1/usage/*`) require the same Bearer token as the rest of the API — paste
+your `LOCAL_BRAIN_API_TOKEN` into the dashboard when prompted.
+
+Three knobs control telemetry (set in `.env`, or via the provisioning flags):
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `TELEMETRY_ENABLED` | `true` | Master switch. When `false`, no events are recorded and no `telemetry.db` is created. |
+| `TELEMETRY_STORE_QUERY_TEXT` | `true` | When `false`, query/search events omit the raw query text (only counts and metadata are kept) — set `false` for privacy. |
+| `TELEMETRY_RETENTION_DAYS` | `90` | Events older than this many days are pruned on startup and each scheduler tick. `0` keeps everything forever (pruning disabled). |
+
 ## MCP
 
 MCP is the preferred agent-native integration. Run the stdio MCP server from the
