@@ -184,3 +184,42 @@ def test_dashboard_actions_esc_used_in_post_results() -> None:
     # The action handlers use esc() for error messages and mode strings.
     # Count occurrences — there must be more than just the original renderBarChart uses.
     assert body.count("esc(") >= 10, "too few esc() calls — XSS guard may have regressed"
+
+
+# ---------------------------------------------------------------------------
+# Live updates via SSE (#198)
+# ---------------------------------------------------------------------------
+
+def test_dashboard_uses_eventsource() -> None:
+    """The served body must open an EventSource for live updates."""
+    body = _client().get("/dashboard").text
+    assert "EventSource" in body, "EventSource reference missing"
+
+
+def test_dashboard_references_stream_ticket_endpoint() -> None:
+    """The client must exchange the Bearer token for a short-lived stream ticket."""
+    body = _client().get("/dashboard").text
+    assert "/v1/usage/stream-ticket" in body, "stream-ticket endpoint reference missing"
+
+
+def test_dashboard_references_stream_endpoint() -> None:
+    body = _client().get("/dashboard").text
+    assert "/v1/usage/stream?ticket=" in body, "stream endpoint (with ticket) reference missing"
+
+
+def test_dashboard_sse_cleanup_on_unload() -> None:
+    """SSE connections must be closed on page unload so they don't leak."""
+    body = _client().get("/dashboard").text
+    assert "beforeunload" in body, "beforeunload cleanup listener missing"
+    assert "closeSSE(" in body, "closeSSE cleanup helper missing"
+
+
+def test_dashboard_sse_falls_back_to_polling() -> None:
+    """On SSE error the client must keep polling as the backstop (#195 timer).
+    Assert the error handler closes the source rather than spamming reconnects."""
+    body = _client().get("/dashboard").text
+    start = body.index("function setupSSE(")
+    end = body.index("window.addEventListener(\"beforeunload\"", start)
+    fn = body[start:end]
+    assert 'addEventListener("error"' in fn, "SSE error handler missing"
+    assert "_sseRetried" in fn, "single-reconnect guard missing"
