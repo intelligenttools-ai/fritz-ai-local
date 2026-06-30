@@ -264,6 +264,7 @@ class QueryRunRequest(BaseModel):
     # live-fetch of their stored ``pointer`` (retrieval-synthesis). Default off
     # so existing query behaviour is unchanged.
     live_fetch: bool = False
+    agent: str | None = None
 
 
 class QueryMatch(BaseModel):

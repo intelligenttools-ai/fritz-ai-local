@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+from time import perf_counter
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic_ai.exceptions import ModelAPIError, UsageLimitExceeded
 
 from ..compile_workflow import run_compile
 from ..config import get_settings
+from ..telemetry import record_event
 from ..embeddings import (
     embedding_status,
     probe_embedding_dimensions,
@@ -119,14 +122,66 @@ async def embeddings_index_schedule() -> EmbeddingRefreshScheduleResult:
     return EmbeddingRefreshScheduleResult(enabled=settings.embedding_enabled, status=status, reason="ingest")
 
 
+def _resolve_agent(header_value: str | None, request: QueryRunRequest) -> str:
+    """Header agent wins over body agent; whitespace-only values fall back to 'unknown'."""
+    return (header_value or "").strip() or (request.agent or "").strip() or "unknown"
+
+
+async def _run_query_with_telemetry(
+    settings,
+    request: QueryRunRequest,
+    agent: str,
+    *,
+    use_vector: bool,
+) -> QueryRunResult:
+    """Run query and record one telemetry event; telemetry errors never fail the query."""
+    start = perf_counter()
+    result = await run_query(settings, request, use_vector=use_vector, ensure_index=False)
+    duration_ms = int((perf_counter() - start) * 1000)
+    try:
+        payload: dict = {
+            "result_count": len(result.matches),
+            "hit": len(result.matches) > 0,
+            "scope": request.scope,
+            "use_vector": use_vector,
+            "skipped": result.skipped,
+            "errors": result.errors,
+        }
+        if settings.telemetry_store_query_text:
+            payload["query"] = request.query
+        record_event(
+            settings,
+            "search" if use_vector else "query",
+            agent=agent,
+            vault=request.vault,
+            run_id=result.run_id,
+            status="error" if result.errors else "ok",
+            duration_ms=duration_ms,
+            payload=payload,
+        )
+    except Exception:  # noqa: BLE001 - telemetry must never break the query path.
+        pass
+    return result
+
+
 @router.post("/v1/query/run", response_model=QueryRunResult, dependencies=[Depends(require_token)])
-async def query_run(request: QueryRunRequest) -> QueryRunResult:
-    return await run_query(get_settings(), request)
+async def query_run(
+    request: QueryRunRequest,
+    x_brain_agent: Annotated[str | None, Header(alias="X-Brain-Agent")] = None,
+) -> QueryRunResult:
+    settings = get_settings()
+    agent = _resolve_agent(x_brain_agent, request)
+    return await _run_query_with_telemetry(settings, request, agent, use_vector=False)
 
 
 @router.post("/v1/search/run", response_model=QueryRunResult, dependencies=[Depends(require_token)])
-async def search_run(request: QueryRunRequest) -> QueryRunResult:
-    return await run_query(get_settings(), request, use_vector=True, ensure_index=False)
+async def search_run(
+    request: QueryRunRequest,
+    x_brain_agent: Annotated[str | None, Header(alias="X-Brain-Agent")] = None,
+) -> QueryRunResult:
+    settings = get_settings()
+    agent = _resolve_agent(x_brain_agent, request)
+    return await _run_query_with_telemetry(settings, request, agent, use_vector=True)
 
 
 @router.post("/v1/lint/run", response_model=LintRunResult, dependencies=[Depends(require_token)])
