@@ -151,6 +151,36 @@ def test_service_instructions_prefer_semantic_search_for_brain_check(monkeypatch
     assert instructions.index("/v1/search/run") < instructions.index("/v1/query/run")
 
 
+def test_resolve_client_agent_uses_fritz_agent_env(monkeypatch):
+    monkeypatch.setenv("FRITZ_AGENT", "pi")
+    assert brain_common._resolve_client_agent() == "pi"
+
+
+def test_resolve_client_agent_defaults_to_unknown(monkeypatch):
+    monkeypatch.delenv("FRITZ_AGENT", raising=False)
+    assert brain_common._resolve_client_agent() == "unknown"
+
+
+def test_resolve_client_agent_whitespace_falls_back_to_unknown(monkeypatch):
+    monkeypatch.setenv("FRITZ_AGENT", "   ")
+    assert brain_common._resolve_client_agent() == "unknown"
+
+
+def test_service_instructions_include_x_brain_agent_in_search_and_query(monkeypatch):
+    monkeypatch.setenv("FRITZ_AGENT", "pi")
+    monkeypatch.setattr(brain_common, "get_local_brain_base_url", lambda: "http://127.0.0.1:8765")
+    monkeypatch.setattr(brain_common, "get_local_brain_api_token", lambda: None)
+
+    instructions = brain_common.local_brain_service_instructions()
+
+    assert "X-Brain-Agent: pi" in instructions
+    # present in both the search and query snippets
+    search_line = next(line for line in instructions.splitlines() if "/v1/search/run" in line)
+    query_line = next(line for line in instructions.splitlines() if "/v1/query/run" in line)
+    assert "X-Brain-Agent" in search_line
+    assert "X-Brain-Agent" in query_line
+
+
 def test_service_instructions_use_registry_token_command_without_leaking_token(monkeypatch):
     monkeypatch.delenv("LOCAL_BRAIN_API_TOKEN", raising=False)
     monkeypatch.setattr(brain_common, "get_local_brain_base_url", lambda: "http://127.0.0.1:8765")

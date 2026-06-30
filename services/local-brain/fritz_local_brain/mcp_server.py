@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+from time import perf_counter
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -16,9 +18,14 @@ from .query_workflow import run_query
 from .run_history import recent_runs, record_compile, record_sync
 from .status import build_status
 from .sync_workflow import run_sync
+from .telemetry import record_query_event
 
 
 mcp = FastMCP("fritz-local-brain")
+
+
+def _resolve_mcp_agent(agent: str | None) -> str:
+    return (agent or os.environ.get("FRITZ_AGENT") or "").strip() or "unknown"
 
 
 @mcp.tool()
@@ -77,26 +84,55 @@ def brain_recent_runs(limit: int = 10, api_token: str | None = None) -> dict[str
 
 
 @mcp.tool()
-async def brain_query(query: str, vault: str | None = None, limit: int = 10, api_token: str | None = None) -> dict[str, Any]:
+async def brain_query(
+    query: str,
+    vault: str | None = None,
+    limit: int = 10,
+    api_token: str | None = None,
+    agent: str | None = None,
+) -> dict[str, Any]:
     """Run the same read-only query workflow as POST /v1/query/run."""
 
     settings = get_settings()
     _require_mcp_token(settings, api_token)
-    result = await run_query(settings, QueryRunRequest(query=query, vault=vault, limit=limit))
+    req = QueryRunRequest(query=query, vault=vault, limit=limit)
+    start = perf_counter()
+    result = await run_query(settings, req)
+    duration_ms = int((perf_counter() - start) * 1000)
+    record_query_event(
+        settings,
+        use_vector=False,
+        request=req,
+        result=result,
+        agent=_resolve_mcp_agent(agent),
+        duration_ms=duration_ms,
+    )
     return result.model_dump(mode="json")
 
 
 @mcp.tool()
-async def brain_search(query: str, vault: str | None = None, limit: int = 10, api_token: str | None = None) -> dict[str, Any]:
+async def brain_search(
+    query: str,
+    vault: str | None = None,
+    limit: int = 10,
+    api_token: str | None = None,
+    agent: str | None = None,
+) -> dict[str, Any]:
     """Run service-backed search, including container-managed vector search."""
 
     settings = get_settings()
     _require_mcp_token(settings, api_token)
-    result = await run_query(
+    req = QueryRunRequest(query=query, vault=vault, limit=limit)
+    start = perf_counter()
+    result = await run_query(settings, req, use_vector=True, ensure_index=False)
+    duration_ms = int((perf_counter() - start) * 1000)
+    record_query_event(
         settings,
-        QueryRunRequest(query=query, vault=vault, limit=limit),
         use_vector=True,
-        ensure_index=False,
+        request=req,
+        result=result,
+        agent=_resolve_mcp_agent(agent),
+        duration_ms=duration_ms,
     )
     return result.model_dump(mode="json")
 
