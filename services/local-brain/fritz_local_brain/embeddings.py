@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import json
 import math
@@ -220,33 +221,65 @@ async def _refresh_embedding_index_unlocked(
     try:
         documents = _collect_embedding_documents(settings)
         all_source_fingerprint = _source_fingerprint(settings, documents)
+        try:
+            previous_data = _read_index_data(settings)
+        except (OSError, ValueError, json.JSONDecodeError):
+            previous_data = None
         if request and not request.force:
-            try:
-                data = _read_index_data(settings)
-            except (OSError, ValueError, json.JSONDecodeError):
-                data = None
-            if data is not None and _index_data_is_compatible(settings, data, all_source_fingerprint):
+            if previous_data is not None and _index_data_is_compatible(settings, previous_data, all_source_fingerprint):
                 result.indexed = True
-                result.documents_indexed = len(data.get("documents", [])) if isinstance(data.get("documents"), list) else 0
+                result.documents_indexed = len(previous_data.get("documents", [])) if isinstance(previous_data.get("documents"), list) else 0
                 try:
-                    result.updated_at = datetime.fromisoformat(str(data.get("updated_at")))
+                    result.updated_at = datetime.fromisoformat(str(previous_data.get("updated_at")))
                 except (TypeError, ValueError):
                     result.updated_at = None
                 return result
+
+        # Cache previously-recorded oversize docs to avoid re-sending unchanged
+        # content (and its 400) on every per-tick (non-force) build. The cache
+        # holds ONLY docs that failed with an oversize error (not transient — see
+        # _is_oversize_embed_error), so consulting it on a non-force build does not
+        # suppress #170's transient-retry path: a transient failure is never cached,
+        # so a stale non-force rebuild still re-attempts it. This is what lets the
+        # scheduler's post-compile (force=False, stale) refresh stop re-attempting
+        # the permanently-oversize docs every tick.
+        #
+        # A FORCED rebuild bypasses the cache entirely (empty set) so it re-attempts
+        # every document — this is the operator's recovery lever after a model/config
+        # change or a misclassification.
+        known_oversize: set[tuple[str, str, str]] = set() if (request and request.force) else _known_oversize_from_data(previous_data)
 
         entries: list[dict[str, Any]] = []
         indexed_documents: list[dict[str, Any]] = []  # source docs that were successfully embedded
         skipped = 0
         skipped_keys: list[list[str]] = []
+        skipped_entries: list[dict[str, str]] = []
+        had_transient_failure = False  # a LIVE embed attempt failed with a non-oversize (possibly transient) error
         for document in documents:
+            doc_vault = str(document.get("vault", ""))
+            doc_path = str(document.get("path", ""))
+            doc_hash = str(document.get("content_hash", ""))
+            if (doc_vault, doc_path, doc_hash) in known_oversize:
+                # Known un-embeddable at this exact content — skip the doomed embed
+                # call (and its 400 log) until the content changes.
+                skipped += 1
+                skipped_keys.append([doc_vault, doc_path])
+                skipped_entries.append({"vault": doc_vault, "path": doc_path, "content_hash": doc_hash})
+                continue
             try:
                 vector = await _embed_text(settings, document["text"])
             except Exception as exc:  # noqa: BLE001 - per-document failures must not abort the whole index build.
-                doc_vault = document.get("vault", "")
-                doc_path = document.get("path", "")
                 append_global_log(settings.brain_home, "EMBEDDINGS", f"skipped {doc_vault}/{doc_path}: {exc}", False)
                 skipped += 1
-                skipped_keys.append([str(doc_vault), str(doc_path)])
+                skipped_keys.append([doc_vault, doc_path])
+                if _is_oversize_embed_error(exc):
+                    # Cache ONLY genuinely-oversize failures; transient/connection
+                    # errors stay uncached so #170's next-refresh retry still fires.
+                    skipped_entries.append({"vault": doc_vault, "path": doc_path, "content_hash": doc_hash})
+                else:
+                    # A live attempt failed with a non-oversize (possibly transient)
+                    # error — this guards the existing index from a full endpoint outage.
+                    had_transient_failure = True
                 continue
             persisted = {key: value for key, value in document.items() if key != "text"}
             entries.append({**persisted, "embedding": vector})
@@ -260,11 +293,14 @@ async def _refresh_embedding_index_unlocked(
                 False,
             )
 
-        # Guard: if ALL documents failed, do not overwrite the existing index.
-        # A transient endpoint outage must not destroy a previously-good index.
-        # Trade-off: a doc that fails on every refresh causes a rebuild each tick,
-        # but the char-cap fix makes that rare; a transient blip self-heals next tick.
-        if documents and not entries:
+        # Guard: if ALL documents failed AND at least one live attempt failed with a
+        # possibly-transient error, do not overwrite the existing index — a transient
+        # endpoint outage must not destroy a previously-good index.
+        # When every empty result is due to cached skips and/or genuinely-oversize
+        # (permanent) failures, fall through and write the index normally so Option 3
+        # sticks (skipped_entries persisted, log spam stops). An empty `documents`
+        # list is fine: search_embedding_index returns [] for a zero-vector index.
+        if documents and not entries and had_transient_failure:
             result.error = f"all {len(documents)} document(s) failed to embed; leaving existing index unchanged"
             return result
 
@@ -292,6 +328,7 @@ async def _refresh_embedding_index_unlocked(
                     "updated_at": updated_at.isoformat(),
                     "source_fingerprint": source_fingerprint,
                     "skipped_keys": skipped_keys,
+                    "skipped_entries": skipped_entries,
                     "documents": entries,
                 },
                 indent=2,
@@ -436,6 +473,39 @@ def _skipped_keys_from_data(data: dict[str, Any]) -> set[tuple[str, str]]:
     return keys
 
 
+def _is_oversize_embed_error(exc: Exception) -> bool:
+    """True when an embed call failed because the model rejected over-long input
+    (as opposed to a transient/connection error). Only genuinely-oversize docs are
+    cached as known-skippable; unknown/transient errors are NOT cached, so they are
+    retried on the next refresh (preserving #170's transient self-heal)."""
+    text = str(exc).lower()
+    needles = (
+        "context length",
+        "context window",
+        "input length",
+        "maximum context",
+        "exceeds the maximum",
+    )
+    return any(needle in text for needle in needles)
+
+
+def _known_oversize_from_data(data: dict[str, Any] | None) -> set[tuple[str, str, str]]:
+    """Return {(vault, path, content_hash)} previously recorded as un-embeddable,
+    so unchanged oversize docs are not re-sent to the embed endpoint."""
+    if not isinstance(data, dict):
+        return set()
+    raw = data.get("skipped_entries")
+    if not isinstance(raw, list):
+        return set()
+    result: set[tuple[str, str, str]] = set()
+    for item in raw:
+        if isinstance(item, dict):
+            vault, path, content_hash = item.get("vault"), item.get("path"), item.get("content_hash")
+            if isinstance(vault, str) and isinstance(path, str) and isinstance(content_hash, str):
+                result.add((vault, path, content_hash))
+    return result
+
+
 def _effective_source_fingerprint(settings: Settings, data: dict[str, Any], documents: list[dict[str, Any]]) -> str:
     """Fingerprint over the docs the index is expected to cover: all current
     documents minus the keys skipped at build time. A stable set of permanently
@@ -506,7 +576,7 @@ def _collect_embedding_documents(settings: Settings) -> list[dict[str, Any]]:
                     text = path.read_text(encoding="utf-8", errors="replace")
                 except OSError:
                     continue
-                documents.append(_document(_BRAIN_VAULT_NAME, str(path.relative_to(brain_store_root)), text, stat_result, max_input_chars=settings.embedding_max_input_chars))
+                documents.append(_document(_BRAIN_VAULT_NAME, str(path.relative_to(brain_store_root)), text, stat_result, max_input_chars=settings.embedding_max_input_chars, max_input_tokens=settings.embedding_max_input_tokens))
     else:
         for name, vault_path in vault_paths.items():
             manifest = manifests.get(name)
@@ -523,7 +593,7 @@ def _collect_embedding_documents(settings: Settings) -> list[dict[str, Any]]:
                     text = path.read_text(encoding="utf-8", errors="replace")
                 except OSError:
                     continue
-                documents.append(_document(name, str(path.relative_to(knowledge_root)), text, stat_result, max_input_chars=settings.embedding_max_input_chars))
+                documents.append(_document(name, str(path.relative_to(knowledge_root)), text, stat_result, max_input_chars=settings.embedding_max_input_chars, max_input_tokens=settings.embedding_max_input_tokens))
 
     for path in list_queryable_captures(settings.brain_home).paths:
         try:
@@ -532,7 +602,7 @@ def _collect_embedding_documents(settings: Settings) -> list[dict[str, Any]]:
             relpath = str(path.relative_to(settings.brain_home))
         except (OSError, UnicodeDecodeError, ValueError):
             continue
-        documents.append(_document("_captures", relpath, text, stat_result, max_input_chars=settings.embedding_max_input_chars))
+        documents.append(_document("_captures", relpath, text, stat_result, max_input_chars=settings.embedding_max_input_chars, max_input_tokens=settings.embedding_max_input_tokens))
     return documents
 
 
@@ -547,9 +617,32 @@ def _is_regular_knowledge_file(path: Path, knowledge_root: Path) -> bool:
     return path.is_file()
 
 
-def _document(vault: str, path: str, text: str, stat_result: os.stat_result, *, max_input_chars: int = 1800) -> dict[str, Any]:
+@functools.lru_cache(maxsize=1)
+def _token_encoder():
+    import tiktoken
+
+    return tiktoken.get_encoding("cl100k_base")
+
+
+def _truncate_to_tokens(text: str, max_tokens: int) -> str:
+    """Best-effort cap on token count using tiktoken as a conservative ESTIMATE
+    (OpenAI BPE, not the embedding model's tokenizer). Falls back to the input
+    unchanged if tiktoken is unavailable."""
+    if max_tokens <= 0:
+        return ""
+    try:
+        encoder = _token_encoder()
+        tokens = encoder.encode_ordinary(text)  # encode_ordinary never raises on special tokens
+    except Exception:  # noqa: BLE001 - tiktoken load/encode failure must not break indexing
+        return text
+    if len(tokens) <= max_tokens:
+        return text
+    return encoder.decode(tokens[:max_tokens])
+
+
+def _document(vault: str, path: str, text: str, stat_result: os.stat_result, *, max_input_chars: int = 1800, max_input_tokens: int = 512) -> dict[str, Any]:
     title = _title_for(path, text)
-    indexed_text = text[:max_input_chars]
+    indexed_text = _truncate_to_tokens(text[:max_input_chars], max_input_tokens)
     return {
         "vault": vault,
         "path": path,

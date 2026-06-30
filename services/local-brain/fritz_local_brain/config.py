@@ -55,6 +55,12 @@ class Settings(BaseSettings):
     # differ in context length; mxbai-embed-large and similar 512-token models
     # accept ~2000 chars at most — 1800 is a conservative safe default.
     embedding_max_input_chars: int = Field(default=1800, ge=1, validation_alias=AliasChoices("LOCAL_BRAIN_EMBEDDING_MAX_INPUT_CHARS", "EMBEDDING_MAX_INPUT_CHARS"))
+    # Maximum tokens fed to the embedding model per document. mxbai-embed-large and
+    # similar models truncate at a 512-token window; oversize docs are token-truncated
+    # (first ~512 tokens) rather than skipped. tiktoken (OpenAI BPE) is used as a
+    # conservative ESTIMATE — not the embedding model's tokenizer — so the skip-cache
+    # backstops any residual over-budget case the estimate misses.
+    embedding_max_input_tokens: int = Field(default=512, ge=1, validation_alias=AliasChoices("LOCAL_BRAIN_EMBEDDING_MAX_INPUT_TOKENS", "EMBEDDING_MAX_INPUT_TOKENS"))
 
     api_host: str = Field(default="127.0.0.1", validation_alias=AliasChoices("LOCAL_BRAIN_API_HOST", "API_HOST"))
     api_port: int = Field(default=8765, validation_alias=AliasChoices("LOCAL_BRAIN_API_PORT", "API_PORT"))
