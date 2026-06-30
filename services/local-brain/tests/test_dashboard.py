@@ -143,6 +143,40 @@ def test_dashboard_actions_toast() -> None:
     assert 'id="action-toast"' in body, "action-toast element id missing"
 
 
+# ---------------------------------------------------------------------------
+# Per-agent drill-down (#199)
+# ---------------------------------------------------------------------------
+
+def test_dashboard_references_usage_agents() -> None:
+    """The served body must fetch the per-agent discovery endpoint."""
+    body = _client().get("/dashboard").text
+    assert "/v1/usage/agents" in body, "/v1/usage/agents endpoint reference missing"
+
+
+def test_dashboard_has_agent_selector() -> None:
+    """An agent-selector element id must be present in the served body."""
+    body = _client().get("/dashboard").text
+    assert 'id="agent-filter-select"' in body, "agent-filter-select element id missing"
+
+
+def test_dashboard_passes_agent_param() -> None:
+    """The client must pass an `agent` param when an agent is selected (the
+    agentParams() helper feeding the scoped fetches)."""
+    body = _client().get("/dashboard").text
+    assert "agentParams(" in body, "agentParams helper missing"
+    assert "agent:" in body, "agent param not passed to fetches"
+
+
+def test_dashboard_agent_id_escaped_in_selector() -> None:
+    """XSS guard: agent ids (telemetry-stored, untrusted) must be esc()'d when
+    built into the selector options innerHTML."""
+    body = _client().get("/dashboard").text
+    start = body.index("function populateAgentFilter(")
+    end = body.index("function onAgentFilterChange(", start)
+    fn = body[start:end]
+    assert "esc(a.agent)" in fn, "agent id not escaped in selector"
+
+
 def test_dashboard_actions_esc_used_in_post_results() -> None:
     """XSS guard: response-derived strings in action handlers must go through esc().
     Check that esc() calls appear in the postAction / action-handler block."""

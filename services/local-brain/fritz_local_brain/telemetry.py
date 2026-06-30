@@ -384,6 +384,7 @@ def query_events(
     since: str | None = None,
     until: str | None = None,
     event_types: "set[str] | None" = None,
+    agent: str | None = None,
 ) -> list[dict[str, Any]]:
     """Return telemetry events filtered by date range and optional event types.
 
@@ -393,8 +394,11 @@ def query_events(
     (``ts >= since`` AND ``ts < until_exclusive``) is correct even for non-UTC
     offsets. A bare ``until`` date is INCLUSIVE of that whole day; an
     unparseable bound is ignored (no filter). ``event_types`` filters by
-    lowercased event_type. The ``payload`` of each returned event is
-    json-decoded into a dict under the ``"payload"`` key (default ``{}``).
+    lowercased event_type. ``agent`` (when set) keeps only events whose
+    normalized agent (empty/None -> ``"unknown"``) equals it — the single
+    agent-filtering point for the #199 per-agent drill-down. The ``payload`` of
+    each returned event is json-decoded into a dict under the ``"payload"`` key
+    (default ``{}``).
 
     No-op safe: returns ``[]`` when telemetry is disabled or no db exists.
     """
@@ -413,6 +417,8 @@ def query_events(
         if until_exclusive and ts >= until_exclusive:
             continue
         if event_types is not None and row.get("event_type") not in event_types:
+            continue
+        if agent is not None and (row.get("agent") or "unknown") != agent:
             continue
         event = dict(row)
         raw = event.get("payload")

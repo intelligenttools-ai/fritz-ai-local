@@ -399,6 +399,25 @@ class UsageSummaryResult(BaseModel):
     distinct_agents: int = 0
 
 
+class UsageAgent(BaseModel):
+    """One distinct agent discovered in the telemetry store (#199).
+
+    Data-driven: any agent value present in the events appears here with no
+    code change (never a hardcoded enum).
+    """
+
+    agent: str
+    count: int = 0
+    first_seen: str | None = None
+    last_seen: str | None = None
+
+
+class UsageAgentsResult(BaseModel):
+    """Per-agent discovery list for the dashboard drill-down (#199)."""
+
+    agents: list[UsageAgent] = Field(default_factory=list)
+
+
 class StatusResult(BaseModel):
     """Service status without secrets."""
 

@@ -315,6 +315,9 @@
     <option value="30" selected>Every 30s</option>
     <option value="60">Every 60s</option>
   </select>
+  <select id="agent-filter-select" onchange="onAgentFilterChange()">
+    <option value="">All agents</option>
+  </select>
   <span id="last-updated"></span>
 </header>
 
@@ -603,6 +606,39 @@ function renderSummary(data) {
 let _activityBy = "type";
 let _activityCache = null;
 
+// #199: per-agent drill-down. Empty string = "All agents" (global view).
+// Discovered dynamically from /v1/usage/agents — never a hardcoded enum.
+let _agentFilter = "";
+
+/** Build the agent param map for agent-scoped panels (empty when "All agents"). */
+function agentParams() {
+  return _agentFilter ? { agent: _agentFilter } : {};
+}
+
+/** Populate the agent selector from the live /v1/usage/agents discovery list.
+ * Preserves the current selection if that agent is still present. */
+function populateAgentFilter(data) {
+  const sel = document.getElementById("agent-filter-select");
+  if (!sel) return;
+  const agents = (data && Array.isArray(data.agents)) ? data.agents : [];
+  // esc() every agent id — it is telemetry-stored, untrusted (stored XSS guard).
+  let html = '<option value="">All agents</option>';
+  for (const a of agents) {
+    const id = esc(a.agent);
+    html += `<option value="${id}">${id} (${a.count ?? 0})</option>`;
+  }
+  sel.innerHTML = html;
+  // Keep the selection if the filtered agent still exists; else fall back to all.
+  const present = agents.some(a => a.agent === _agentFilter);
+  if (_agentFilter && !present) _agentFilter = "";
+  sel.value = _agentFilter;
+}
+
+function onAgentFilterChange() {
+  _agentFilter = document.getElementById("agent-filter-select").value;
+  loadAll();
+}
+
 async function setActivityBy(by, btn) {
   _activityBy = by;
   document.querySelectorAll("#activity-by-toggle button").forEach(b => b.classList.remove("active"));
@@ -612,7 +648,7 @@ async function setActivityBy(by, btn) {
 }
 
 async function loadActivity() {
-  const data = await apiFetch("/v1/usage/activity", { by: _activityBy });
+  const data = await apiFetch("/v1/usage/activity", { by: _activityBy, ...agentParams() });
   renderTimeChart("activity-chart", data ? data.buckets : null);
 }
 
@@ -1069,12 +1105,17 @@ async function loadAll() {
   _inFlight = true;
   document.getElementById("last-updated").textContent = "Loading…";
 
-  const [summary, activity, queries, knowledge, projects] = await Promise.all([
-    apiFetch("/v1/usage/summary"),
-    apiFetch("/v1/usage/activity", { by: _activityBy }),
-    apiFetch("/v1/usage/queries"),
+  // Agent-scoped panels get agent=_agentFilter when a specific agent is selected
+  // (knowledge is KB state, not event-based — never agent-scoped). The agents
+  // discovery list is always global so the selector shows every agent.
+  const ap = agentParams();
+  const [agents, summary, activity, queries, knowledge, projects] = await Promise.all([
+    apiFetch("/v1/usage/agents"),
+    apiFetch("/v1/usage/summary", ap),
+    apiFetch("/v1/usage/activity", { by: _activityBy, ...ap }),
+    apiFetch("/v1/usage/queries", ap),
     apiFetch("/v1/usage/knowledge"),
-    apiFetch("/v1/usage/projects"),
+    apiFetch("/v1/usage/projects", ap),
   ]);
 
   _inFlight = false;
@@ -1082,6 +1123,7 @@ async function loadAll() {
   // If any returned null due to 401, the overlay is already shown
   if (!getToken()) return;
 
+  populateAgentFilter(agents);
   renderSummary(summary);
   renderTimeChart("activity-chart", activity ? activity.buckets : null);
   renderQueries(queries);
