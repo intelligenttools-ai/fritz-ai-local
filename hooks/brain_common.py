@@ -967,3 +967,23 @@ def get_fritz_version() -> str | None:
     if version_path.exists():
         return version_path.read_text(encoding="utf-8").strip()
     return None
+
+
+def version_is_behind(running: str, repo: str) -> bool:
+    """True only when `running` is a strictly-older dotted version than `repo`.
+
+    Shared by the session-start drift nudge (hooks/brain_session_start.py) and
+    the unattended drift-watcher (scripts/local-brain-service.py drift-check).
+    """
+    def parse(value: str) -> list[int]:
+        parts = []
+        for token in value.strip().lstrip("v").split("."):
+            digits = "".join(ch for ch in token if ch.isdigit())
+            parts.append(int(digits) if digits else 0)
+        return parts
+    running_parts = parse(running)
+    repo_parts = parse(repo)
+    length = max(len(running_parts), len(repo_parts))
+    running_parts += [0] * (length - len(running_parts))
+    repo_parts += [0] * (length - len(repo_parts))
+    return running_parts < repo_parts

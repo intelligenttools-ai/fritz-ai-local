@@ -33,8 +33,14 @@ from brain_common import (
     local_brain_service_configured, local_brain_configuration_decision_prompt,
     get_local_brain_service_desired, local_brain_service_operational,
     local_brain_service_setup_forcing_instruction,
+    version_is_behind,
     BRAIN_HOME, FRITZ_REPO,
 )
+
+# Backwards-compatible alias: the version comparison now lives in brain_common
+# (shared with the unattended drift-watcher). Kept here so existing call sites
+# and tests that reference brain_session_start._version_is_behind keep working.
+_version_is_behind = version_is_behind
 
 
 def check_for_updates(context_parts: list[str]):
@@ -104,22 +110,6 @@ def check_for_updates(context_parts: list[str]):
     except (subprocess.TimeoutExpired, OSError):
         # Network/auth failure — don't cache, allow retry next session
         pass
-
-
-def _version_is_behind(running: str, repo: str) -> bool:
-    """True only when `running` is a strictly-older dotted version than `repo`."""
-    def parse(value: str) -> list[int]:
-        parts = []
-        for token in value.strip().lstrip("v").split("."):
-            digits = "".join(ch for ch in token if ch.isdigit())
-            parts.append(int(digits) if digits else 0)
-        return parts
-    running_parts = parse(running)
-    repo_parts = parse(repo)
-    length = max(len(running_parts), len(repo_parts))
-    running_parts += [0] * (length - len(running_parts))
-    repo_parts += [0] * (length - len(repo_parts))
-    return running_parts < repo_parts
 
 
 def check_service_version_drift(context_parts: list[str]):
