@@ -48,6 +48,7 @@ from ..models import (
     UsageProjectsResult,
     UsageQueriesResult,
     UsageSummaryResult,
+    UsageSystemResult,
 )
 from ..operation_locks import OperationAlreadyRunning, compile_lock, lint_lock, sync_lock
 from ..query_workflow import run_query
@@ -231,6 +232,15 @@ async def usage_summary(
     agent: str | None = Query(default=None),
 ) -> UsageSummaryResult:
     return UsageSummaryResult(**usage.summary(get_settings(), since=from_, until=to, agent=agent))
+
+
+@router.get("/v1/usage/system", response_model=UsageSystemResult, dependencies=[Depends(require_token)])
+async def usage_system(
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = Query(default=None, alias="to"),
+) -> UsageSystemResult:
+    """SYSTEM activity (the service's own compile/index/reconcile work, #205)."""
+    return UsageSystemResult(**usage.system(get_settings(), since=from_, until=to))
 
 
 # ---------------------------------------------------------------------------

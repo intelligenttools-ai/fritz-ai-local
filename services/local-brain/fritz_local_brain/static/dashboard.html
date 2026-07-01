@@ -236,6 +236,14 @@
     border-radius: 8px; padding: 1rem 1.1rem; box-shadow: var(--shadow);
   }
 
+  /* ---- system activity (#205) ---- */
+  .system-tag { font-size: .62rem; font-weight: 600; text-transform: uppercase;
+                letter-spacing: .04em; color: var(--muted);
+                border: 1px solid var(--border); border-radius: 999px;
+                padding: .1rem .5rem; margin-left: .5rem; vertical-align: middle; }
+  .sys-rate-ok { color: var(--green, #4ade80); }
+  .sys-rate-warn { color: var(--red); }
+
   .no-data { color: var(--muted); font-size: .8rem; font-style: italic; padding: .5rem 0; }
   .error-state {
     color: var(--red); font-size: .8rem; padding: .65rem .85rem;
@@ -477,6 +485,12 @@
       <button data-by="vault" onclick="setActivityBy('vault',this)">by vault</button>
     </div>
     <div id="activity-chart"><div class="skeleton skel-chart"></div></div>
+  </div>
+
+  <!-- 2b. System activity (#205): the service's own scheduler work, NOT an agent -->
+  <h2>System activity <span class="system-tag">service, not an agent</span></h2>
+  <div class="section panel" id="system-panel">
+    <div id="system-activity"><div class="skeleton skel-line"></div><div class="skeleton skel-line"></div></div>
   </div>
 
   <!-- 3. Queries -->
@@ -1077,6 +1091,47 @@ function renderProjects(data) {
   </table>`;
 }
 
+// ---- system activity (#205) -------------------------------------------------
+
+/** Render the System activity panel from /v1/usage/system.
+ * Shows the scheduler's own work (compile/embeddings/reconcile/sync/lint …) with
+ * per-type throughput + success rate. This is the SERVICE, not an agent — the
+ * Agents views deliberately exclude these events. Degrades gracefully on
+ * empty/null. All dynamic strings (event types) are esc()'d. */
+function renderSystem(data) {
+  const el = document.getElementById("system-activity");
+  if (data === null) { renderError("system-activity", "Could not load system activity."); return; }
+  const byType = (data && data.by_type) || {};
+  const total = (data && data.total) || 0;
+  if (!total) {
+    el.innerHTML = '<div class="no-data">No system activity yet.</div>';
+    return;
+  }
+  const rate = (data.success_rate == null) ? "—"
+    : (Math.round(data.success_rate * 1000) / 10) + "%";
+  const rateClass = (data.success_rate == null) ? ""
+    : (data.success_rate >= 0.95 ? "sys-rate-ok" : "sys-rate-warn");
+  const rows = Object.entries(byType)
+    .sort((a, b) => b[1].total - a[1].total)
+    .map(([type, s]) => `<tr>
+      <td>${esc(type)}</td>
+      <td class="num">${s.total}</td>
+      <td class="num">${s.ok}</td>
+      <td class="num">${s.error}</td>
+    </tr>`).join("");
+  el.innerHTML = `
+    <div class="latency-row" style="margin-bottom:.85rem">
+      <div class="lat-card"><div class="label">System events</div><div class="value">${total}</div></div>
+      <div class="lat-card"><div class="label">OK</div><div class="value">${data.ok || 0}</div></div>
+      <div class="lat-card"><div class="label">Errors</div><div class="value">${data.error || 0}</div></div>
+      <div class="lat-card"><div class="label">Success rate</div><div class="value ${rateClass}">${rate}</div></div>
+    </div>
+    <table>
+      <thead><tr><th>Event type</th><th class="num">Total</th><th class="num">OK</th><th class="num">Error</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+}
+
 // ---- actions ----------------------------------------------------------------
 
 /**
@@ -1476,10 +1531,11 @@ async function loadAll() {
   // (knowledge is KB state, not event-based — never agent-scoped). The agents
   // discovery list is always global so the selector shows every agent.
   const ap = agentParams();
-  const [agents, summary, activity, queries, knowledge, projects] = await Promise.all([
+  const [agents, summary, activity, system, queries, knowledge, projects] = await Promise.all([
     apiFetch("/v1/usage/agents"),
     apiFetch("/v1/usage/summary", ap),
     apiFetch("/v1/usage/activity", { by: _activityBy, ...ap }),
+    apiFetch("/v1/usage/system"),  // service's own work — always global, not agent-scoped
     apiFetch("/v1/usage/queries", ap),
     apiFetch("/v1/usage/knowledge"),
     apiFetch("/v1/usage/projects", ap),
@@ -1494,6 +1550,7 @@ async function loadAll() {
   renderSummary(summary);
   if (!activity) { renderError("activity-chart", "Could not load activity."); }
   else { renderTimeChart("activity-chart", activity.buckets); }
+  renderSystem(system);
   renderQueries(queries);
   renderKnowledge(knowledge);
   renderProjects(projects);

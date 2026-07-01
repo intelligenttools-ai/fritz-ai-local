@@ -418,6 +418,29 @@ class UsageAgentsResult(BaseModel):
     agents: list[UsageAgent] = Field(default_factory=list)
 
 
+class UsageSystemTypeStat(BaseModel):
+    """Per-event-type SYSTEM counts (#205)."""
+
+    total: int = 0
+    ok: int = 0
+    error: int = 0
+
+
+class UsageSystemResult(BaseModel):
+    """SYSTEM activity (the service's own work) for the System panel (#205).
+
+    ``by_type`` maps each system event_type to its ``{total, ok, error}`` counts;
+    the overall ``total``/``ok``/``error`` and ``success_rate`` roll up all system
+    events. ``success_rate`` is None when there are no system events.
+    """
+
+    by_type: dict[str, UsageSystemTypeStat] = Field(default_factory=dict)
+    total: int = 0
+    ok: int = 0
+    error: int = 0
+    success_rate: float | None = None
+
+
 class StatusResult(BaseModel):
     """Service status without secrets."""
 
