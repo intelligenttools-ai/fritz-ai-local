@@ -121,3 +121,31 @@ def test_version_is_behind_equal_false():
 
 def test_version_is_behind_newer_false():
     assert brain_session_start._version_is_behind("1.3.8", "1.3.7") is False
+
+
+# ---------------------------------------------------------------------------
+# #217: the comparison now lives in brain_common (shared with the drift-watcher)
+# and brain_session_start reuses it — no behavior change.
+# ---------------------------------------------------------------------------
+
+import brain_common  # noqa: E402
+
+
+def test_helper_moved_to_brain_common():
+    assert hasattr(brain_common, "version_is_behind")
+
+
+def test_session_start_reuses_brain_common_helper():
+    # brain_session_start._version_is_behind must BE the brain_common function,
+    # not a local re-implementation.
+    assert brain_session_start._version_is_behind is brain_common.version_is_behind
+
+
+def test_brain_common_version_is_behind_cases():
+    assert brain_common.version_is_behind("1.3.5", "1.3.10") is True
+    assert brain_common.version_is_behind("v1.3.0", "1.3.1") is True
+    assert brain_common.version_is_behind("1.3.7", "1.3.7") is False
+    assert brain_common.version_is_behind("1.3.8", "1.3.7") is False
+    # Malformed tokens degrade to 0 rather than crashing.
+    assert brain_common.version_is_behind("1.x", "1.3") is True
+    assert brain_common.version_is_behind("", "1.0.0") is True

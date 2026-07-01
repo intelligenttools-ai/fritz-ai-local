@@ -1156,6 +1156,181 @@ class TestTelemetryRedeployStability:
         assert retention == 90         # absent -> default
 
 
+class TestDriftWatcherProvisioning:
+    """#217: drift-watcher flag round-trips through env map, allowlists, argparse,
+    and provision() installs/uninstalls via the injected DriftWatcherGateway."""
+
+    def _make_drift_gateway(self, mod, *, already_active: bool = False):
+        events: list[str] = []
+
+        def _checker() -> bool:
+            return already_active
+
+        def _installer() -> None:
+            events.append("install")
+
+        def _uninstaller() -> None:
+            events.append("uninstall")
+
+        gw = mod.DriftWatcherGateway(
+            installer=_installer, uninstaller=_uninstaller, checker=_checker
+        )
+        return gw, events
+
+    def test_env_map_default_enables_drift_watcher(self):
+        mod = load_engine()
+        env = mod._config_to_env_map(mod.ProvisionConfig(), "tok-d")
+        assert env["DRIFT_WATCHER_ENABLED"] == "true"
+
+    def test_env_map_disabled_drift_watcher(self):
+        mod = load_engine()
+        env = mod._config_to_env_map(mod.ProvisionConfig(drift_watcher_enabled=False), "tok-d")
+        assert env["DRIFT_WATCHER_ENABLED"] == "false"
+
+    def test_drift_key_in_managed_allowlists(self):
+        mod = load_engine()
+        assert "DRIFT_WATCHER_ENABLED" in mod.PROVISION_ENV_KEYS
+        assert "DRIFT_WATCHER_ENABLED" in mod.DRIFT_TRACKED_KEYS
+
+    def test_argparse_drift_watcher_defaults_true(self):
+        import argparse
+
+        mod = load_engine()
+        parser = argparse.ArgumentParser()
+        sub = parser.add_subparsers()
+        mod.add_provision_subparser(sub)
+
+        ns = parser.parse_args(["provision"])
+        assert ns.drift_watcher is True
+
+    def test_argparse_no_drift_watcher_disables(self):
+        import argparse
+
+        mod = load_engine()
+        parser = argparse.ArgumentParser()
+        sub = parser.add_subparsers()
+        mod.add_provision_subparser(sub)
+
+        ns = parser.parse_args(["provision", "--no-drift-watcher"])
+        assert ns.drift_watcher is False
+
+    def test_run_drift_watcher_installs_when_enabled(self):
+        mod = load_engine()
+        gw, events = self._make_drift_gateway(mod, already_active=False)
+        step = mod._run_drift_watcher(mod.ProvisionConfig(drift_watcher_enabled=True), gw)
+        assert step.name == "drift_watcher"
+        assert step.status == "ok"
+        assert events == ["install"]
+
+    def test_run_drift_watcher_skips_when_already_active(self):
+        mod = load_engine()
+        gw, events = self._make_drift_gateway(mod, already_active=True)
+        step = mod._run_drift_watcher(mod.ProvisionConfig(drift_watcher_enabled=True), gw)
+        assert step.status == "skipped"
+        assert events == []  # is_active short-circuits install
+
+    def test_run_drift_watcher_uninstalls_when_disabled(self):
+        mod = load_engine()
+        gw, events = self._make_drift_gateway(mod, already_active=True)
+        step = mod._run_drift_watcher(mod.ProvisionConfig(drift_watcher_enabled=False), gw)
+        assert step.status == "skipped"  # uninstall is not a "change to provisioned state"
+        assert events == ["uninstall"]
+
+    def test_run_drift_watcher_disabled_and_absent_is_noop(self):
+        mod = load_engine()
+        gw, events = self._make_drift_gateway(mod, already_active=False)
+        step = mod._run_drift_watcher(mod.ProvisionConfig(drift_watcher_enabled=False), gw)
+        assert step.status == "skipped"
+        assert events == []
+
+    def test_run_drift_watcher_failure_is_warning_not_exception(self):
+        mod = load_engine()
+
+        def _boom() -> None:
+            raise RuntimeError("simulated drift-watcher error")
+
+        gw = mod.DriftWatcherGateway(installer=_boom, checker=lambda: False)
+        step = mod._run_drift_watcher(mod.ProvisionConfig(drift_watcher_enabled=True), gw)
+        assert step.status == "warning"
+        assert "simulated drift-watcher error" in step.detail
+
+    def test_non_darwin_install_degrades_to_warning_not_abort(self):
+        """FIX 1: an unsupported-OS install raises a normal RuntimeError (not
+        SystemExit) so _run_drift_watcher degrades it to a warning StepResult
+        instead of aborting the whole provision run."""
+        mod = load_engine()
+
+        def _unsupported() -> None:
+            raise RuntimeError("Drift-watcher is not implemented for Linux")
+
+        gw = mod.DriftWatcherGateway(installer=_unsupported, checker=lambda: False)
+        step = mod._run_drift_watcher(mod.ProvisionConfig(drift_watcher_enabled=True), gw)
+        assert step.name == "drift_watcher"
+        assert step.status == "warning"
+        assert "not implemented for Linux" in step.detail
+
+    def test_provision_completes_when_drift_watcher_install_fails(self, tmp_path):
+        """FIX 1 integration: a failing drift-watcher install must NOT abort
+        provision — the run finishes and other steps are still present."""
+        mod = load_engine()
+
+        def _boom() -> None:
+            raise RuntimeError("Drift-watcher is not implemented for Linux")
+
+        drift_gw = mod.DriftWatcherGateway(installer=_boom, checker=lambda: False)
+        cfg = mod.ProvisionConfig(
+            api_token="tok-drift-abort",
+            base_url="http://127.0.0.1:8765",
+            drift_watcher_enabled=True,
+        )
+        env_path = tmp_path / ".env"
+        reg_path = tmp_path / ".brain" / "registry.yaml"
+
+        docker_gw = _StubDocker()
+        http_gw = _StubHttp()
+
+        with patch("urllib.request.urlopen", return_value=_urlopen_ok_response()):
+            with patch.object(mod, "_run_preflight", return_value=mod.StepResult("preflight", "ok", "ok")):
+                result = mod.provision(
+                    cfg,
+                    env_path=env_path,
+                    registry_path=reg_path,
+                    docker=docker_gw,
+                    http=http_gw,
+                    drift_watcher=drift_gw,
+                )
+
+        drift_step = result._step("drift_watcher")
+        assert drift_step is not None and drift_step.status == "warning"
+        # Provision ran to completion (env step present) and did not raise.
+        assert result._step("write_env") is not None
+        assert result.overall in {"partial", "ok", "already_provisioned"}
+
+
+class _StubDocker:
+    def build(self):
+        pass
+
+    def up(self):
+        pass
+
+
+class _StubHttp:
+    def get(self, url, headers=None):
+        return (200, b'{"ok":true}')
+
+
+def _urlopen_ok_response():
+    import json
+
+    mock_response = MagicMock()
+    mock_response.__enter__ = lambda s: s
+    mock_response.__exit__ = MagicMock(return_value=False)
+    mock_response.status = 200
+    mock_response.read.return_value = json.dumps({}).encode()
+    return mock_response
+
+
 class TestRegistryMergePreservesSubKeys:
     """Item B: _run_write_registry must MERGE existing local_brain_service sub-keys."""
 

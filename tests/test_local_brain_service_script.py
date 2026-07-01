@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 
 def load_script():
@@ -114,6 +117,8 @@ def test_start_creates_env_with_random_api_token(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(module, "REPO_ROOT", repo)
     monkeypatch.setattr(module, "ENV_PATH", env_path)
     monkeypatch.setattr(module, "COMPOSE_FILE", repo / "compose.yml")
+    # build=True now rebuilds under the shared build lock — keep it off the real ~/.brain.
+    monkeypatch.setattr(module, "BUILD_LOCK_PATH", repo / "build.lock")
     monkeypatch.setattr(module, "run", lambda cmd, check=True: commands.append(cmd))
 
     module.start(SimpleNamespace(build=True))
@@ -379,3 +384,314 @@ def test_compose_restart_unless_stopped() -> None:
     assert restart == "unless-stopped", (
         f"local-brain service must have restart: unless-stopped, got: {restart!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# #217 — drift-check subcommand (detect + optional rebuild)
+# ---------------------------------------------------------------------------
+
+
+def _drift_module(monkeypatch, tmp_path, *, running, repo, lock_held=False):
+    """Load the script and stub out all IO for drift_check.
+
+    Returns (module, calls) where calls records every `run(...)` invocation
+    (git pull / compose up --build) so tests can assert on side effects without
+    actually shelling out.
+    """
+    module = load_script()
+    calls: list[list[str]] = []
+
+    fake_bc = SimpleNamespace(
+        get_fritz_version=lambda: repo,
+        get_local_brain_service_version=lambda: running,
+        version_is_behind=_real_version_is_behind,
+    )
+    monkeypatch.setattr(module, "_import_brain_common", lambda: fake_bc)
+    monkeypatch.setattr(module, "run", lambda cmd, check=True: calls.append(cmd))
+    monkeypatch.setattr(module, "ensure_runtime_env", lambda: None)
+
+    lock = tmp_path / "build.lock"
+    if lock_held:
+        # A genuinely-held lock: current (alive) PID + a fresh timestamp so the
+        # staleness check treats it as live and the caller skips.
+        lock.write_text(f"{os.getpid()}\n{int(__import__('time').time())}\n")
+    monkeypatch.setattr(module, "BUILD_LOCK_PATH", lock)
+    return module, calls, lock
+
+
+def _real_version_is_behind(running: str, repo: str) -> bool:
+    # Mirror of brain_common.version_is_behind for the stubbed brain_common.
+    def parse(value: str) -> list[int]:
+        out = []
+        for token in value.strip().lstrip("v").split("."):
+            digits = "".join(ch for ch in token if ch.isdigit())
+            out.append(int(digits) if digits else 0)
+        return out
+    a, b = parse(running), parse(repo)
+    n = max(len(a), len(b))
+    a += [0] * (n - len(a))
+    b += [0] * (n - len(b))
+    return a < b
+
+
+def test_drift_check_behind_with_rebuild_pulls_and_rebuilds(monkeypatch, tmp_path):
+    module, calls, lock = _drift_module(monkeypatch, tmp_path, running="1.3.55", repo="1.3.57")
+
+    with pytest.raises(SystemExit) as exc:
+        module.drift_check(SimpleNamespace(rebuild=True))
+    assert exc.value.code == 0
+
+    # git pull --ff-only, then compose up -d --build
+    assert calls[0] == ["git", "-C", str(module.REPO_ROOT), "pull", "--ff-only"]
+    up = calls[1]
+    assert up[:2] == ["docker", "compose"]
+    assert up[-3:] == ["up", "-d", "--build"]
+    # Lock released in finally.
+    assert not lock.exists()
+
+
+def test_drift_check_behind_dry_exits_nonzero_no_rebuild(monkeypatch, tmp_path):
+    module, calls, _ = _drift_module(monkeypatch, tmp_path, running="1.3.55", repo="1.3.57")
+
+    with pytest.raises(SystemExit) as exc:
+        module.drift_check(SimpleNamespace(rebuild=False))
+    assert exc.value.code == 1
+    assert calls == []  # no rebuild in dry mode
+
+
+def test_drift_check_current_is_noop(monkeypatch, tmp_path):
+    module, calls, _ = _drift_module(monkeypatch, tmp_path, running="1.3.57", repo="1.3.57")
+
+    with pytest.raises(SystemExit) as exc:
+        module.drift_check(SimpleNamespace(rebuild=True))
+    assert exc.value.code == 0
+    assert calls == []
+
+
+def test_drift_check_service_down_is_clean_skip(monkeypatch, tmp_path):
+    module, calls, _ = _drift_module(monkeypatch, tmp_path, running=None, repo="1.3.57")
+
+    with pytest.raises(SystemExit) as exc:
+        module.drift_check(SimpleNamespace(rebuild=True))
+    assert exc.value.code == 0
+    assert calls == []  # never rebuild when the service is unreachable
+
+
+def test_drift_check_lock_held_skips(monkeypatch, tmp_path):
+    module, calls, _ = _drift_module(
+        monkeypatch, tmp_path, running="1.3.55", repo="1.3.57", lock_held=True
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        module.drift_check(SimpleNamespace(rebuild=True))
+    assert exc.value.code == 0
+    assert calls == []  # someone else holds the build lock
+
+
+# ---------------------------------------------------------------------------
+# #217 FIX 2 — stale-lock recovery (dead PID / old mtime) must NOT wedge
+# ---------------------------------------------------------------------------
+
+
+def test_drift_check_reclaims_lock_with_dead_pid(monkeypatch, tmp_path):
+    """A lock left by a dead process is reclaimed; the rebuild proceeds."""
+    module, calls, lock = _drift_module(monkeypatch, tmp_path, running="1.3.55", repo="1.3.57")
+    # A PID that is not alive. Force _pid_alive False to be deterministic.
+    lock.write_text("424242\n" + str(int(__import__("time").time())) + "\n")
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: False)
+
+    with pytest.raises(SystemExit) as exc:
+        module.drift_check(SimpleNamespace(rebuild=True))
+    assert exc.value.code == 0
+    # Rebuild ran: git pull + compose up --build.
+    assert calls[0][:2] == ["git", "-C"]
+    assert calls[1][-3:] == ["up", "-d", "--build"]
+    assert not lock.exists()  # released in finally
+
+
+def test_drift_check_reclaims_lock_past_ttl(monkeypatch, tmp_path):
+    """A lock whose mtime is older than the TTL is reclaimed even if PID looks alive."""
+    module, calls, lock = _drift_module(monkeypatch, tmp_path, running="1.3.55", repo="1.3.57")
+    import time as _t
+
+    # PID "alive" but the lock is ancient (past TTL) -> stale.
+    lock.write_text(f"{os.getpid()}\n0\n")
+    old = _t.time() - (module.BUILD_LOCK_TTL_SECONDS + 60)
+    os.utime(lock, (old, old))
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: True)
+
+    with pytest.raises(SystemExit) as exc:
+        module.drift_check(SimpleNamespace(rebuild=True))
+    assert exc.value.code == 0
+    assert calls[1][-3:] == ["up", "-d", "--build"]
+    assert not lock.exists()
+
+
+def test_drift_check_respects_fresh_live_lock(monkeypatch, tmp_path):
+    """A lock held by a live, recent process is respected — skip, no rebuild."""
+    module, calls, lock = _drift_module(monkeypatch, tmp_path, running="1.3.55", repo="1.3.57")
+    lock.write_text(f"{os.getpid()}\n{int(__import__('time').time())}\n")
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: True)
+
+    with pytest.raises(SystemExit) as exc:
+        module.drift_check(SimpleNamespace(rebuild=True))
+    assert exc.value.code == 0
+    assert calls == []  # no rebuild while a live build holds the lock
+    assert lock.exists()  # untouched — we did not own it
+
+
+# ---------------------------------------------------------------------------
+# #217 FIX 3 — the build lock covers start --build / restart --build too, and a
+# concurrent build attempt while the lock is held skips (no deadlock/hang).
+# ---------------------------------------------------------------------------
+
+
+def test_start_build_acquires_lock_and_builds(monkeypatch, tmp_path):
+    module = load_script()
+    calls: list[list[str]] = []
+    monkeypatch.setattr(module, "run", lambda cmd, check=True: calls.append(cmd))
+    monkeypatch.setattr(module, "ensure_runtime_env", lambda: None)
+    monkeypatch.setattr(module, "BUILD_LOCK_PATH", tmp_path / "build.lock")
+
+    module.start(SimpleNamespace(build=True))
+
+    # compose up -d --build ran under the lock; lock released.
+    assert calls and calls[-1][-3:] == ["up", "-d", "--build"]
+    assert not (tmp_path / "build.lock").exists()
+
+
+def test_start_build_skips_when_live_lock_held(monkeypatch, tmp_path):
+    """start --build must SKIP (not hang, not build) when a live build holds the lock."""
+    module = load_script()
+    calls: list[list[str]] = []
+    lock = tmp_path / "build.lock"
+    lock.write_text(f"{os.getpid()}\n{int(__import__('time').time())}\n")
+    monkeypatch.setattr(module, "run", lambda cmd, check=True: calls.append(cmd))
+    monkeypatch.setattr(module, "ensure_runtime_env", lambda: None)
+    monkeypatch.setattr(module, "BUILD_LOCK_PATH", lock)
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: True)
+
+    module.start(SimpleNamespace(build=True))
+
+    assert calls == []  # no compose build while another live build holds the lock
+    assert lock.exists()  # not our lock — left intact
+
+
+def test_locked_compose_build_returns_false_when_held(monkeypatch, tmp_path):
+    module = load_script()
+    calls: list[list[str]] = []
+    lock = tmp_path / "build.lock"
+    lock.write_text(f"{os.getpid()}\n{int(__import__('time').time())}\n")
+    monkeypatch.setattr(module, "run", lambda cmd, check=True: calls.append(cmd))
+    monkeypatch.setattr(module, "ensure_runtime_env", lambda: None)
+    monkeypatch.setattr(module, "BUILD_LOCK_PATH", lock)
+    monkeypatch.setattr(module, "_pid_alive", lambda pid: True)
+
+    assert module._locked_compose_build(pull=False) is False
+    assert calls == []
+
+
+def test_start_no_build_does_not_touch_lock(monkeypatch, tmp_path):
+    """A plain (non-build) start must not create/consult the build lock."""
+    module = load_script()
+    calls: list[list[str]] = []
+    lock = tmp_path / "build.lock"
+    monkeypatch.setattr(module, "run", lambda cmd, check=True: calls.append(cmd))
+    monkeypatch.setattr(module, "ensure_runtime_env", lambda: None)
+    monkeypatch.setattr(module, "BUILD_LOCK_PATH", lock)
+
+    module.start(SimpleNamespace(build=False))
+
+    assert calls and calls[-1][-2:] == ["up", "-d"]
+    assert not lock.exists()
+
+
+# ---------------------------------------------------------------------------
+# #217 FIX 1 — programmatic drift-watcher install must NOT raise SystemExit on
+# an unsupported OS (so provision's except-Exception can degrade to a warning).
+# ---------------------------------------------------------------------------
+
+
+def test_install_impl_raises_runtimeerror_not_systemexit_on_non_darwin(monkeypatch):
+    module = load_script()
+    monkeypatch.setattr(module.platform, "system", lambda: "Linux")
+
+    with pytest.raises(module.DriftWatcherUnsupported):
+        module.install_drift_watcher_impl()
+    # It is a normal Exception, NOT SystemExit.
+    assert issubclass(module.DriftWatcherUnsupported, Exception)
+    assert not issubclass(module.DriftWatcherUnsupported, SystemExit)
+
+
+def test_cli_install_wrapper_exits_nonzero_on_non_darwin(monkeypatch):
+    module = load_script()
+    monkeypatch.setattr(module.platform, "system", lambda: "Linux")
+
+    with pytest.raises(SystemExit):
+        module.install_drift_watcher(SimpleNamespace())
+
+
+# ---------------------------------------------------------------------------
+# #217 — drift-watcher plist builder + install/uninstall
+# ---------------------------------------------------------------------------
+
+
+def test_build_drift_watcher_plist_is_periodic_drift_check():
+    module = load_script()
+    plist = module.build_drift_watcher_plist()
+
+    assert plist["Label"] == module.DRIFT_WATCHER_LABEL
+    assert module.DRIFT_WATCHER_LABEL != module.LAUNCH_AGENT_LABEL
+    assert plist["StartInterval"] == module.DRIFT_WATCHER_INTERVAL_SECONDS
+    args = plist["ProgramArguments"]
+    assert "drift-check" in args
+    assert "--rebuild" in args
+
+
+def test_install_drift_watcher_writes_plist_and_bootstraps(monkeypatch, tmp_path):
+    module = load_script()
+    plist_path = tmp_path / "LaunchAgents" / f"{module.DRIFT_WATCHER_LABEL}.plist"
+    log_path = tmp_path / "logs" / "drift.log"
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(module, "DRIFT_WATCHER_PATH", plist_path)
+    monkeypatch.setattr(module, "DRIFT_WATCHER_LOG_PATH", log_path)
+    monkeypatch.setattr(module, "run", lambda cmd, check=True: commands.append(cmd))
+    monkeypatch.setattr(module.os, "getuid", lambda: 501, raising=False)
+
+    module.install_drift_watcher(SimpleNamespace())
+
+    assert plist_path.exists()
+    # launchctl bootstrap + enable were invoked (mocked run).
+    joined = [" ".join(c) for c in commands]
+    assert any("bootstrap" in j for j in joined)
+    assert any("enable" in j for j in joined)
+
+
+def test_uninstall_drift_watcher_removes_plist(monkeypatch, tmp_path):
+    module = load_script()
+    plist_path = tmp_path / "LaunchAgents" / f"{module.DRIFT_WATCHER_LABEL}.plist"
+    plist_path.parent.mkdir(parents=True, exist_ok=True)
+    plist_path.write_text("stub")
+    commands: list[list[str]] = []
+
+    monkeypatch.setattr(module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(module, "DRIFT_WATCHER_PATH", plist_path)
+    monkeypatch.setattr(module, "run", lambda cmd, check=True: commands.append(cmd))
+    monkeypatch.setattr(module.os, "getuid", lambda: 501, raising=False)
+
+    module.uninstall_drift_watcher(SimpleNamespace())
+
+    assert not plist_path.exists()
+    assert any("bootout" in " ".join(c) for c in commands)
+
+
+def test_drift_check_help_exits_0():
+    result = subprocess.run(
+        [sys.executable, _SCRIPT, "drift-check", "--help"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "--rebuild" in (result.stdout + result.stderr)
