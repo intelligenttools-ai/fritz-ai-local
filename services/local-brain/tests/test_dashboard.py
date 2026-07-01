@@ -286,3 +286,67 @@ def test_dashboard_is_dependency_free() -> None:
     assert "<script src=" not in lowered, "external script tag present"
     assert "<link " not in lowered, "external link tag present"
     assert "@import" not in lowered, "external CSS import present"
+
+
+# ---------------------------------------------------------------------------
+# Stacked area chart / multi-series renderTimeChart (#207)
+# ---------------------------------------------------------------------------
+
+def _render_time_chart_fn(body: str) -> str:
+    """Extract the renderTimeChart function body from the dashboard source."""
+    start = body.index("function renderTimeChart(")
+    end = body.index("\nfunction ", start + 1)
+    return body[start:end]
+
+
+def test_dashboard_time_chart_has_legend_container() -> None:
+    """renderTimeChart must emit a legend container so the toggle is visually
+    distinguishable when the grouping dimension changes."""
+    body = _client().get("/dashboard").text
+    fn = _render_time_chart_fn(body)
+    assert "tc-legend" in fn, "legend container class 'tc-legend' missing from renderTimeChart"
+
+
+def test_dashboard_time_chart_iterates_per_key() -> None:
+    """renderTimeChart must iterate over per-key counts in each day's bucket —
+    not just collapse each day to a single total — so multi-series stacking
+    actually reflects the chosen grouping dimension."""
+    body = _client().get("/dashboard").text
+    fn = _render_time_chart_fn(body)
+    # The multi-series path builds seriesData by iterating keys in each bucket.
+    assert "seriesData" in fn, "seriesData (per-key series matrix) missing"
+    assert "seriesKeys" in fn, "seriesKeys (distinct grouping keys) missing"
+
+
+def test_dashboard_time_chart_top_n_fold() -> None:
+    """renderTimeChart must cap the number of series and fold the remainder into
+    an 'other' series so the chart stays legible with many distinct keys."""
+    body = _client().get("/dashboard").text
+    fn = _render_time_chart_fn(body)
+    assert "MAX_SERIES" in fn, "MAX_SERIES cap missing — no top-N fold"
+    assert '"other"' in fn, "'other' fold bucket label missing"
+
+
+def test_dashboard_time_chart_esc_keys_in_legend() -> None:
+    """XSS guard: series keys (type/agent/vault values from telemetry) must be
+    esc()'d wherever they appear in the legend innerHTML."""
+    body = _client().get("/dashboard").text
+    fn = _render_time_chart_fn(body)
+    # The legend label must escape the key before inserting it into innerHTML.
+    assert "esc(sk)" in fn, "series key not esc()'d in legend"
+
+
+def test_dashboard_time_chart_esc_keys_in_tooltip() -> None:
+    """XSS guard: series keys must be esc()'d in hover tooltip strings too."""
+    body = _client().get("/dashboard").text
+    fn = _render_time_chart_fn(body)
+    # tooltip breakdown loop uses esc(k) for each series key
+    assert "esc(k)" in fn, "series key not esc()'d in tooltip"
+    assert "esc(day)" in fn, "day label not esc()'d in tooltip"
+
+
+def test_dashboard_time_chart_legend_css_present() -> None:
+    """The legend CSS classes must be defined in the dashboard stylesheet."""
+    body = _client().get("/dashboard").text
+    assert ".tc-legend" in body, ".tc-legend CSS rule missing"
+    assert ".tc-legend-swatch" in body, ".tc-legend-swatch CSS rule missing"
