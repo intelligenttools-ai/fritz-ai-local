@@ -264,6 +264,21 @@
   }
   @keyframes slide { from { opacity: .4; } to { opacity: 1; } }
 
+  /* ---- time-chart legend ---- */
+  .tc-legend {
+    display: flex; flex-wrap: wrap; gap: .35rem .75rem;
+    margin-top: .6rem; padding-top: .45rem;
+    border-top: 1px solid var(--border);
+  }
+  .tc-legend-item {
+    display: inline-flex; align-items: center; gap: .3rem;
+    font-size: .72rem; color: var(--muted);
+  }
+  .tc-legend-swatch {
+    display: inline-block; width: 10px; height: 10px;
+    border-radius: 2px; flex-shrink: 0;
+  }
+
   .pct-badge {
     display: inline-block; padding: .12rem .45rem;
     border-radius: 4px; font-size: .8rem; font-weight: 700; font-family: var(--font-mono);
@@ -718,16 +733,60 @@ function bindChartTip() {
   });
 }
 
-/** Time-series chart. buckets = {"YYYY-MM-DD": {key:count}} */
+/** Time-series stacked-area chart. buckets = {"YYYY-MM-DD": {key:count}}
+ *
+ * Renders one stacked area per distinct key so toggling by type/agent/vault
+ * produces visibly different charts.  Top MAX_SERIES keys by total are shown;
+ * the remainder are folded into an "other" series.  A colour legend is rendered
+ * below the chart.  All key strings are esc()'d before entering innerHTML/SVG.
+ */
 function renderTimeChart(containerId, buckets) {
   const el = document.getElementById(containerId);
   if (!buckets || !Object.keys(buckets).length) {
     el.innerHTML = '<div class="no-data">No activity recorded yet.</div>'; return;
   }
   bindChartTip();
+
+  const MAX_SERIES = 8;
   const days = Object.keys(buckets).sort();
-  const totals = days.map(d => Object.values(buckets[d]).reduce((a, b) => a + b, 0));
-  const maxTotal = Math.max(...totals, 1);
+
+  // Collect totals per key across all days.
+  const keyTotals = {};
+  for (const day of days) {
+    for (const [k, v] of Object.entries(buckets[day])) {
+      keyTotals[k] = (keyTotals[k] || 0) + v;
+    }
+  }
+
+  // Sort keys: desc by total, then by name for determinism.  Cap at MAX_SERIES.
+  const sortedKeys = Object.keys(keyTotals).sort((a, b) =>
+    keyTotals[b] - keyTotals[a] || a.localeCompare(b)
+  );
+  const topKeys = sortedKeys.slice(0, MAX_SERIES);
+  const hasOther = sortedKeys.length > MAX_SERIES;
+  // Series list: top keys (+ "other" if needed).
+  const seriesKeys = hasOther ? [...topKeys, "other"] : topKeys;
+
+  // Build per-series per-day values.  "other" = sum of non-top keys for that day.
+  const topSet = new Set(topKeys);
+  // seriesData[seriesIndex][dayIndex] = count
+  const seriesData = seriesKeys.map(sk =>
+    days.map(day => {
+      if (sk === "other") {
+        return Object.entries(buckets[day])
+          .filter(([k]) => !topSet.has(k))
+          .reduce((s, [, v]) => s + v, 0);
+      }
+      return (buckets[day][sk] || 0);
+    })
+  );
+
+  // Stack: for each day, cumulative bottom values per series.
+  // stackedTotals[dayIndex] = total (sum of all series) for that day.
+  const stackedTotals = days.map((_, di) =>
+    seriesData.reduce((s, sd) => s + sd[di], 0)
+  );
+  const maxTotal = Math.max(...stackedTotals, 1);
 
   // viewBox coordinate space (responsive via width:100%).
   const W = 600, H = 160, PL = 34, PR = 8, PT = 10, PB = 22;
@@ -744,17 +803,50 @@ function renderTimeChart(containerId, buckets) {
             <text class="axis-label" x="${PL - 5}" y="${(yAt(t) + 3).toFixed(1)}" text-anchor="end">${t}</text>`;
   }).join("");
 
-  const pts = totals.map((v, i) => [xAt(i), yAt(v)]);
-  const line = pts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
-  const area = `M${pts[0][0].toFixed(1)},${(PT + plotH).toFixed(1)} ` +
-    pts.map(p => `L${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ") +
-    ` L${pts[pts.length-1][0].toFixed(1)},${(PT + plotH).toFixed(1)} Z`;
+  // Build stacked area paths + a top-line path per series (bottom-to-top stack order).
+  // cumBottom[dayIndex] = running bottom of the stack at that day.
+  const cumBottom = days.map(() => 0);
+  // Store per-series bottom/top y-coords for dot placement.
+  const seriesBottomTop = []; // [{bottoms:[y], tops:[y]}]
 
-  // Hover dots carry an esc()'d breakdown tooltip (day + per-key counts).
-  const dots = days.map((day, i) => {
-    const breakdown = Object.entries(buckets[day]).map(([k, v]) => `${esc(k)}: ${v}`).join(", ");
-    const tip = `${esc(day)} — ${totals[i]}${breakdown ? " (" + breakdown + ")" : ""}`;
-    return `<circle class="data-dot" cx="${pts[i][0].toFixed(1)}" cy="${pts[i][1].toFixed(1)}" r="3"
+  let areasSVG = "";
+  for (let si = 0; si < seriesData.length; si++) {
+    const sd   = seriesData[si];
+    const col  = PALETTE[si % PALETTE.length];
+    const bottoms = days.map((_, di) => yAt(cumBottom[di]));
+    const tops    = days.map((_, di) => yAt(cumBottom[di] + sd[di]));
+    seriesBottomTop.push({ bottoms, tops });
+
+    // Stacked area polygon: trace top L-to-R then bottom R-to-L.
+    const topPts    = tops.map((y, di) => [xAt(di), y]);
+    const bottomPts = bottoms.map((y, di) => [xAt(di), y]);
+    const areaPath =
+      `M${topPts[0][0].toFixed(1)},${topPts[0][1].toFixed(1)} ` +
+      topPts.slice(1).map(p => `L${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ") +
+      " " +
+      [...bottomPts].reverse().map((p, i) => `${i === 0 ? "L" : "L"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ") +
+      " Z";
+    // Top line of each series (the visible boundary).
+    const linePath = topPts.map((p, i) => `${i ? "L" : "M"}${p[0].toFixed(1)},${p[1].toFixed(1)}`).join(" ");
+
+    areasSVG += `<path d="${areaPath}" fill="${col}" class="area-fill"/>`;
+    areasSVG += `<path d="${linePath}" stroke="${col}" class="data-line"/>`;
+
+    // Advance the bottom for the next series.
+    for (let di = 0; di < days.length; di++) cumBottom[di] += sd[di];
+  }
+
+  // Hover dots on the stacked total (top of the full stack per day), carrying a
+  // per-key breakdown tooltip.  esc() every key (untrusted telemetry string).
+  const dots = days.map((day, di) => {
+    const breakdown = seriesKeys.map((k, si) => {
+      const v = seriesData[si][di];
+      return v > 0 ? `${esc(k)}: ${v}` : "";
+    }).filter(Boolean).join(", ");
+    const tip = `${esc(day)} — ${stackedTotals[di]}${breakdown ? " (" + breakdown + ")" : ""}`;
+    const cx = xAt(di).toFixed(1);
+    const cy = yAt(stackedTotals[di]).toFixed(1);
+    return `<circle class="data-dot" cx="${cx}" cy="${cy}" r="3"
       fill="var(--accent)" data-tip="${tip}"/>`;
   }).join("");
 
@@ -764,14 +856,23 @@ function renderTimeChart(containerId, buckets) {
     ? `<text class="axis-label" x="${xAt(i).toFixed(1)}" y="${H - 6}" text-anchor="middle">${esc(d.slice(5))}</text>`
     : "").join("");
 
-  el.innerHTML = `<div class="chart-wrap"><svg viewBox="0 0 ${W} ${H}" class="chart-svg" preserveAspectRatio="xMidYMid meet" role="img">
-    ${grid}
-    <line class="axis-line" x1="${PL}" y1="${PT + plotH}" x2="${W - PR}" y2="${PT + plotH}"/>
-    <path d="${area}" fill="var(--accent)" class="area-fill"/>
-    <path d="${line}" stroke="var(--accent)" class="data-line"/>
-    ${dots}
-    ${xLabels}
-  </svg></div>`;
+  // Legend: one swatch + label per series.
+  const legendItems = seriesKeys.map((sk, si) => {
+    const col = PALETTE[si % PALETTE.length];
+    const label = sk === "other" ? "other" : esc(sk);
+    return `<span class="tc-legend-item">
+      <span class="tc-legend-swatch" style="background:${col}"></span>${label}</span>`;
+  }).join("");
+
+  el.innerHTML =
+    `<div class="chart-wrap"><svg viewBox="0 0 ${W} ${H}" class="chart-svg" preserveAspectRatio="xMidYMid meet" role="img">
+      ${grid}
+      <line class="axis-line" x1="${PL}" y1="${PT + plotH}" x2="${W - PR}" y2="${PT + plotH}"/>
+      ${areasSVG}
+      ${dots}
+      ${xLabels}
+    </svg></div>
+    <div class="tc-legend">${legendItems}</div>`;
 }
 
 // ---- section renderers ------------------------------------------------------
