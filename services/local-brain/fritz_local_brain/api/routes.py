@@ -15,7 +15,16 @@ from pydantic_ai.exceptions import ModelAPIError, UsageLimitExceeded
 
 from .. import usage
 from ..compile_workflow import run_compile
-from ..config import get_settings
+from ..config import (
+    CONFIG_FIELD_META,
+    REPROVISION_GUIDANCE,
+    ConfigCoercionError,
+    coerce_config_value,
+    config_env_value,
+    config_field_value,
+    get_settings,
+)
+from .. import env_persist
 from ..telemetry import latest_event_id, record_query_event
 from ..embeddings import (
     embedding_status,
@@ -28,6 +37,9 @@ from ..lint_workflow import run_lint
 from ..models import (
     CompileRunRequest,
     CompileRunResult,
+    ConfigField,
+    ConfigPatchResult,
+    ConfigResult,
     EmbeddingIndexRequest,
     EmbeddingIndexResult,
     EmbeddingProbeRequest,
@@ -348,3 +360,68 @@ async def lint_run(request: LintRunRequest) -> LintRunResult:
             return await run_lint(settings, request)
     except OperationAlreadyRunning as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# Live configuration (#208)
+# ---------------------------------------------------------------------------
+
+
+def _config_fields(settings) -> dict[str, ConfigField]:
+    """Build the API-safe view of every known config field."""
+    return {
+        name: ConfigField(
+            value=config_field_value(settings, name),
+            mutable=meta.mutable,
+            requires=meta.requires,
+        )
+        for name, meta in CONFIG_FIELD_META.items()
+    }
+
+
+@router.get("/v1/config", response_model=ConfigResult, dependencies=[Depends(require_token)])
+async def config_get() -> ConfigResult:
+    return ConfigResult(fields=_config_fields(get_settings()))
+
+
+@router.patch("/v1/config", response_model=ConfigPatchResult, dependencies=[Depends(require_token)])
+async def config_patch(body: dict[str, object]) -> ConfigPatchResult:
+    """Apply runtime-mutable config changes live and persist them to .env.
+
+    Runtime-mutable fields are coerced/validated, set on the live settings
+    singleton, and persisted to the repo-root .env so the change survives a
+    restart. Rebuild-required fields are rejected with re-provision guidance and
+    left untouched. An unknown field or an invalid value returns 400 without
+    applying anything.
+    """
+    settings = get_settings()
+
+    # Pass 1 — validate/coerce EVERY field WITHOUT mutating anything. An unknown
+    # field or an invalid runtime value returns 400 having changed no live state
+    # and written no .env (atomic: all-or-nothing). Rebuild-required fields are
+    # collected into ``rejected`` with guidance and do NOT 400 the request.
+    coerced: dict[str, object] = {}
+    rejected: list[str] = []
+    for field, raw in body.items():
+        meta = CONFIG_FIELD_META.get(field)
+        if meta is None:
+            raise HTTPException(status_code=400, detail=f"Unknown config field: {field}")
+        if not meta.mutable:
+            rejected.append(f"{field}: {REPROVISION_GUIDANCE}")
+            continue
+        try:
+            coerced[field] = coerce_config_value(field, raw)
+        except ConfigCoercionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    # Pass 2 — only now that validation fully passed, apply to the live singleton
+    # and persist the changed env keys.
+    env_updates: dict[str, str] = {}
+    for field, value in coerced.items():
+        setattr(settings, field, value)
+        env_updates[CONFIG_FIELD_META[field].env_key] = config_env_value(field, value)
+
+    if env_updates:
+        env_persist.persist_env_updates(env_updates)
+
+    return ConfigPatchResult(applied=list(coerced), rejected=rejected, config=_config_fields(settings))

@@ -512,14 +512,20 @@ def test_scheduler_runs_compile_with_trusted_true(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """``scheduler_loop`` must call ``run_compile`` with ``trusted=True`` so the
-    autonomous apply-mode drainer is exempt from the human large-batch approval gate."""
+    autonomous apply-mode drainer is exempt from the human large-batch approval gate.
+
+    #208: the loop no longer exits when disabled — it idles. So the test bounds
+    the loop with the ``stop`` event (set after the first compile) instead of
+    relying on ``scheduler_enabled=False`` to terminate it.
+    """
     from fritz_local_brain import scheduler
 
     captured: dict = {}
+    stop = asyncio.Event()
 
     async def fake_run_compile(settings, request, trusted=False):
         captured["trusted"] = trusted
-        settings.scheduler_enabled = False  # break the loop after one iteration
+        stop.set()  # bound the loop after one iteration (idle-not-exit contract)
         return None
 
     async def no_sleep(_seconds):
@@ -529,6 +535,8 @@ def test_scheduler_runs_compile_with_trusted_true(
     monkeypatch.setattr(scheduler.asyncio, "sleep", no_sleep)
     monkeypatch.setattr(scheduler, "record_compile", lambda result: None)
     monkeypatch.setattr(scheduler, "schedule_embedding_refresh_after_compile_result", lambda *a, **k: None)
+    monkeypatch.setattr(scheduler, "sync_log_to_telemetry_quietly", lambda *a, **k: None)
+    monkeypatch.setattr(scheduler, "prune_old_events_quietly", lambda *a, **k: None)
 
     settings = Settings(
         LOCAL_BRAIN_HOME=tmp_path,
@@ -536,7 +544,7 @@ def test_scheduler_runs_compile_with_trusted_true(
         SCHEDULER_ENABLED=True,
         SCHEDULER_DRY_RUN=False,
     )
-    asyncio.run(scheduler.scheduler_loop(settings))
+    asyncio.run(asyncio.wait_for(scheduler.scheduler_loop(settings, stop=stop), timeout=5))
     assert captured.get("trusted") is True
 
 

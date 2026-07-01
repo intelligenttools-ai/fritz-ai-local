@@ -461,3 +461,34 @@ class StatusResult(BaseModel):
     oldest_pending_capture_path: str | None = None
     oldest_pending_capture_at: datetime | None = None
     status_warnings: list[str] = Field(default_factory=list)
+
+
+# ---------------------------------------------------------------------------
+# Live configuration API (#208)
+# ---------------------------------------------------------------------------
+
+
+class ConfigField(BaseModel):
+    """One configurable setting as surfaced by GET /v1/config.
+
+    ``value`` is API-safe: secret fields (llm_api_key) return a bool indicating
+    whether a key is set, never the key itself.
+    """
+
+    value: Any
+    mutable: bool
+    requires: Literal["runtime", "rebuild"]
+
+
+class ConfigResult(BaseModel):
+    """Effective configuration keyed by field name."""
+
+    fields: dict[str, ConfigField]
+
+
+class ConfigPatchResult(BaseModel):
+    """Result of a PATCH /v1/config apply attempt."""
+
+    applied: list[str] = Field(default_factory=list)
+    rejected: list[str] = Field(default_factory=list)
+    config: dict[str, ConfigField]
