@@ -380,3 +380,75 @@ def test_dashboard_time_chart_legend_css_present() -> None:
     body = _client().get("/dashboard").text
     assert ".tc-legend" in body, ".tc-legend CSS rule missing"
     assert ".tc-legend-swatch" in body, ".tc-legend-swatch CSS rule missing"
+
+
+# ---------------------------------------------------------------------------
+# Configuration section (#208)
+# ---------------------------------------------------------------------------
+
+
+def test_dashboard_has_config_panel() -> None:
+    """A Configuration section with runtime + rebuild containers must be present."""
+    body = _client().get("/dashboard").text
+    assert 'id="config-panel"' in body, "config-panel container id missing"
+    assert 'id="config-runtime"' in body, "config-runtime container id missing"
+    assert 'id="config-rebuild"' in body, "config-rebuild container id missing"
+    assert ">Configuration<" in body, "Configuration heading missing"
+
+
+def test_dashboard_config_fetches_endpoint() -> None:
+    """The served body must fetch and PATCH the /v1/config endpoint."""
+    body = _client().get("/dashboard").text
+    assert "/v1/config" in body, "/v1/config endpoint reference missing"
+    assert "function loadConfig(" in body, "loadConfig helper missing"
+    assert "function renderConfig(" in body, "renderConfig helper missing"
+    assert "function onConfigChange(" in body, "onConfigChange PATCH handler missing"
+
+
+def test_dashboard_config_confirms_before_patch() -> None:
+    """onConfigChange must confirm() before applying and toast the result."""
+    body = _client().get("/dashboard").text
+    start = body.index("async function onConfigChange(")
+    end = body.index("\nasync function ", start + 1)
+    if end == -1 or end < start:
+        end = body.index("\nfunction ", start + 1)
+    fn = body[start:end]
+    assert "confirm(" in fn, "config change must confirm before PATCH"
+    assert "postAction(" in fn, "config change must PATCH via postAction"
+    assert "showToast(" in fn, "config change must toast the result"
+
+
+def test_dashboard_config_escapes_strings() -> None:
+    """XSS guard: config field values/labels built into innerHTML must be esc()'d."""
+    body = _client().get("/dashboard").text
+    start = body.index("function renderConfig(")
+    end = body.index("\nasync function loadConfig(", start)
+    fn = body[start:end]
+    assert "esc(" in fn, "config values not escaped in renderConfig"
+
+
+def test_dashboard_config_write_uses_patch_verb() -> None:
+    """Verb-mismatch guard (#208 review): the config write from the UI must use
+    PATCH, not a bare POST. The route is PATCH-only, so a POST would 405. The
+    onConfigChange handler must pass "PATCH" to the fetch helper for /v1/config.
+
+    This fails if the client verb diverges from the PATCH route again.
+    """
+    body = _client().get("/dashboard").text
+    start = body.index("async function onConfigChange(")
+    end = body.index("\nasync function ", start + 1)
+    if end == -1 or end < start:
+        end = body.index("\nfunction ", start + 1)
+    fn = body[start:end]
+    # The config write must explicitly select the PATCH verb.
+    assert '"PATCH"' in fn, "config write must pass the PATCH verb to the fetch helper"
+    assert "/v1/config" in fn, "config write must target /v1/config"
+
+
+def test_dashboard_post_helper_supports_method_param() -> None:
+    """The shared fetch helper must accept a method arg (defaulting to POST) so
+    the PATCH config write and the existing POST actions share one helper."""
+    body = _client().get("/dashboard").text
+    assert 'function postAction(path, body, method = "POST")' in body, (
+        "postAction must accept a method param defaulting to POST"
+    )

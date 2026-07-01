@@ -21,16 +21,20 @@ async def lifespan(app: FastAPI):
     settings = get_settings()
     sync_log_to_telemetry_quietly(settings)
     prune_old_events_quietly(settings)
-    task: asyncio.Task | None = None
-    if settings.scheduler_enabled:
-        task = asyncio.create_task(scheduler_loop(settings))
+    # #208: always start the scheduler loop — it idles when scheduler_enabled is
+    # False and resumes on the next cycle when a live PATCH re-enables it, so a
+    # pause/resume no longer needs a service restart. The stop event lets the
+    # lifespan cancel it cleanly on shutdown.
+    stop = asyncio.Event()
+    task = asyncio.create_task(scheduler_loop(settings, stop=stop))
     app.state.scheduler_task = task
+    app.state.scheduler_stop = stop
     try:
         yield
     finally:
         app.state.scheduler_task = None
-        if task:
-            task.cancel()
+        stop.set()
+        task.cancel()
 
 
 _DASHBOARD = Path(__file__).parent / "static" / "dashboard.html"

@@ -185,6 +185,124 @@ def _normalized_container_url(url: str) -> str:
     return url
 
 
+# ---------------------------------------------------------------------------
+# Config field metadata (#208): single source of truth for the live-config API.
+#
+# Splits the settings surfaced by the dashboard Configuration section into two
+# groups:
+#   - RUNTIME-MUTABLE: applied to the live get_settings() singleton immediately
+#     and persisted to .env; no rebuild/re-provision needed.
+#   - REBUILD-REQUIRED: surfaced read-only; the PATCH endpoint rejects them with
+#     guidance to re-provision via the fritz:brain-service-setup skill.
+#
+# ``env_key`` is the canonical .env variable name (the first non-namespaced
+# AliasChoices entry) used for persistence. ``type`` is the coercion target for
+# incoming PATCH values.
+# ---------------------------------------------------------------------------
+
+
+class ConfigFieldMeta:
+    """Metadata for one configurable field (see CONFIG_FIELD_META)."""
+
+    __slots__ = ("mutable", "env_key", "type", "secret")
+
+    def __init__(self, *, mutable: bool, env_key: str, type: str, secret: bool = False) -> None:
+        self.mutable = mutable
+        self.env_key = env_key
+        self.type = type
+        self.secret = secret
+
+    @property
+    def requires(self) -> str:
+        return "runtime" if self.mutable else "rebuild"
+
+
+CONFIG_FIELD_META: dict[str, ConfigFieldMeta] = {
+    # Runtime-mutable — applied live, persisted to .env, no rebuild needed.
+    "scheduler_enabled": ConfigFieldMeta(mutable=True, env_key="SCHEDULER_ENABLED", type="bool"),
+    "interval_minutes": ConfigFieldMeta(mutable=True, env_key="BRAIN_INTERVAL_MINUTES", type="int"),
+    "scheduler_dry_run": ConfigFieldMeta(mutable=True, env_key="SCHEDULER_DRY_RUN", type="bool"),
+    "reconciliation_autonomy": ConfigFieldMeta(mutable=True, env_key="RECONCILIATION_AUTONOMY", type="autonomy"),
+    "telemetry_enabled": ConfigFieldMeta(mutable=True, env_key="TELEMETRY_ENABLED", type="bool"),
+    "telemetry_store_query_text": ConfigFieldMeta(mutable=True, env_key="TELEMETRY_STORE_QUERY_TEXT", type="bool"),
+    "telemetry_retention_days": ConfigFieldMeta(mutable=True, env_key="TELEMETRY_RETENTION_DAYS", type="int"),
+    # Rebuild-required — surfaced read-only; PATCH rejects with re-provision guidance.
+    "llm_base_url": ConfigFieldMeta(mutable=False, env_key="LLM_BASE_URL", type="str"),
+    "llm_model": ConfigFieldMeta(mutable=False, env_key="LLM_MODEL", type="str"),
+    "llm_api_key": ConfigFieldMeta(mutable=False, env_key="LLM_API_KEY", type="str", secret=True),
+    "embedding_enabled": ConfigFieldMeta(mutable=False, env_key="EMBEDDING_ENABLED", type="bool"),
+    "embedding_model": ConfigFieldMeta(mutable=False, env_key="EMBEDDING_MODEL", type="str"),
+    "local_brain_autostart_installed": ConfigFieldMeta(mutable=False, env_key="AUTOSTART_INSTALLED", type="bool"),
+}
+
+REPROVISION_GUIDANCE = "requires re-provision via fritz:brain-service-setup"
+
+
+def config_field_value(settings: "Settings", field: str) -> object:
+    """Return the API-safe value for a config field.
+
+    Secret fields (llm_api_key) never return the value; a bool ``set`` flag is
+    returned instead so the dashboard can show whether a key is configured
+    without leaking it.
+    """
+
+    meta = CONFIG_FIELD_META[field]
+    if meta.secret:
+        raw = getattr(settings, field, None)
+        return bool(raw and str(raw).strip())
+    return getattr(settings, field)
+
+
+class ConfigCoercionError(ValueError):
+    """Raised when a PATCH value cannot be coerced to the field's type."""
+
+
+_TRUE = {"true", "1", "yes", "on"}
+_FALSE = {"false", "0", "no", "off"}
+
+
+def coerce_config_value(field: str, raw: object) -> object:
+    """Coerce an incoming PATCH value to the field's declared type.
+
+    Accepts native JSON types and strings (dashboard form controls send strings).
+    Raises :class:`ConfigCoercionError` on an invalid value so the route can map
+    it to a 400.
+    """
+
+    meta = CONFIG_FIELD_META[field]
+    if meta.type == "bool":
+        if isinstance(raw, bool):
+            return raw
+        text = str(raw).strip().lower()
+        if text in _TRUE:
+            return True
+        if text in _FALSE:
+            return False
+        raise ConfigCoercionError(f"{field} must be a boolean, got: {raw!r}")
+    if meta.type == "int":
+        try:
+            value = int(str(raw).strip())
+        except (TypeError, ValueError):
+            raise ConfigCoercionError(f"{field} must be an integer, got: {raw!r}") from None
+        if value < 1:
+            raise ConfigCoercionError(f"{field} must be >= 1, got: {value}")
+        return value
+    if meta.type == "autonomy":
+        text = str(raw).strip().lower()
+        if text not in {"apply", "propose"}:
+            raise ConfigCoercionError(f"{field} must be 'apply' or 'propose', got: {raw!r}")
+        return text
+    return str(raw)
+
+
+def config_env_value(field: str, value: object) -> str:
+    """Serialize a coerced value to its .env string form for persistence."""
+
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
+
+
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
