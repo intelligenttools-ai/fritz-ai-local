@@ -70,6 +70,16 @@ For Hermes Agent, also symlink:
 - `hermes_brain_context.py`
 - `hermes_brain_capture.py`
 
+Then register the Claude Code hooks. The binding is a directory-source
+marketplace, so its skills load but its hooks do NOT auto-register — without
+this step the four fritz hooks never fire and Claude records 0 captures. Run the
+installer (idempotent; merges into `~/.claude/settings.json`, preserving other
+plugins' hooks):
+
+```
+python3 <REPO>/hooks/install_claude_hooks.py
+```
+
 ### 4. Run pending migrations
 
 Check `<REPO>/migrations/` for numbered Python scripts (e.g., `001-add-settings.py`). Check `~/.brain/.migrations-run` for which migrations have already been executed. Run any new migrations in order.
