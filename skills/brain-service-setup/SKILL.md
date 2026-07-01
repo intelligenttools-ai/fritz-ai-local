@@ -399,6 +399,15 @@ Other brain-* skills (brain-compile, brain-query, brain-sync) now route
 through the service automatically when it is reachable.
 ```
 
+Then register the Claude Code capture hooks. The binding is a directory-source
+marketplace, so its skills load but its hooks do NOT auto-register — without
+this step Claude records 0 captures. Run the installer (idempotent; merges into
+`~/.claude/settings.json`, preserving other plugins' hooks):
+
+```
+python3 <REPO>/hooks/install_claude_hooks.py
+```
+
 If `llm_source=b` (Ollama) and the user agreed to pull the model, offer:
 
 > "Would you like me to run `ollama pull <model>` now to ensure the model

@@ -12,7 +12,7 @@ from .base import TranscriptAdapter, CaptureEntry
 
 class ClaudeCodeAdapter(TranscriptAdapter):
 
-    agent_name = "claude-code"
+    agent_name = "claude"
 
     def parse(self, transcript_path: Path, max_messages: int = 200) -> CaptureEntry:
         if not transcript_path.exists():
