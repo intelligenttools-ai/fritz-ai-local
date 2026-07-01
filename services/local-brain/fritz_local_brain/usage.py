@@ -18,6 +18,15 @@ _QUERY_TYPES = {"query", "search"}
 _NONE_KEY = "(none)"
 _UNKNOWN_AGENT = "unknown"
 
+# Known e2e/test agents — hidden from operator telemetry views.
+# Exact matches: "diag", "pwsse". Prefix match: "pwtest" (e.g. pwtest199).
+TEST_AGENT_PATTERNS: tuple[str, ...] = ("diag", "pwsse", "pwtest")
+
+
+def _is_test_agent(name: str) -> bool:
+    """Return True when *name* is a known e2e/test agent (hidden from operator views)."""
+    return name in ("diag", "pwsse") or name.startswith("pwtest")
+
 
 def _agent_key(event: dict[str, Any]) -> str:
     """Normalized agent for an event: empty/None -> ``"unknown"``.
@@ -61,6 +70,8 @@ def agents(
     last_seen: dict[str, str] = {}
     for e in events:
         agent = _agent_key(e)
+        if _is_test_agent(agent):
+            continue
         ts = e.get("ts") or ""
         counts[agent] = counts.get(agent, 0) + 1
         if ts:
@@ -103,6 +114,8 @@ def activity(
         if not day:
             continue
         key = _dimension_value(event, by)
+        if by == "agent" and _is_test_agent(key):
+            continue
         buckets.setdefault(day, {})
         buckets[day][key] = buckets[day].get(key, 0) + 1
     return buckets

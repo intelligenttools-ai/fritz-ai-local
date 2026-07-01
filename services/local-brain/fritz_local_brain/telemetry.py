@@ -301,6 +301,32 @@ def prune_old_events_quietly(settings: "Settings") -> None:
         pass
 
 
+def purge_test_agents(settings: "Settings") -> int:
+    """Delete all telemetry rows whose agent is a known e2e/test agent.
+
+    Matches: agent='diag', agent='pwsse', or agent LIKE 'pwtest%'.
+    Returns the number of rows deleted. No-op (returns 0) when telemetry is
+    disabled or no db file exists yet. Must be called explicitly by an operator
+    — never called from startup or test paths.
+    """
+    if not settings.telemetry_enabled:
+        return 0
+
+    path = _db_path(settings)
+    if not path.exists():
+        return 0
+
+    conn = _connect(settings)
+    try:
+        cursor = conn.execute(
+            "DELETE FROM events WHERE agent = 'diag' OR agent = 'pwsse' OR agent LIKE 'pwtest%'"
+        )
+        conn.commit()
+        return cursor.rowcount
+    finally:
+        conn.close()
+
+
 def latest_event_id(settings: "Settings") -> int:
     """Return ``MAX(id)`` from the events table, or 0 when there is nothing.
 
