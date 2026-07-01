@@ -187,6 +187,36 @@ def test_dashboard_actions_esc_used_in_post_results() -> None:
 
 
 # ---------------------------------------------------------------------------
+# System activity panel (#205)
+# ---------------------------------------------------------------------------
+
+def test_dashboard_references_usage_system() -> None:
+    """The served body must fetch the system-activity endpoint."""
+    body = _client().get("/dashboard").text
+    assert "/v1/usage/system" in body, "/v1/usage/system endpoint reference missing"
+
+
+def test_dashboard_has_system_panel() -> None:
+    """A System activity panel container + render helper must be present, and it
+    must be clearly labelled as the service (not an agent)."""
+    body = _client().get("/dashboard").text
+    assert 'id="system-panel"' in body, "system-panel container id missing"
+    assert 'id="system-activity"' in body, "system-activity container id missing"
+    assert "function renderSystem(" in body, "renderSystem helper missing"
+    assert "System activity" in body, "System activity heading/label missing"
+
+
+def test_dashboard_system_type_escaped() -> None:
+    """XSS guard: system event types (telemetry-stored) must be esc()'d in the
+    System panel innerHTML."""
+    body = _client().get("/dashboard").text
+    start = body.index("function renderSystem(")
+    end = body.index("\nfunction ", start + 1)
+    fn = body[start:end]
+    assert "esc(type)" in fn, "system event type not escaped in renderSystem"
+
+
+# ---------------------------------------------------------------------------
 # Live updates via SSE (#198)
 # ---------------------------------------------------------------------------
 

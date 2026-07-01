@@ -59,9 +59,11 @@ def _seed(settings, event_type, *, agent=None, vault=None, status="ok",
 
 def test_activity_buckets_by_type_agent_vault(monkeypatch, tmp_path) -> None:
     settings = _settings(tmp_path)
-    # Day 1: 2 compile (pi), 1 query (codex, vault a)
-    _seed(settings, "compile", agent="pi", vault="a", day="2026-06-01")
-    _seed(settings, "compile", agent="pi", vault="a", day="2026-06-01")
+    # Day 1: 2 capture (pi), 1 query (codex, vault a). Uses AGENT-side event
+    # types so the by=agent dimension is meaningful (compile is a SYSTEM type,
+    # #205, and is excluded from by=agent).
+    _seed(settings, "capture", agent="pi", vault="a", day="2026-06-01")
+    _seed(settings, "capture", agent="pi", vault="a", day="2026-06-01")
     _seed(settings, "query", agent="codex", vault="a", day="2026-06-01")
     # Day 2: 1 query (pi, vault b)
     _seed(settings, "query", agent="pi", vault="b", day="2026-06-02")
@@ -69,7 +71,7 @@ def test_activity_buckets_by_type_agent_vault(monkeypatch, tmp_path) -> None:
 
     by_type = client.get("/v1/usage/activity?by=type", headers=_AUTH).json()["buckets"]
     assert by_type == {
-        "2026-06-01": {"compile": 2, "query": 1},
+        "2026-06-01": {"capture": 2, "query": 1},
         "2026-06-02": {"query": 1},
     }
 
@@ -307,11 +309,12 @@ def test_agents_discovered_dynamically_with_counts_and_seen(monkeypatch, tmp_pat
     settings = _settings(tmp_path)
     _seed(settings, "query", agent="pi", day="2026-06-01", time="08:00:00")
     _seed(settings, "query", agent="pi", day="2026-06-03", time="20:00:00")
-    _seed(settings, "compile", agent="unknown", day="2026-06-02")
+    # Agent-side event types (SYSTEM types are excluded from agents(), #205).
+    _seed(settings, "query", agent="unknown", day="2026-06-02")
     # A runtime that did not exist when this code was written. It MUST appear.
     _seed(settings, "capture", agent="novelagent", day="2026-06-05")
     # Empty/None agent must normalize to "unknown" (merges with the literal one).
-    _seed(settings, "compile", agent=None, day="2026-06-04")
+    _seed(settings, "capture", agent=None, day="2026-06-04")
     client = _client(monkeypatch, settings)
 
     body = client.get("/v1/usage/agents", headers=_AUTH).json()
@@ -341,9 +344,10 @@ def test_agents_empty_store(monkeypatch, tmp_path) -> None:
 
 def test_agent_filter_scopes_activity(monkeypatch, tmp_path) -> None:
     settings = _settings(tmp_path)
-    _seed(settings, "compile", agent="pi", day="2026-06-01")
-    _seed(settings, "compile", agent="pi", day="2026-06-01")
-    _seed(settings, "compile", agent="codex", day="2026-06-01")
+    # Agent-side event types (SYSTEM types are excluded from by=agent, #205).
+    _seed(settings, "capture", agent="pi", day="2026-06-01")
+    _seed(settings, "capture", agent="pi", day="2026-06-01")
+    _seed(settings, "capture", agent="codex", day="2026-06-01")
     client = _client(monkeypatch, settings)
 
     # Unfiltered: both agents counted by type.
@@ -397,6 +401,123 @@ def test_agent_filter_scopes_projects(monkeypatch, tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# SYSTEM vs AGENT split (#205)
+# ---------------------------------------------------------------------------
+
+def test_agents_excludes_system_events_and_local_brain(monkeypatch, tmp_path) -> None:
+    """agents() counts only agent-side events; the service's own system-type
+    events (agent='local-brain') no longer surface local-brain as an agent."""
+    settings = _settings(tmp_path)
+    # SYSTEM events, all recorded as the service agent "local-brain".
+    _seed(settings, "compile", agent="local-brain")
+    _seed(settings, "embeddings", agent="local-brain")
+    _seed(settings, "reconcile", agent="local-brain")
+    # AGENT events from real runtimes.
+    _seed(settings, "capture", agent="pi")
+    _seed(settings, "query", agent="claude", payload={"hit": True})
+    _seed(settings, "query", agent=None, payload={"hit": True})  # -> unknown
+    client = _client(monkeypatch, settings)
+
+    body = client.get("/v1/usage/agents", headers=_AUTH).json()
+    names = {a["agent"] for a in body["agents"]}
+    assert "local-brain" not in names, "system agent must be excluded from agents()"
+    assert names == {"pi", "claude", "unknown"}
+
+
+def test_activity_by_agent_excludes_system_by_type_keeps_all(monkeypatch, tmp_path) -> None:
+    """by=agent excludes system events; by=type still counts system + agent."""
+    settings = _settings(tmp_path)
+    _seed(settings, "compile", agent="local-brain", day="2026-06-01")
+    _seed(settings, "embeddings", agent="local-brain", day="2026-06-01")
+    _seed(settings, "capture", agent="pi", day="2026-06-01")
+    _seed(settings, "query", agent="claude", day="2026-06-01", payload={"hit": True})
+    client = _client(monkeypatch, settings)
+
+    by_agent = client.get("/v1/usage/activity?by=agent", headers=_AUTH).json()["buckets"]
+    # System events (local-brain) excluded from the by-agent view.
+    assert by_agent == {"2026-06-01": {"pi": 1, "claude": 1}}
+
+    by_type = client.get("/v1/usage/activity?by=type", headers=_AUTH).json()["buckets"]
+    # by=type keeps ALL events, including the system types.
+    assert by_type == {
+        "2026-06-01": {"compile": 1, "embeddings": 1, "capture": 1, "query": 1}
+    }
+
+
+def test_system_endpoint_per_type_counts_and_success_rate(monkeypatch, tmp_path) -> None:
+    settings = _settings(tmp_path)
+    _seed(settings, "compile", agent="local-brain", status="ok")
+    _seed(settings, "compile", agent="local-brain", status="error")
+    _seed(settings, "embeddings", agent="local-brain", status="ok")
+    _seed(settings, "reconcile", agent="local-brain", status="ok")
+    # Agent-side events must NOT appear in the system aggregate.
+    _seed(settings, "capture", agent="pi")
+    _seed(settings, "query", agent="claude", payload={"hit": True})
+    client = _client(monkeypatch, settings)
+
+    body = client.get("/v1/usage/system", headers=_AUTH).json()
+    assert body["by_type"]["compile"] == {"total": 2, "ok": 1, "error": 1}
+    assert body["by_type"]["embeddings"] == {"total": 1, "ok": 1, "error": 0}
+    assert body["by_type"]["reconcile"] == {"total": 1, "ok": 1, "error": 0}
+    assert "capture" not in body["by_type"] and "query" not in body["by_type"]
+    assert body["total"] == 4
+    assert body["ok"] == 3
+    assert body["error"] == 1
+    assert body["success_rate"] == 0.75
+
+
+def test_system_endpoint_empty_store_safe(monkeypatch, tmp_path) -> None:
+    settings = _settings(tmp_path)
+    client = _client(monkeypatch, settings)
+    body = client.get("/v1/usage/system", headers=_AUTH).json()
+    assert body["by_type"] == {}
+    assert body["total"] == 0
+    assert body["success_rate"] is None
+
+
+def test_system_endpoint_requires_auth(monkeypatch, tmp_path) -> None:
+    settings = _settings(tmp_path)
+    client = _client(monkeypatch, settings)
+    assert client.get("/v1/usage/system").status_code == 401
+
+
+def test_no_double_counting_system_vs_agent(monkeypatch, tmp_path) -> None:
+    """A compile (system) event appears in /system + activity by=type, but NOT
+    in /agents or activity by=agent."""
+    settings = _settings(tmp_path)
+    _seed(settings, "compile", agent="local-brain", day="2026-06-01")
+    _seed(settings, "capture", agent="pi", day="2026-06-01")
+    client = _client(monkeypatch, settings)
+
+    # System side: compile present.
+    sys_body = client.get("/v1/usage/system", headers=_AUTH).json()
+    assert sys_body["by_type"]["compile"]["total"] == 1
+
+    # by=type: compile counted.
+    by_type = client.get("/v1/usage/activity?by=type", headers=_AUTH).json()["buckets"]
+    assert by_type["2026-06-01"].get("compile") == 1
+
+    # Agents side: no local-brain, no compile leakage.
+    agents = {a["agent"] for a in client.get("/v1/usage/agents", headers=_AUTH).json()["agents"]}
+    assert agents == {"pi"}
+    by_agent = client.get("/v1/usage/activity?by=agent", headers=_AUTH).json()["buckets"]
+    assert by_agent == {"2026-06-01": {"pi": 1}}
+
+
+def test_unknown_event_type_stays_agent_side(monkeypatch, tmp_path) -> None:
+    """A brand-new/unknown event_type is NOT system: it stays in agents() and the
+    by=agent activity so it never silently vanishes from totals."""
+    settings = _settings(tmp_path)
+    _seed(settings, "novelop", agent="pi", day="2026-06-01")
+    client = _client(monkeypatch, settings)
+
+    agents = {a["agent"] for a in client.get("/v1/usage/agents", headers=_AUTH).json()["agents"]}
+    assert agents == {"pi"}
+    sys_body = client.get("/v1/usage/system", headers=_AUTH).json()
+    assert sys_body["total"] == 0  # unknown type is not system
+
+
+# ---------------------------------------------------------------------------
 # AUTH: every endpoint 401 without bearer token
 # ---------------------------------------------------------------------------
 
@@ -411,6 +532,7 @@ def test_all_usage_endpoints_require_auth(monkeypatch, tmp_path) -> None:
         "/v1/usage/knowledge",
         "/v1/usage/projects",
         "/v1/usage/summary",
+        "/v1/usage/system",
     ):
         assert client.get(path).status_code == 401, path
 
@@ -436,3 +558,5 @@ def test_all_usage_endpoints_empty_store(monkeypatch, tmp_path) -> None:
     assert client.get("/v1/usage/projects", headers=_AUTH).json()["projects"] == []
     s = client.get("/v1/usage/summary", headers=_AUTH).json()
     assert s["total_events"] == 0 and s["hit_rate"] is None
+    sys_body = client.get("/v1/usage/system", headers=_AUTH).json()
+    assert sys_body["by_type"] == {} and sys_body["success_rate"] is None

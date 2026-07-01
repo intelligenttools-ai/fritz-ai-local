@@ -18,6 +18,34 @@ _QUERY_TYPES = {"query", "search"}
 _NONE_KEY = "(none)"
 _UNKNOWN_AGENT = "unknown"
 
+# SYSTEM vs AGENT classification (#205).
+#
+# The service records its OWN write-side workflow work with agent="local-brain",
+# which made "local-brain" rank as the #1 "agent" and drown the real runtimes.
+# We classify by EVENT_TYPE (data-driven, never by hardcoding agent names):
+#
+#   SYSTEM_EVENT_TYPES — the scheduler's own compile/index/reconcile pipeline.
+#   AGENT_EVENT_TYPES  — runtime-driven capture/ingest and read-side query/search.
+#
+# Any event_type NOT in SYSTEM_EVENT_TYPES is treated as AGENT-side, so an
+# unknown/new event_type stays visible in the agent views and totals rather than
+# silently vanishing. The two sets are documented here as the single source of
+# truth for the split; ``_is_system_event`` is the only classifier callers use.
+SYSTEM_EVENT_TYPES: frozenset[str] = frozenset(
+    {"compile", "sync", "lint", "reconcile", "rereconcile", "embeddings", "mirror"}
+)
+AGENT_EVENT_TYPES: frozenset[str] = frozenset({"capture", "ingest", "query", "search"})
+
+
+def _is_system_event(event: dict[str, Any]) -> bool:
+    """Return True when *event* is the service's own (SYSTEM) work.
+
+    Classified purely by ``event_type`` membership in :data:`SYSTEM_EVENT_TYPES`.
+    Unknown/other types are NOT system (default to the agent side) so they never
+    vanish from agent totals.
+    """
+    return (event.get("event_type") or "") in SYSTEM_EVENT_TYPES
+
 # Known e2e/test agents — hidden from operator telemetry views.
 # Exact matches: "diag", "pwsse". Prefix match: "pwtest" (e.g. pwtest199).
 TEST_AGENT_PATTERNS: tuple[str, ...] = ("diag", "pwsse", "pwtest")
@@ -63,12 +91,18 @@ def agents(
     (empty/None -> ``"unknown"``) becomes one entry
     ``{agent, count, first_seen, last_seen}`` where first/last are the min/max
     ts strings for that agent. Sorted by count desc, then agent asc.
+
+    SYSTEM events (the service's own compile/index/reconcile work, #205) are
+    EXCLUDED so ``local-brain`` — which only emits system-type events — no
+    longer appears as an agent. Real runtimes (pi/claude/unknown) still appear.
     """
     events = query_events(settings, since=since, until=until)
     counts: dict[str, int] = {}
     first_seen: dict[str, str] = {}
     last_seen: dict[str, str] = {}
     for e in events:
+        if _is_system_event(e):
+            continue
         agent = _agent_key(e)
         if _is_test_agent(agent):
             continue
@@ -91,6 +125,49 @@ def agents(
     ]
 
 
+def system(
+    settings: Settings,
+    *,
+    since: str | None = None,
+    until: str | None = None,
+) -> dict[str, Any]:
+    """Aggregate SYSTEM activity (the service's own work) for the System panel (#205).
+
+    Counts only events whose ``event_type`` is in :data:`SYSTEM_EVENT_TYPES`
+    (data-driven). Returns per-type ``{type: {total, ok, error}}`` plus overall
+    ``total``, ``ok``, ``error`` and a ``success_rate`` (ok / total, or None when
+    there are no system events). ``status`` is treated as an error whenever it is
+    the literal ``"error"``; everything else counts as ok. Empty-safe.
+    """
+    events = query_events(settings, since=since, until=until)
+
+    by_type: dict[str, dict[str, int]] = {}
+    total = ok = error = 0
+    for e in events:
+        if not _is_system_event(e):
+            continue
+        etype = e.get("event_type") or _NONE_KEY
+        bucket = by_type.setdefault(etype, {"total": 0, "ok": 0, "error": 0})
+        is_error = e.get("status") == "error"
+        bucket["total"] += 1
+        total += 1
+        if is_error:
+            bucket["error"] += 1
+            error += 1
+        else:
+            bucket["ok"] += 1
+            ok += 1
+
+    success_rate = (ok / total) if total > 0 else None
+    return {
+        "by_type": by_type,
+        "total": total,
+        "ok": ok,
+        "error": error,
+        "success_rate": success_rate,
+    }
+
+
 def activity(
     settings: Settings,
     *,
@@ -103,8 +180,10 @@ def activity(
     """Bucketed event counts: ``{day: {dimension_value: count}}``.
 
     Only ``bucket="day"`` is supported (groups by ``ts[:10]``); any other value
-    falls back to day. Includes BOTH write and read events. ``agent`` (when set)
-    scopes the events to that single normalized agent (#199).
+    falls back to day. ``by="type"`` and ``by="vault"`` count ALL events (system
+    + agent) so no data is lost. ``by="agent"`` EXCLUDES system events (#205) so
+    the by-agent chart shows real runtimes only. ``agent`` (when set) scopes the
+    events to that single normalized agent (#199).
     """
     by = by if by in {"type", "agent", "vault"} else "type"
     events = query_events(settings, since=since, until=until, agent=agent)
@@ -112,6 +191,8 @@ def activity(
     for event in events:
         day = (event.get("ts") or "")[:10]
         if not day:
+            continue
+        if by == "agent" and _is_system_event(event):
             continue
         key = _dimension_value(event, by)
         if by == "agent" and _is_test_agent(key):
