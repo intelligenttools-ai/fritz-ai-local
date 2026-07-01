@@ -277,3 +277,145 @@ def test_installer_refuses_to_clobber_corrupt_json(tmp_path):
     # file unchanged; no data destroyed, no .bak written
     assert settings.read_text() == corrupt
     assert not settings.with_name("settings.json.bak").exists()
+
+
+# --- ensure_hook_scripts_present ---------------------------------------------
+
+
+def _make_fake_repo_hooks(tmp_path: Path, names: list[str]) -> Path:
+    """Create a fake repo hooks dir with the given brain_*.py files."""
+    repo_hooks = tmp_path / "repo_hooks"
+    repo_hooks.mkdir()
+    for name in names:
+        (repo_hooks / name).write_text(f"# {name}\n")
+    return repo_hooks
+
+
+def test_ensure_links_missing_entry_script(tmp_path):
+    """ensure_hook_scripts_present symlinks a missing entry script into hooks_dir."""
+    repo_hooks = _make_fake_repo_hooks(
+        tmp_path, ["brain_autocapture_hook.py", "brain_common.py"]
+    )
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+
+    linked = mod.ensure_hook_scripts_present(hooks_dir, repo_hooks)
+
+    assert set(linked) == {"brain_autocapture_hook.py", "brain_common.py"}
+    dest = hooks_dir / "brain_autocapture_hook.py"
+    assert dest.is_symlink()
+    assert dest.resolve() == (repo_hooks / "brain_autocapture_hook.py").resolve()
+
+
+def test_ensure_idempotent(tmp_path):
+    """Second call links 0 new scripts when all are already present."""
+    repo_hooks = _make_fake_repo_hooks(tmp_path, ["brain_autocapture_hook.py"])
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+
+    first = mod.ensure_hook_scripts_present(hooks_dir, repo_hooks)
+    assert len(first) == 1
+
+    second = mod.ensure_hook_scripts_present(hooks_dir, repo_hooks)
+    assert second == []
+
+
+def test_ensure_does_not_overwrite_existing_file(tmp_path):
+    """A file already present in hooks_dir (even with different content) is not overwritten."""
+    repo_hooks = _make_fake_repo_hooks(tmp_path, ["brain_autocapture_hook.py"])
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    existing = hooks_dir / "brain_autocapture_hook.py"
+    existing.write_text("# original\n")
+
+    linked = mod.ensure_hook_scripts_present(hooks_dir, repo_hooks)
+
+    assert linked == []
+    assert existing.read_text() == "# original\n"
+
+
+def test_ensure_does_not_overwrite_existing_symlink(tmp_path):
+    """An existing symlink (even if broken) is not replaced."""
+    repo_hooks = _make_fake_repo_hooks(tmp_path, ["brain_common.py"])
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    other_target = tmp_path / "other_target.py"
+    other_target.write_text("# other\n")
+    existing_link = hooks_dir / "brain_common.py"
+    existing_link.symlink_to(other_target)
+
+    linked = mod.ensure_hook_scripts_present(hooks_dir, repo_hooks)
+
+    assert linked == []
+    # symlink still points at original target
+    assert existing_link.resolve() == other_target.resolve()
+
+
+def test_ensure_noop_when_hooks_dir_equals_repo_hooks_dir(tmp_path):
+    """When hooks_dir is the same as repo_hooks_dir, nothing is linked (no self-loop)."""
+    repo_hooks = _make_fake_repo_hooks(tmp_path, ["brain_capture.py"])
+    linked = mod.ensure_hook_scripts_present(repo_hooks, repo_hooks)
+    assert linked == []
+
+
+def test_ensure_links_all_brain_scripts(tmp_path):
+    """When hooks_dir is empty, all brain_*.py files from repo_hooks are linked."""
+    names = [
+        "brain_autocapture.py",
+        "brain_autocapture_hook.py",
+        "brain_bootstrap.py",
+        "brain_capture.py",
+        "brain_common.py",
+        "brain_prompt_check.py",
+        "brain_security.py",
+        "brain_session_start.py",
+    ]
+    repo_hooks = _make_fake_repo_hooks(tmp_path, names)
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+
+    linked = mod.ensure_hook_scripts_present(hooks_dir, repo_hooks)
+    assert set(linked) == set(names)
+    for name in names:
+        assert (hooks_dir / name).is_symlink()
+
+
+# --- regression guard: every registered command's script exists after install --
+
+
+def test_every_registered_script_exists_after_install(tmp_path):
+    """Regression guard for the live bug: after a full install the script path
+    in every registered command must exist on disk (file or valid symlink).
+
+    The hooks_dir starts EMPTY — this simulates ~/.brain/hooks missing the
+    brain_autocapture_hook.py script. ensure_hook_scripts_present must create
+    the symlinks so that every command path resolves to an existing file.
+    """
+    # Fake repo hooks dir: populate it with all brain_*.py from the real repo
+    repo_hooks_dir = REPO_ROOT / "hooks"
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+
+    # Simulate an empty hooks_dir (no scripts pre-populated), then ensure
+    linked = mod.ensure_hook_scripts_present(hooks_dir, repo_hooks_dir)
+    assert len(linked) > 0, "Expected at least one script to be linked"
+
+    # Now install
+    settings = tmp_path / "settings.json"
+    python_bin = "/opt/homebrew/bin/python3"
+    mod.install_claude_hooks(settings, hooks_dir=hooks_dir, python_bin=python_bin)
+    data = json.loads(settings.read_text())
+
+    # Check every command's script path exists
+    for event, groups in data["hooks"].items():
+        for group in groups:
+            for hook in group.get("hooks", []):
+                command = hook.get("command", "")
+                # command is "<python_bin> <script_path>"
+                parts = command.split()
+                assert len(parts) == 2, f"Unexpected command format: {command!r}"
+                script_path = Path(parts[1])
+                assert script_path.exists(), (
+                    f"Registered script does not exist: {script_path} "
+                    f"(event={event})"
+                )

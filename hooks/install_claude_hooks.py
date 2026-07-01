@@ -72,6 +72,35 @@ def resolve_hooks_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
+def ensure_hook_scripts_present(hooks_dir: Path, repo_hooks_dir: Path) -> list[str]:
+    """Ensure every brain_*.py from repo_hooks_dir is present in hooks_dir.
+
+    For each brain_*.py file in ``repo_hooks_dir`` that is missing from
+    ``hooks_dir``, create a symlink in ``hooks_dir`` pointing at the repo file.
+    This mirrors the existing symlink convention used in ``~/.brain/hooks``.
+
+    Rules:
+    - Idempotent: files/symlinks already present in hooks_dir are skipped.
+    - Does NOT overwrite existing files or symlinks (even broken ones).
+    - When hooks_dir and repo_hooks_dir resolve to the same directory, returns [].
+    - Returns the list of newly-created symlink names.
+    """
+    hooks_dir = hooks_dir.resolve()
+    repo_hooks_dir = repo_hooks_dir.resolve()
+    if hooks_dir == repo_hooks_dir:
+        return []
+
+    linked: list[str] = []
+    for src in sorted(repo_hooks_dir.glob("brain_*.py")):
+        dest = hooks_dir / src.name
+        if dest.exists() or dest.is_symlink():
+            # Already present (file, symlink — valid or broken). Skip.
+            continue
+        dest.symlink_to(src)
+        linked.append(src.name)
+    return linked
+
+
 def _fritz_group(commands: list[tuple[str, int]], hooks_dir: Path, python_bin: str) -> dict:
     """Build one fritz hook group for an event, tagged with the marker.
 
@@ -176,10 +205,15 @@ def install_claude_hooks(settings_path: Path, *, hooks_dir: Path, python_bin: st
 
 
 def main(argv: list[str] | None = None) -> int:
+    repo_hooks_dir = Path(__file__).resolve().parent
+    hooks_dir = resolve_hooks_dir()
+    linked = ensure_hook_scripts_present(hooks_dir, repo_hooks_dir)
+    if linked:
+        print(f"Linked {len(linked)} hook script(s) into {hooks_dir}: {', '.join(linked)}")
     settings_path = Path.home() / ".claude" / "settings.json"
     install_claude_hooks(
         settings_path,
-        hooks_dir=resolve_hooks_dir(),
+        hooks_dir=hooks_dir,
         python_bin=resolve_python(),
     )
     print(f"Registered {len(FRITZ_HOOKS)} Fritz Local hooks in {settings_path}")
