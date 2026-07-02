@@ -100,6 +100,8 @@
   cursor: pointer;
 }
 .kb-article-row:hover { border-color: var(--accent); }
+.kb-row-static { cursor: default; }
+.kb-row-static:hover { border-color: var(--border); }
 .kb-row-main { display: flex; align-items: center; gap: .5rem; }
 .kb-row-title { font-weight: 600; font-size: .9rem; }
 .kb-row-meta {

@@ -178,6 +178,64 @@ class RecentRunsResult(BaseModel):
     runs: list[RecentRun] = Field(default_factory=list)
 
 
+class RunDetail(BaseModel):
+    """Full persisted detail for one service run (#223).
+
+    Backs ``GET /v1/runs`` (list) and ``GET /v1/runs/{id}`` (detail). ``errors``
+    holds the actual error messages (not just a count); ``detail`` carries the
+    kind-specific richer record (processed counts, proposals applied, etc.).
+    ``source`` is the triggering origin (scheduler / api / agent).
+    """
+
+    id: str
+    kind: str
+    started_at: datetime
+    finished_at: datetime
+    duration_ms: int | None = None
+    dry_run: bool
+    status: str
+    source: str | None = None
+    summary: str | None = None
+    errors: list[str] = Field(default_factory=list)
+    detail: dict[str, Any] = Field(default_factory=dict)
+
+
+class RunListResult(BaseModel):
+    """Persisted run list for ``GET /v1/runs`` (#223)."""
+
+    runs: list[RunDetail] = Field(default_factory=list)
+
+
+class AgentRecentEvent(BaseModel):
+    """One recent telemetry event in a per-agent drill-down (#223)."""
+
+    ts: str | None = None
+    event_type: str | None = None
+    vault: str | None = None
+    status: str | None = None
+    duration_ms: int | None = None
+    run_id: str | None = None
+
+
+class UsageAgentDetailResult(BaseModel):
+    """Per-agent detail for ``GET /v1/usage/agents/{agent}`` (#223).
+
+    first/last seen, event-type breakdown, daily activity series, and a
+    paginated slice of recent events. Empty-safe: an unknown agent returns
+    ``event_count=0`` with empty maps/series/events (no 404).
+    """
+
+    agent: str
+    event_count: int = 0
+    first_seen: str | None = None
+    last_seen: str | None = None
+    events_by_type: dict[str, int] = Field(default_factory=dict)
+    daily_activity: dict[str, int] = Field(default_factory=dict)
+    recent_events: list[AgentRecentEvent] = Field(default_factory=list)
+    limit: int = 20
+    offset: int = 0
+
+
 class EmbeddingMetadata(BaseModel):
     """Stored embedding model metadata."""
 

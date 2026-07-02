@@ -44,11 +44,11 @@ async def scheduler_loop(settings: Settings, *, stop: asyncio.Event | None = Non
                         CompileRunRequest(dry_run=settings.scheduler_dry_run, max_captures=settings.compile_max_captures),
                         trusted=True,
                     )
-                    record_compile(result)
+                    record_compile(result, settings, source="scheduler")
                     schedule_embedding_refresh_after_compile_result(settings, result, reason="scheduler compile")
                 except Exception as exc:  # noqa: BLE001 - scheduler must surface provider/filesystem failures without exiting.
                     summary = f"Scheduler compile failed: {exc}"
-                    record_failure("compile", started, datetime.now(), settings.scheduler_dry_run, summary)
+                    record_failure("compile", started, datetime.now(), settings.scheduler_dry_run, summary, settings, source="scheduler")
                     append_global_log(settings.brain_home, "COMPILE", summary, settings.scheduler_dry_run)
         except OperationAlreadyRunning:
             pass

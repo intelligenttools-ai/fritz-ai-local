@@ -40,7 +40,46 @@ _DDL = (
     "CREATE INDEX IF NOT EXISTS idx_events_event_type ON events (event_type)",
     "CREATE INDEX IF NOT EXISTS idx_events_agent ON events (agent)",
     "CREATE INDEX IF NOT EXISTS idx_events_vault ON events (vault)",
+    # Run-detail persistence (#223). Additive: an existing DB predating this
+    # table gains it on the next _connect() via CREATE TABLE IF NOT EXISTS.
+    """
+    CREATE TABLE IF NOT EXISTS runs (
+        id TEXT PRIMARY KEY,
+        kind TEXT NOT NULL,
+        started_at TEXT NOT NULL,
+        finished_at TEXT NOT NULL,
+        duration_ms INTEGER,
+        dry_run INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        source TEXT,
+        summary TEXT,
+        detail TEXT
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_runs_started_at ON runs (started_at)",
+    "CREATE INDEX IF NOT EXISTS idx_runs_kind ON runs (kind)",
 )
+
+
+def _canonical_ts_str(value: "datetime | str") -> str:
+    """Canonicalize a datetime or ISO string to an ISO-8601 UTC string.
+
+    Single source of truth for the telemetry time contract: a naive value is
+    treated as UTC; an aware value is converted to UTC. This keeps the ``runs``
+    table on the SAME contract as the ``events`` table so lexicographic
+    comparisons (retention cutoffs) and client parsing are consistent. A string
+    that cannot be parsed is returned unchanged (defensive; never raises).
+    """
+    if isinstance(value, str):
+        try:
+            when = datetime.fromisoformat(value)
+        except ValueError:
+            return value
+    else:
+        when = value
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when.astimezone(timezone.utc).isoformat()
 
 
 def _db_path(settings: "Settings") -> Path:
@@ -85,10 +124,7 @@ def record_event(
     if not settings.telemetry_enabled:
         return
 
-    when = ts or datetime.now(timezone.utc)
-    if when.tzinfo is None:
-        when = when.replace(tzinfo=timezone.utc)
-    ts_str = when.astimezone(timezone.utc).isoformat()
+    ts_str = _canonical_ts_str(ts or datetime.now(timezone.utc))
 
     payload_json = None if payload is None else json.dumps(payload, sort_keys=True)
 
@@ -297,6 +333,7 @@ def prune_old_events_quietly(settings: "Settings") -> None:
 
     try:
         prune_old_events(settings)
+        prune_old_runs(settings)
     except Exception:  # noqa: BLE001 - telemetry must never break the core path.
         pass
 
@@ -321,6 +358,156 @@ def purge_test_agents(settings: "Settings") -> int:
         cursor = conn.execute(
             "DELETE FROM events WHERE agent = 'diag' OR agent = 'pwsse' OR agent LIKE 'pwtest%'"
         )
+        conn.commit()
+        return cursor.rowcount
+    finally:
+        conn.close()
+
+
+def record_run(
+    settings: "Settings",
+    *,
+    id: str,
+    kind: str,
+    started_at: str,
+    finished_at: str,
+    duration_ms: int | None,
+    dry_run: bool,
+    status: str,
+    source: str | None,
+    summary: str | None,
+    detail: dict[str, Any] | None,
+) -> None:
+    """Persist one rich run-detail record into the ``runs`` table (#223).
+
+    No-op (writes nothing, creates no db file) when telemetry is disabled.
+    ``detail`` is serialized to deterministic JSON. Idempotent on ``id`` via
+    INSERT OR REPLACE so a re-recorded run does not duplicate.
+
+    ``started_at``/``finished_at`` are canonicalized to ISO-8601 UTC
+    (:func:`_canonical_ts_str`) — the SAME contract as the ``events`` table —
+    so the naive-local timestamps the workflows produce become UTC-offset
+    strings. This keeps :func:`prune_old_runs`' lexicographic cutoff comparison
+    correct on non-UTC hosts and makes the API emit UTC timestamps.
+    """
+    if not settings.telemetry_enabled:
+        return
+
+    started_at = _canonical_ts_str(started_at)
+    finished_at = _canonical_ts_str(finished_at)
+    detail_json = None if detail is None else json.dumps(detail, sort_keys=True)
+    conn = _connect(settings)
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO runs "
+            "(id, kind, started_at, finished_at, duration_ms, dry_run, status, source, summary, detail) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                id,
+                kind,
+                started_at,
+                finished_at,
+                duration_ms,
+                1 if dry_run else 0,
+                status,
+                source,
+                summary,
+                detail_json,
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _row_to_run(row: sqlite3.Row) -> dict[str, Any]:
+    """Decode one ``runs`` row into a dict, JSON-decoding ``detail`` and
+    normalizing ``dry_run`` back to a bool."""
+    out = dict(row)
+    out["dry_run"] = bool(out.get("dry_run"))
+    raw = out.get("detail")
+    if isinstance(raw, str):
+        try:
+            decoded = json.loads(raw)
+        except (ValueError, TypeError):
+            decoded = {}
+    elif isinstance(raw, dict):
+        decoded = raw
+    else:
+        decoded = {}
+    out["detail"] = decoded if isinstance(decoded, dict) else {}
+    return out
+
+
+def list_runs(
+    settings: "Settings",
+    *,
+    limit: int = 10,
+    kind: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return persisted runs, newest first (by ``started_at``), optional ``kind``
+    filter. No-op safe: returns ``[]`` when telemetry is disabled or no db/table."""
+    if not settings.telemetry_enabled:
+        return []
+    path = _db_path(settings)
+    if not path.exists():
+        return []
+    bounded = max(0, limit)
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    for stmt in _DDL:  # ensure the runs table exists on a pre-#223 db
+        conn.execute(stmt)
+    conn.row_factory = sqlite3.Row
+    try:
+        if kind is not None:
+            rows = conn.execute(
+                "SELECT * FROM runs WHERE kind = ? ORDER BY started_at DESC, id DESC LIMIT ?",
+                (kind, bounded),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM runs ORDER BY started_at DESC, id DESC LIMIT ?",
+                (bounded,),
+            ).fetchall()
+        return [_row_to_run(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def get_run(settings: "Settings", run_id: str) -> dict[str, Any] | None:
+    """Return the full run-detail record for ``run_id``, or None if unknown.
+
+    No-op safe: returns None when telemetry is disabled or no db/table."""
+    if not settings.telemetry_enabled:
+        return None
+    path = _db_path(settings)
+    if not path.exists():
+        return None
+    conn = sqlite3.connect(path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    for stmt in _DDL:  # ensure the runs table exists on a pre-#223 db
+        conn.execute(stmt)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute("SELECT * FROM runs WHERE id = ?", (run_id,)).fetchone()
+        return _row_to_run(row) if row is not None else None
+    finally:
+        conn.close()
+
+
+def prune_old_runs(settings: "Settings") -> int:
+    """Delete runs older than the configured retention window (mirrors
+    :func:`prune_old_events`). Returns rows deleted; no-op when telemetry is
+    disabled, ``telemetry_retention_days`` <= 0, or no db exists."""
+    if not settings.telemetry_enabled or settings.telemetry_retention_days <= 0:
+        return 0
+    path = _db_path(settings)
+    if not path.exists():
+        return 0
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=settings.telemetry_retention_days)).isoformat()
+    conn = _connect(settings)
+    try:
+        cursor = conn.execute("DELETE FROM runs WHERE started_at < :cutoff", {"cutoff": cutoff})
         conn.commit()
         return cursor.rowcount
     finally:

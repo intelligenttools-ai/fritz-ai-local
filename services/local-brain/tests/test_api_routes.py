@@ -50,7 +50,7 @@ def test_compile_route_schedules_refresh_after_successful_apply(monkeypatch, tmp
 
     monkeypatch.setattr(routes, "get_settings", lambda: _Settings(tmp_path))
     monkeypatch.setattr(routes, "run_compile", fake_run_compile)
-    monkeypatch.setattr(routes, "record_compile", lambda result: None)
+    monkeypatch.setattr(routes, "record_compile", lambda result, *a, **k: None)
     monkeypatch.setattr(
         routes,
         "schedule_embedding_refresh_after_compile_result",

@@ -131,14 +131,15 @@ async function loadTree() {
   el.innerHTML = renderTreeNode(data, true);
 }
 
-/** Recursively render a tree node. Every name/path is esc()'d. */
+/** Recursively render a tree node. Every name/path is esc()'d. The raw path is
+ * carried in data-path (attribute context) — NEVER interpolated into inline JS
+ * (that would let a `'`/`&#39;` in the path break out; clicks are delegated). */
 function renderTreeNode(node, isRoot) {
   const path = esc(node.path || "");
   const name = esc(node.name || (isRoot ? "root" : node.path || ""));
   const count = Number(node.article_count) || 0;
   const active = (node.path || "") === _node ? " active" : "";
-  let html = `<div class="kb-tree-node${active}" data-path="${path}"
-       onclick="selectNode('${path}');event.stopPropagation()">
+  let html = `<div class="kb-tree-node${active}" data-path="${path}">
     <span class="kb-tree-name">${name}</span>
     <span class="kb-tree-count">${count}</span>
   </div>`;
@@ -209,7 +210,8 @@ function renderArticleRow(a) {
   const updated = esc(a.updated || a.created || "");
   const tags = (Array.isArray(a.tags) ? a.tags : [])
     .map(t => `<span class="kb-tag">${esc(t)}</span>`).join("");
-  return `<div class="kb-article-row" onclick="loadArticle('${path}')">
+  // data-path (attribute context) carries the target; clicks are delegated.
+  return `<div class="kb-article-row" data-path="${path}">
     <div class="kb-row-main">
       <span class="kb-row-title">${title}</span>
       ${statusBadge(status)}
@@ -239,7 +241,10 @@ async function runSearch() {
   writeQuery({ q }, true);
   const el = document.getElementById("article-list");
   el.innerHTML = '<div class="skeleton skel-line"></div>';
-  const res = await postAction("/v1/search/run", { query: q });
+  // Scope to the brain store ("brain") so every result path is resolvable by
+  // /v1/knowledge/article (store-root-relative). Captures / external-vault hits
+  // are NOT store-resolvable and would 404 on click-through.
+  const res = await postAction("/v1/search/run", { query: q, vault: "brain" });
   if (!res || !res.json) { renderError("article-list", "Search failed."); return; }
   document.getElementById("list-title").textContent = "Search: " + q;
   const matches = Array.isArray(res.json.matches) ? res.json.matches : [];
@@ -250,13 +255,18 @@ async function runSearch() {
   el.innerHTML = matches.map(renderSearchMatch).join("");
 }
 
-/** Search result — vault/path/title/snippet all untrusted → esc(). */
+/** Search result — vault/path/title/snippet all untrusted → esc(). Only
+ * store-resolvable ("brain") hits are click-through (data-path); anything else
+ * is a non-clickable row so a click can't 404 against the store root. */
 function renderSearchMatch(m) {
   const path = esc(m.path || "");
   const title = esc(m.title || m.path || "(untitled)");
   const vault = esc(m.vault || "");
   const snippet = esc(m.snippet || "");
-  return `<div class="kb-article-row" onclick="loadArticle('${path}')">
+  const clickable = (m.vault === "brain") && m.path;
+  const openAttr = clickable ? ` data-path="${path}"` : "";
+  const cls = clickable ? "kb-article-row" : "kb-article-row kb-row-static";
+  return `<div class="${cls}"${openAttr}>
     <div class="kb-row-main"><span class="kb-row-title">${title}</span></div>
     <div class="kb-row-meta">
       ${vault ? `<span class="kb-row-path">${vault}</span>` : ""}
@@ -320,7 +330,7 @@ function renderArticle(a) {
 
   el.innerHTML = `
     <div class="kb-detail-head">
-      <button class="kb-back" onclick="backToList()">← Back</button>
+      <button class="kb-back">← Back</button>
       <h2 class="kb-detail-title">${title}</h2>
     </div>
     <div class="kb-frontmatter">
@@ -334,13 +344,18 @@ function renderArticle(a) {
     <div class="kb-body">${bodyHtml}</div>`;
 }
 
-/** A clickable supersedes / superseded_by chip. relation + target esc()'d. */
+/** A supersedes / superseded_by chip. relation + target esc()'d. Present targets
+ * are clickable (data-target, delegated listener — NO inline JS interpolation, so
+ * a `'` in the target can't break out); missing targets (exists===false) render
+ * as a non-clickable span (clicking would 404). */
 function linkChip(l) {
   const rel = esc(l.relation || "");
   const target = esc(l.target || "");
-  const missing = (l.exists === false) ? " kb-link-missing" : "";
-  return `<button class="kb-link-chip${missing}" onclick="loadArticle('${target}')"
-     title="${rel}">${rel === "superseded_by" ? "superseded by" : rel} · ${target}</button>`;
+  const label = `${rel === "superseded_by" ? "superseded by" : rel} · ${target}`;
+  if (l.exists === false) {
+    return `<span class="kb-link-chip kb-link-missing" title="${rel} (missing)">${label}</span>`;
+  }
+  return `<button class="kb-link-chip" data-target="${target}" title="${rel}">${label}</button>`;
 }
 
 function backToList() {
@@ -375,7 +390,10 @@ async function runSearchNoPush(q) {
   showListView();
   const el = document.getElementById("article-list");
   el.innerHTML = '<div class="skeleton skel-line"></div>';
-  const res = await postAction("/v1/search/run", { query: q });
+  // Scope to the brain store ("brain") so every result path is resolvable by
+  // /v1/knowledge/article (store-root-relative). Captures / external-vault hits
+  // are NOT store-resolvable and would 404 on click-through.
+  const res = await postAction("/v1/search/run", { query: q, vault: "brain" });
   if (!res || !res.json) { renderError("article-list", "Search failed."); return; }
   document.getElementById("list-title").textContent = "Search: " + q;
   const matches = Array.isArray(res.json.matches) ? res.json.matches : [];
@@ -387,9 +405,43 @@ async function runSearchNoPush(q) {
 // Browser back/forward.
 window.addEventListener("popstate", () => { applyState(readQuery()); });
 
+// ---- delegated click handlers -----------------------------------------------
+//
+// SECURITY: navigation targets (tree/article paths, supersession targets) are
+// carried in data-* attributes and read via el.dataset — NEVER interpolated into
+// inline onclick JS. A container-level delegated listener survives the innerHTML
+// re-renders of its children, so a `'` in a path can no longer break out of a
+// handler string (the #220-class stored-XSS the review flagged).
+
+let _delegatesBound = false;
+function bindDelegates() {
+  if (_delegatesBound) return;
+  _delegatesBound = true;
+
+  // Tree: click a node → select it.
+  document.getElementById("tree").addEventListener("click", (e) => {
+    const node = e.target.closest(".kb-tree-node");
+    if (node && node.dataset.path != null) selectNode(node.dataset.path);
+  });
+
+  // Article list / search results: click a row with a data-path → open it.
+  document.getElementById("article-list").addEventListener("click", (e) => {
+    const row = e.target.closest(".kb-article-row");
+    if (row && row.dataset.path) loadArticle(row.dataset.path);
+  });
+
+  // Article detail: Back button + supersession link chips (data-target).
+  document.getElementById("article-detail").addEventListener("click", (e) => {
+    if (e.target.closest(".kb-back")) { backToList(); return; }
+    const chip = e.target.closest(".kb-link-chip[data-target]");
+    if (chip) loadArticle(chip.dataset.target);
+  });
+}
+
 // ---- shared entry point -----------------------------------------------------
 
 async function loadAll() {
+  bindDelegates();
   await loadTree();
   await applyState(readQuery());
 }
