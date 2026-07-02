@@ -34,6 +34,7 @@ from ..embeddings import (
     schedule_embedding_refresh_after_compile_result,
 )
 from ..lint_workflow import run_lint
+from .. import knowledge_browse
 from ..models import (
     CompileRunRequest,
     CompileRunResult,
@@ -46,6 +47,9 @@ from ..models import (
     EmbeddingProbeResult,
     EmbeddingRefreshScheduleResult,
     EmbeddingStatusResult,
+    KnowledgeArticleDetail,
+    KnowledgeArticlesResult,
+    KnowledgeTreeNode,
     LintRunRequest,
     LintRunResult,
     QueryRunRequest,
@@ -253,6 +257,48 @@ async def usage_system(
 ) -> UsageSystemResult:
     """SYSTEM activity (the service's own compile/index/reconcile work, #205)."""
     return UsageSystemResult(**usage.system(get_settings(), since=from_, until=to))
+
+
+# ---------------------------------------------------------------------------
+# Read-only knowledge browse API (#221)
+#
+# Path-traversal safety: every caller-supplied ``path`` is resolved against the
+# store root and MUST land inside it (see knowledge_browse._resolve_inside). A
+# PathTraversalError (../, absolute path, symlink escape) becomes HTTP 400.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/v1/knowledge/tree", response_model=KnowledgeTreeNode, dependencies=[Depends(require_token)])
+async def knowledge_tree() -> KnowledgeTreeNode:
+    return KnowledgeTreeNode(**knowledge_browse.build_tree(get_settings()))
+
+
+@router.get("/v1/knowledge/articles", response_model=KnowledgeArticlesResult, dependencies=[Depends(require_token)])
+async def knowledge_articles(
+    path: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    q: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=0),
+    offset: int = Query(default=0, ge=0),
+) -> KnowledgeArticlesResult:
+    try:
+        result = knowledge_browse.list_articles(
+            get_settings(), path=path, status=status, q=q, limit=limit, offset=offset
+        )
+    except knowledge_browse.PathTraversalError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return KnowledgeArticlesResult(**result)
+
+
+@router.get("/v1/knowledge/article", response_model=KnowledgeArticleDetail, dependencies=[Depends(require_token)])
+async def knowledge_article(path: str = Query(...)) -> KnowledgeArticleDetail:
+    try:
+        result = knowledge_browse.read_article(get_settings(), path=path)
+    except knowledge_browse.PathTraversalError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Article not found: {path}")
+    return KnowledgeArticleDetail(**result)
 
 
 # ---------------------------------------------------------------------------

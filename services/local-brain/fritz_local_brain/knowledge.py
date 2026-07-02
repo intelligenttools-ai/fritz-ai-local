@@ -152,7 +152,7 @@ def apply_article_write(target: Path, proposal: ArticleWriteProposal, dry_run: b
 # ---------------------------------------------------------------------------
 
 
-def _split_front_matter(text: str) -> tuple[dict[str, Any], str]:
+def split_front_matter(text: str) -> tuple[dict[str, Any], str]:
     """Split a markdown document into (frontmatter dict, body).
 
     Handles missing or malformed front matter gracefully: returns an empty dict
@@ -180,6 +180,11 @@ def _split_front_matter(text: str) -> tuple[dict[str, Any], str]:
     if not isinstance(parsed, dict):
         return {}, text
     return parsed, body
+
+
+# Backwards-compatible private alias for existing internal callers (kb_health,
+# reconciliation, etc.). New code should use the public ``split_front_matter``.
+_split_front_matter = split_front_matter
 
 
 def apply_frontmatter_update(
