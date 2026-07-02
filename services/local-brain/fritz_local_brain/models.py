@@ -492,3 +492,59 @@ class ConfigPatchResult(BaseModel):
     applied: list[str] = Field(default_factory=list)
     rejected: list[str] = Field(default_factory=list)
     config: dict[str, ConfigField]
+
+
+# ---------------------------------------------------------------------------
+# Read-only knowledge browse API (#221)
+# ---------------------------------------------------------------------------
+
+
+class KnowledgeTreeNode(BaseModel):
+    """One directory node of the store tree with recursive per-node rollups."""
+
+    name: str
+    path: str  # relative to store root ("" for the root node)
+    article_count: int
+    status_counts: dict[str, int]  # keyed by all STATUS_VALUES
+    children: list["KnowledgeTreeNode"] = Field(default_factory=list)
+
+
+class KnowledgeArticleSummary(BaseModel):
+    """A single article as it appears in the flat list (no body)."""
+
+    path: str
+    title: str
+    status: str
+    created: str | None = None
+    updated: str | None = None
+    tags: list[str] = Field(default_factory=list)
+
+
+class KnowledgeArticlesResult(BaseModel):
+    """Paginated flat article list."""
+
+    total: int
+    limit: int
+    offset: int
+    articles: list[KnowledgeArticleSummary] = Field(default_factory=list)
+
+
+class KnowledgeLink(BaseModel):
+    """A resolved supersession link and whether its target exists on disk."""
+
+    relation: Literal["supersedes", "superseded_by"]
+    target: str
+    exists: bool
+
+
+class KnowledgeArticleDetail(BaseModel):
+    """Full detail for one article incl. raw body and resolved links."""
+
+    path: str
+    title: str
+    status: str
+    frontmatter: dict[str, Any] = Field(default_factory=dict)
+    body: str
+    supersedes: list[str] = Field(default_factory=list)
+    superseded_by: list[str] = Field(default_factory=list)
+    links: list[KnowledgeLink] = Field(default_factory=list)
