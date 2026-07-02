@@ -66,7 +66,8 @@ def test_ui_pages_return_200_html_clean_paths() -> None:
 def test_ui_pages_also_served_as_html_suffix() -> None:
     """The StaticFiles mount also serves the .html form (deep-link robustness)."""
     client = _client()
-    for path in ("/ui/index.html", "/ui/activity.html", "/ui/settings.html"):
+    for path in ("/ui/index.html", "/ui/activity.html", "/ui/settings.html",
+                 "/ui/agents.html", "/ui/operations.html", "/ui/knowledge.html"):
         resp = client.get(path)
         assert resp.status_code == 200, f"{path} -> {resp.status_code}"
 
@@ -463,3 +464,62 @@ def test_old_dashboard_html_removed() -> None:
 
     old = Path(app_module.__file__).parent / "static" / "dashboard.html"
     assert not old.exists(), "dashboard.html should have been deleted (#220)"
+
+
+# ---------------------------------------------------------------------------
+# BLOCKER 1 regression — XSS sink: tooltip must use textContent not innerHTML
+# ---------------------------------------------------------------------------
+
+def test_chart_tip_sink_uses_textcontent_not_innerhtml() -> None:
+    """bindChartTip() must read data-tip via textContent (safe), not innerHTML.
+
+    innerHTML on an attribute-round-trip HTML-decodes the value, then re-parses
+    it as live HTML, undoing esc()'s protection. textContent displays the same
+    decoded text but never parses markup. (#220 BLOCKER 1)
+    """
+    js = _api_js()
+    assert 'tip.textContent = dot.getAttribute("data-tip")' in js, (
+        "tooltip sink must use textContent"
+    )
+    assert 'tip.innerHTML = dot.getAttribute("data-tip")' not in js, (
+        "tooltip sink must NOT use innerHTML (XSS)"
+    )
+
+
+# ---------------------------------------------------------------------------
+# BLOCKER 2 regression — setupSSE guard in saveToken (#220 / #193)
+# ---------------------------------------------------------------------------
+
+def test_savetoken_setupsse_is_guarded_by_usessse() -> None:
+    """saveToken() must not call setupSSE() unconditionally.
+
+    knowledge.html sets window.usesSSE = false and does not load sse.js, so
+    an unguarded setupSSE() call throws ReferenceError and the auth overlay
+    never dismisses. (#220 BLOCKER 2)
+    """
+    js = _api_js()
+    start = js.index("function saveToken(")
+    end = js.index("}", start)
+    fn = js[start:end]
+    # The guard must be present inside saveToken.
+    assert "window.usesSSE !== false" in fn, (
+        "setupSSE() in saveToken must be guarded by window.usesSSE !== false"
+    )
+    # The bare unconditional call must not appear.
+    assert "setupSSE();" not in fn.replace("if (window.usesSSE !== false) setupSSE();", ""), (
+        "saveToken must not contain an unguarded setupSSE() call"
+    )
+
+
+def test_knowledge_page_sets_usessse_false_and_omits_sse_script() -> None:
+    """knowledge.html must set window.usesSSE = false (before api.js runs) and
+    must NOT load sse.js (which would make the guard unnecessary but its absence
+    is what makes the guard *required*). (#220 BLOCKER 2)
+    """
+    body = _client().get("/ui/knowledge").text
+    assert "window.usesSSE = false" in body, (
+        "knowledge.html must opt out of SSE via window.usesSSE = false"
+    )
+    assert "sse.js" not in body, (
+        "knowledge.html must not load sse.js (stub page — no SSE endpoint)"
+    )
