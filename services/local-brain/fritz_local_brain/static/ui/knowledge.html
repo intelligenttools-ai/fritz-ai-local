@@ -1,8 +1,14 @@
 <!DOCTYPE html>
 <!--
-  Fritz Local Brain — Knowledge page (#220 app shell). STUB.
-  Placeholder for the future knowledge-browsing UI. No backend endpoint yet;
-  arrives with the knowledge API. Deep-linkable at /ui/knowledge.
+  Fritz Local Brain — Knowledge browser (#222).
+  A dependency-free knowledge browser over the #221 knowledge API:
+    - left tree from /v1/knowledge/tree (per-node article counts)
+    - article list from /v1/knowledge/articles (status chips + text filter)
+    - full-text search via POST /v1/search/run
+    - article detail from /v1/knowledge/article, with an inline, escape-first
+      markdown renderer and clickable supersedes / superseded_by navigation
+    - deep-linkable state (?path= / ?q=) via history push/replaceState.
+  No SSE (no live endpoint); no framework/build/CDN.
 -->
 <html lang="en">
 <head>
@@ -10,8 +16,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Fritz Brain — Knowledge</title>
 <link rel="stylesheet" href="/ui/shared/app.css">
-<!-- Stub page: no live data, so opt out of SSE. Set in <head> (before api.js
-     runs initShell) to avoid any DOMContentLoaded timing fragility. -->
+<link rel="stylesheet" href="/ui/knowledge.css">
+<!-- No live-updating data on this page — opt out of SSE. Set in <head>
+     (before api.js runs initShell) so the live-stream module is never loaded. -->
 <script>window.usesSSE = false;</script>
 </head>
 <body data-page="knowledge">
@@ -21,7 +28,7 @@
 <div id="auth-overlay">
   <div id="auth-box">
     <h2>Fritz Brain Dashboard</h2>
-    <p>Enter the API Bearer token to load usage data.</p>
+    <p>Enter the API Bearer token to load knowledge.</p>
     <input type="password" id="token-input" placeholder="Bearer token" autofocus>
     <button onclick="saveToken()">Continue</button>
     <div id="auth-error">Invalid token — please try again.</div>
@@ -40,9 +47,44 @@
     </header>
 
     <main>
-      <h2>Knowledge</h2>
-      <div class="section panel">
-        <p class="no-data">Knowledge browsing is coming with the knowledge API. This page is a placeholder for now.</p>
+      <div class="kb-search-bar">
+        <input type="search" id="search-input" placeholder="Search knowledge…"
+               onkeydown="if(event.key==='Enter')runSearch()">
+        <button onclick="runSearch()">Search</button>
+        <button class="kb-clear" onclick="clearSearch()" title="Clear search">✕</button>
+      </div>
+
+      <div class="kb-layout">
+        <!-- Left panel: vault/project tree -->
+        <aside class="kb-tree panel section">
+          <div class="panel-title">Vaults</div>
+          <div id="tree"><div class="skeleton skel-line"></div><div class="skeleton skel-line"></div></div>
+        </aside>
+
+        <!-- Main panel: article list OR article detail OR search results -->
+        <section class="kb-main panel section">
+          <!-- List view -->
+          <div id="list-view">
+            <div class="kb-list-head">
+              <div id="list-title" class="panel-title">Articles</div>
+              <input type="search" id="filter-input" placeholder="Filter title…"
+                     onkeydown="if(event.key==='Enter')onFilterChange()"
+                     oninput="onFilterInput()">
+            </div>
+            <div class="kb-chips" id="status-chips">
+              <button class="kb-chip active" data-status="" onclick="setStatus('',this)">all</button>
+              <button class="kb-chip" data-status="active" onclick="setStatus('active',this)">active</button>
+              <button class="kb-chip" data-status="corroborated" onclick="setStatus('corroborated',this)">corroborated</button>
+              <button class="kb-chip" data-status="deprecated" onclick="setStatus('deprecated',this)">deprecated</button>
+              <button class="kb-chip" data-status="superseded" onclick="setStatus('superseded',this)">superseded</button>
+              <button class="kb-chip" data-status="historical" onclick="setStatus('historical',this)">historical</button>
+            </div>
+            <div id="article-list"><div class="no-data">Select a vault to browse articles.</div></div>
+          </div>
+
+          <!-- Detail view (hidden until an article is opened) -->
+          <div id="article-detail" style="display:none"></div>
+        </section>
       </div>
     </main>
   </div>
@@ -50,11 +92,307 @@
 
 <script src="/ui/shared/api.js"></script>
 <script src="/ui/shared/nav.js"></script>
+<script src="/ui/shared/markdown.js"></script>
 <script>
-// Knowledge stub: no live data. The SSE opt-out (window.usesSSE = false) is set
-// in the <head> above; here we just provide a no-op loadAll (the shared shell
-// still shows the auth overlay when no token is stored).
-function loadAll() { /* no data yet — stub page */ }
+// Knowledge browser client logic (#222). Deep-linkable: the URL query mirrors
+// the view (?path= selects a tree node / opens an article; ?q= is a search).
+
+let _node = "";      // selected tree-node path ("" = root/all)
+let _status = "";    // status filter chip ("" = all)
+let _filter = "";    // client text filter box (title contains)
+let _filterTimer = null;
+
+// ---- deep-link helpers ------------------------------------------------------
+
+/** Read the current URL query into { path, q, article }. */
+function readQuery() {
+  const p = new URLSearchParams(window.location.search);
+  return { path: p.get("path") || "", q: p.get("q") || "", article: p.get("article") || "" };
+}
+
+/** Reflect a view into the URL (push = new history entry; replace otherwise). */
+function writeQuery(state, push) {
+  const p = new URLSearchParams();
+  if (state.q) p.set("q", state.q);
+  if (state.article) p.set("article", state.article);
+  else if (state.path) p.set("path", state.path);
+  const qs = p.toString();
+  const url = window.location.pathname + (qs ? "?" + qs : "");
+  if (push) history.pushState(state, "", url);
+  else history.replaceState(state, "", url);
+}
+
+// ---- tree (left panel) ------------------------------------------------------
+
+async function loadTree() {
+  const data = await apiFetch("/v1/knowledge/tree");
+  const el = document.getElementById("tree");
+  if (!data) { renderError("tree", "Could not load tree."); return; }
+  el.innerHTML = renderTreeNode(data, true);
+}
+
+/** Recursively render a tree node. Every name/path is esc()'d. */
+function renderTreeNode(node, isRoot) {
+  const path = esc(node.path || "");
+  const name = esc(node.name || (isRoot ? "root" : node.path || ""));
+  const count = Number(node.article_count) || 0;
+  const active = (node.path || "") === _node ? " active" : "";
+  let html = `<div class="kb-tree-node${active}" data-path="${path}"
+       onclick="selectNode('${path}');event.stopPropagation()">
+    <span class="kb-tree-name">${name}</span>
+    <span class="kb-tree-count">${count}</span>
+  </div>`;
+  const children = Array.isArray(node.children) ? node.children : [];
+  if (children.length) {
+    html += '<div class="kb-tree-children">' +
+      children.map(c => renderTreeNode(c, false)).join("") + "</div>";
+  }
+  return html;
+}
+
+function selectNode(path) {
+  _node = path;
+  document.getElementById("search-input").value = "";
+  showListView();
+  writeQuery({ path: _node }, true);
+  highlightTree();
+  loadArticles();
+}
+
+function highlightTree() {
+  document.querySelectorAll(".kb-tree-node").forEach(n => {
+    n.classList.toggle("active", n.getAttribute("data-path") === _node);
+  });
+}
+
+// ---- article list (main panel) ----------------------------------------------
+
+function setStatus(status, btn) {
+  _status = status;
+  document.querySelectorAll("#status-chips .kb-chip").forEach(b => b.classList.remove("active"));
+  btn.classList.add("active");
+  loadArticles();
+}
+
+function onFilterInput() {
+  if (_filterTimer) clearTimeout(_filterTimer);
+  _filterTimer = setTimeout(onFilterChange, 250);
+}
+
+function onFilterChange() {
+  _filter = document.getElementById("filter-input").value.trim();
+  loadArticles();
+}
+
+async function loadArticles() {
+  const params = { path: _node, limit: 100, offset: 0 };
+  if (_status) params.status = _status;
+  if (_filter) params.q = _filter;
+  const data = await apiFetch("/v1/knowledge/articles", params);
+  const el = document.getElementById("article-list");
+  if (!data) { renderError("article-list", "Could not load articles."); return; }
+  const articles = Array.isArray(data.articles) ? data.articles : [];
+  document.getElementById("list-title").textContent =
+    (_node ? _node : "All articles") + ` (${data.total ?? articles.length})`;
+  if (!articles.length) {
+    el.innerHTML = '<div class="no-data">No articles here.</div>';
+    return;
+  }
+  el.innerHTML = articles.map(renderArticleRow).join("");
+}
+
+/** One article row. path / title / status / tags are all untrusted → esc(). */
+function renderArticleRow(a) {
+  const path = esc(a.path || "");
+  const title = esc(a.title || a.path || "(untitled)");
+  const status = esc(a.status || "");
+  const updated = esc(a.updated || a.created || "");
+  const tags = (Array.isArray(a.tags) ? a.tags : [])
+    .map(t => `<span class="kb-tag">${esc(t)}</span>`).join("");
+  return `<div class="kb-article-row" onclick="loadArticle('${path}')">
+    <div class="kb-row-main">
+      <span class="kb-row-title">${title}</span>
+      ${statusBadge(status)}
+    </div>
+    <div class="kb-row-meta">
+      <span class="kb-row-path">${path}</span>
+      ${updated ? `<span class="kb-row-date">${updated}</span>` : ""}
+      ${tags}
+    </div>
+  </div>`;
+}
+
+/** Status badge — status is already esc()'d by callers; class is whitelisted. */
+function statusBadge(status) {
+  if (!status) return "";
+  const known = ["active", "corroborated", "deprecated", "superseded", "historical"];
+  const cls = known.includes(status) ? "kb-badge-" + status : "kb-badge-other";
+  return `<span class="kb-badge ${cls}">${status}</span>`;
+}
+
+// ---- search -----------------------------------------------------------------
+
+async function runSearch() {
+  const q = document.getElementById("search-input").value.trim();
+  if (!q) return;
+  showListView();
+  writeQuery({ q }, true);
+  const el = document.getElementById("article-list");
+  el.innerHTML = '<div class="skeleton skel-line"></div>';
+  const res = await postAction("/v1/search/run", { query: q });
+  if (!res || !res.json) { renderError("article-list", "Search failed."); return; }
+  document.getElementById("list-title").textContent = "Search: " + q;
+  const matches = Array.isArray(res.json.matches) ? res.json.matches : [];
+  if (!matches.length) {
+    el.innerHTML = '<div class="no-data">No matches.</div>';
+    return;
+  }
+  el.innerHTML = matches.map(renderSearchMatch).join("");
+}
+
+/** Search result — vault/path/title/snippet all untrusted → esc(). */
+function renderSearchMatch(m) {
+  const path = esc(m.path || "");
+  const title = esc(m.title || m.path || "(untitled)");
+  const vault = esc(m.vault || "");
+  const snippet = esc(m.snippet || "");
+  return `<div class="kb-article-row" onclick="loadArticle('${path}')">
+    <div class="kb-row-main"><span class="kb-row-title">${title}</span></div>
+    <div class="kb-row-meta">
+      ${vault ? `<span class="kb-row-path">${vault}</span>` : ""}
+      <span class="kb-row-path">${path}</span>
+    </div>
+    ${snippet ? `<div class="kb-snippet">${snippet}</div>` : ""}
+  </div>`;
+}
+
+function clearSearch() {
+  document.getElementById("search-input").value = "";
+  writeQuery({ path: _node }, true);
+  loadArticles();
+}
+
+// ---- article detail ---------------------------------------------------------
+
+function showListView() {
+  document.getElementById("list-view").style.display = "";
+  document.getElementById("article-detail").style.display = "none";
+}
+
+function showDetailView() {
+  document.getElementById("list-view").style.display = "none";
+  document.getElementById("article-detail").style.display = "";
+}
+
+async function loadArticle(path, push = true) {
+  const data = await apiFetch("/v1/knowledge/article", { path });
+  const el = document.getElementById("article-detail");
+  showDetailView();
+  if (!data) { renderError("article-detail", "Could not load article."); return; }
+  if (push) writeQuery({ path: _node, article: path }, true);
+  renderArticle(data);
+}
+
+/** Render an article detail: frontmatter panel + markdown body + supersession. */
+function renderArticle(a) {
+  const el = document.getElementById("article-detail");
+  const path = esc(a.path || "");
+  const title = esc(a.title || a.path || "(untitled)");
+  const status = esc(a.status || "");
+  const fm = a.frontmatter || {};
+  const created = esc(fm.created || a.created || "");
+  const updated = esc(fm.updated || a.updated || "");
+  const tags = (Array.isArray(fm.tags) ? fm.tags : (Array.isArray(a.tags) ? a.tags : []))
+    .map(t => `<span class="kb-tag">${esc(t)}</span>`).join("");
+
+  // Supersession links. Prefer the structured `links` array; fall back to the
+  // supersedes / superseded_by string arrays. Every target is esc()'d.
+  const links = Array.isArray(a.links) && a.links.length
+    ? a.links
+    : [
+        ...(Array.isArray(a.supersedes) ? a.supersedes : []).map(t => ({ relation: "supersedes", target: t, exists: true })),
+        ...(Array.isArray(a.superseded_by) ? a.superseded_by : []).map(t => ({ relation: "superseded_by", target: t, exists: true })),
+      ];
+  const supHtml = links.length ? `<div class="kb-supersession">${links.map(linkChip).join("")}</div>` : "";
+
+  // Body: raw markdown → SAFE HTML via the escape-first inline renderer.
+  const bodyHtml = renderMarkdown(a.body || "");
+
+  el.innerHTML = `
+    <div class="kb-detail-head">
+      <button class="kb-back" onclick="backToList()">← Back</button>
+      <h2 class="kb-detail-title">${title}</h2>
+    </div>
+    <div class="kb-frontmatter">
+      ${statusBadge(status)}
+      <span class="kb-fm-path">${path}</span>
+      ${created ? `<span class="kb-fm-date">created ${created}</span>` : ""}
+      ${updated ? `<span class="kb-fm-date">updated ${updated}</span>` : ""}
+      ${tags}
+    </div>
+    ${supHtml}
+    <div class="kb-body">${bodyHtml}</div>`;
+}
+
+/** A clickable supersedes / superseded_by chip. relation + target esc()'d. */
+function linkChip(l) {
+  const rel = esc(l.relation || "");
+  const target = esc(l.target || "");
+  const missing = (l.exists === false) ? " kb-link-missing" : "";
+  return `<button class="kb-link-chip${missing}" onclick="loadArticle('${target}')"
+     title="${rel}">${rel === "superseded_by" ? "superseded by" : rel} · ${target}</button>`;
+}
+
+function backToList() {
+  showListView();
+  writeQuery({ path: _node }, true);
+  loadArticles();
+}
+
+// ---- deep-link restore + history --------------------------------------------
+
+/** Apply a URL state to the view (no history push — this IS the navigation). */
+async function applyState(state) {
+  if (state.q) {
+    document.getElementById("search-input").value = state.q;
+    await runSearchNoPush(state.q);
+    return;
+  }
+  _node = state.path || "";
+  highlightTree();
+  if (state.article) {
+    showListView();
+    await loadArticles();
+    await loadArticle(state.article, false);
+  } else {
+    showListView();
+    await loadArticles();
+  }
+}
+
+/** Search variant used on restore (does not push a new history entry). */
+async function runSearchNoPush(q) {
+  showListView();
+  const el = document.getElementById("article-list");
+  el.innerHTML = '<div class="skeleton skel-line"></div>';
+  const res = await postAction("/v1/search/run", { query: q });
+  if (!res || !res.json) { renderError("article-list", "Search failed."); return; }
+  document.getElementById("list-title").textContent = "Search: " + q;
+  const matches = Array.isArray(res.json.matches) ? res.json.matches : [];
+  el.innerHTML = matches.length
+    ? matches.map(renderSearchMatch).join("")
+    : '<div class="no-data">No matches.</div>';
+}
+
+// Browser back/forward.
+window.addEventListener("popstate", () => { applyState(readQuery()); });
+
+// ---- shared entry point -----------------------------------------------------
+
+async function loadAll() {
+  await loadTree();
+  await applyState(readQuery());
+}
 </script>
 </body>
 </html>
