@@ -1,454 +1,465 @@
-"""Smoke tests for the /dashboard route (#182).
+"""Route + feature-preservation tests for the multi-page UI shell (#220).
 
-Acceptance:
-- GET /dashboard returns 200 with content-type text/html.
-- The body contains the expected title marker and references to the usage endpoints.
-- No auth token required (the route is unauthenticated).
-- The served file exists on disk and is non-empty.
+The old single-page /dashboard was split into an /ui/ app shell (#220). These
+tests assert:
+
+- /dashboard now 307-redirects to /ui/.
+- Each /ui/* page returns 200 HTML (clean paths AND the .html form).
+- The shared assets (CSS + JS modules) are served under /ui/shared/.
+- Every feature from the old dashboard still lives on some page (no feature
+  loss): auth/token flow, auto-refresh (#195), actions (#196), theme (#197),
+  SSE (#198), agent drill-down (#199), system panel (#205), chart toggle (#207),
+  config panel (#208), and the XSS esc() guard.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi.testclient import TestClient
 
-from fritz_local_brain.app import create_app, _DASHBOARD
+from fritz_local_brain.app import create_app
 
 
 def _client() -> TestClient:
     return TestClient(create_app())
 
 
-def test_dashboard_returns_200() -> None:
-    resp = _client().get("/dashboard")
+# ---------------------------------------------------------------------------
+# /dashboard now redirects to the /ui/ shell
+# ---------------------------------------------------------------------------
+
+def test_dashboard_redirects_to_ui() -> None:
+    """GET /dashboard must 307-redirect to /ui/ (no HTML served directly)."""
+    resp = _client().get("/dashboard", follow_redirects=False)
+    assert resp.status_code == 307
+    assert resp.headers["location"] == "/ui/"
+
+
+def test_dashboard_redirect_needs_no_auth() -> None:
+    """The redirect itself must not require a token."""
+    resp = _client().get("/dashboard", follow_redirects=False)  # no headers
+    assert resp.status_code == 307
+
+
+# ---------------------------------------------------------------------------
+# Each /ui/* page returns 200 HTML (clean path form)
+# ---------------------------------------------------------------------------
+
+def test_ui_root_serves_index() -> None:
+    resp = _client().get("/ui/")
     assert resp.status_code == 200
-
-
-def test_dashboard_content_type_is_html() -> None:
-    resp = _client().get("/dashboard")
     assert "text/html" in resp.headers["content-type"]
-
-
-def test_dashboard_contains_title() -> None:
-    resp = _client().get("/dashboard")
     assert "<title>" in resp.text
 
 
-def test_dashboard_references_usage_summary() -> None:
-    resp = _client().get("/dashboard")
-    assert "v1/usage/summary" in resp.text
+def test_ui_pages_return_200_html_clean_paths() -> None:
+    """/ui/activity, /ui/agents, /ui/operations, /ui/settings, /ui/knowledge
+    must each return 200 HTML on the clean (no-.html) path."""
+    client = _client()
+    for path in ("/ui/activity", "/ui/agents", "/ui/operations",
+                 "/ui/settings", "/ui/knowledge"):
+        resp = client.get(path)
+        assert resp.status_code == 200, f"{path} -> {resp.status_code}"
+        assert "text/html" in resp.headers["content-type"], path
+        assert "<title>" in resp.text, path
 
 
-def test_dashboard_references_usage_activity() -> None:
-    resp = _client().get("/dashboard")
-    assert "v1/usage/activity" in resp.text
+def test_ui_pages_also_served_as_html_suffix() -> None:
+    """The StaticFiles mount also serves the .html form (deep-link robustness)."""
+    client = _client()
+    for path in ("/ui/index.html", "/ui/activity.html", "/ui/settings.html"):
+        resp = client.get(path)
+        assert resp.status_code == 200, f"{path} -> {resp.status_code}"
 
 
-def test_dashboard_no_auth_required() -> None:
-    """GET /dashboard without any Authorization header must still return 200."""
-    client = TestClient(create_app())
-    resp = client.get("/dashboard")  # no headers
+def test_ui_pages_need_no_auth() -> None:
+    """The page shells are unauthenticated (the token is supplied client-side)."""
+    resp = _client().get("/ui/activity")  # no headers
     assert resp.status_code == 200
 
 
-def test_dashboard_file_exists_and_is_nonempty() -> None:
-    assert _DASHBOARD.exists(), f"dashboard.html not found at {_DASHBOARD}"
-    assert _DASHBOARD.stat().st_size > 0, "dashboard.html is empty"
-
-
-def test_dashboard_has_html_escape_helper() -> None:
-    """Regression guard for stored XSS: agent-supplied telemetry strings (query
-    text, agent ids, vault names) are interpolated into innerHTML and MUST be
-    HTML-escaped. A real DOM XSS test isn't feasible at the Python layer, so we
-    assert the escape helper is present in the served body — if escaping is
-    dropped, this fails."""
-    resp = _client().get("/dashboard")
-    assert "function esc(" in resp.text
-
-
-def test_savetoken_dismisses_auth_overlay() -> None:
-    """Regression guard (#193): saveToken() must hide the auth overlay after
-    storing the token, otherwise the overlay stays up after a valid token is
-    entered. A DOM test isn't feasible at the Python layer, so assert the
-    saveToken function body calls hideAuthOverlay()."""
-    body = _client().get("/dashboard").text
-    start = body.index("function saveToken(")
-    end = body.index("}", start)
-    save_token_body = body[start:end]
-    assert "hideAuthOverlay()" in save_token_body
-
-
-def test_dashboard_auto_refresh_feature() -> None:
-    """Regression guard (#195): auto-refresh control, visibility-pause, and
-    localStorage persistence must all be present in the served dashboard body.
-    A regression that removes any of these wiring points will fail this test."""
-    body = _client().get("/dashboard").text
-    assert "auto-refresh-select" in body, "auto-refresh select element id missing"
-    assert "visibilitychange" in body, "visibilitychange listener missing"
-    assert "localStorage" in body, "localStorage persistence missing"
+def test_ui_unknown_page_404() -> None:
+    resp = _client().get("/ui/does-not-exist")
+    assert resp.status_code == 404
 
 
 # ---------------------------------------------------------------------------
-# Actions panel (#196)
+# Shared assets under /ui/shared/
 # ---------------------------------------------------------------------------
 
-def test_dashboard_actions_panel_container() -> None:
-    """The Actions section must be present with the expected container id."""
-    body = _client().get("/dashboard").text
-    assert 'id="actions-panel"' in body, "actions-panel container id missing"
+def test_ui_shared_css_served() -> None:
+    resp = _client().get("/ui/shared/app.css")
+    assert resp.status_code == 200
+    assert "text/css" in resp.headers["content-type"]
+    assert ":root" in resp.text  # the CSS-var theme block
 
 
-def test_dashboard_actions_post_helper() -> None:
-    """postAction helper must be declared in the served body."""
-    body = _client().get("/dashboard").text
-    assert "function postAction(" in body, "postAction function missing"
-
-
-def test_dashboard_actions_compile_endpoint() -> None:
-    body = _client().get("/dashboard").text
-    assert "/v1/compile/run" in body, "/v1/compile/run endpoint reference missing"
-
-
-def test_dashboard_actions_sync_endpoint() -> None:
-    body = _client().get("/dashboard").text
-    assert "/v1/sync/run" in body, "/v1/sync/run endpoint reference missing"
-
-
-def test_dashboard_actions_embeddings_endpoint() -> None:
-    body = _client().get("/dashboard").text
-    assert "/v1/embeddings/index/run" in body, "/v1/embeddings/index/run endpoint reference missing"
-
-
-def test_dashboard_actions_lint_endpoint() -> None:
-    body = _client().get("/dashboard").text
-    assert "/v1/lint/run" in body, "/v1/lint/run endpoint reference missing"
-
-
-def test_dashboard_actions_approval_token_input() -> None:
-    """Approval-token input must be present for the large-batch approval retry flow."""
-    body = _client().get("/dashboard").text
-    assert 'id="approval-token-input"' in body, "approval-token-input id missing"
-
-
-def test_dashboard_actions_approval_gate() -> None:
-    """Approval gate container must be present."""
-    body = _client().get("/dashboard").text
-    assert 'id="approval-gate"' in body, "approval-gate container id missing"
-
-
-def test_dashboard_actions_toast() -> None:
-    """Action result toast must be present."""
-    body = _client().get("/dashboard").text
-    assert 'id="action-toast"' in body, "action-toast element id missing"
+def test_ui_shared_js_modules_served() -> None:
+    client = _client()
+    for path in ("/ui/shared/api.js", "/ui/shared/nav.js", "/ui/shared/sse.js"):
+        resp = client.get(path)
+        assert resp.status_code == 200, f"{path} -> {resp.status_code}"
+        assert "javascript" in resp.headers["content-type"].lower(), path
 
 
 # ---------------------------------------------------------------------------
-# Per-agent drill-down (#199)
+# Feature preservation — auth / token flow (shared api.js + every page shell)
 # ---------------------------------------------------------------------------
 
-def test_dashboard_references_usage_agents() -> None:
-    """The served body must fetch the per-agent discovery endpoint."""
-    body = _client().get("/dashboard").text
-    assert "/v1/usage/agents" in body, "/v1/usage/agents endpoint reference missing"
+def _api_js() -> str:
+    return _client().get("/ui/shared/api.js").text
 
 
-def test_dashboard_has_agent_selector() -> None:
-    """An agent-selector element id must be present in the served body."""
-    body = _client().get("/dashboard").text
-    assert 'id="agent-filter-select"' in body, "agent-filter-select element id missing"
+def test_shared_has_html_escape_helper() -> None:
+    """Stored-XSS guard: the esc() helper must be present in the shared toolbox."""
+    assert "function esc(" in _api_js()
 
 
-def test_dashboard_passes_agent_param() -> None:
-    """The client must pass an `agent` param when an agent is selected (the
-    agentParams() helper feeding the scoped fetches)."""
-    body = _client().get("/dashboard").text
-    assert "agentParams(" in body, "agentParams helper missing"
-    assert "agent:" in body, "agent param not passed to fetches"
+def test_shared_token_flow_uses_sessionstorage_bearer() -> None:
+    """Token auth unchanged: sessionStorage bearer + Bearer header."""
+    js = _api_js()
+    assert "sessionStorage" in js
+    assert "Bearer ${token}" in js
+    assert "function saveToken(" in js
+    assert "function apiFetch(" in js
 
 
-def test_dashboard_agent_id_escaped_in_selector() -> None:
-    """XSS guard: agent ids (telemetry-stored, untrusted) must be esc()'d when
-    built into the selector options innerHTML."""
-    body = _client().get("/dashboard").text
+def test_shared_savetoken_dismisses_auth_overlay() -> None:
+    """saveToken() must hide the auth overlay after storing the token (#193)."""
+    js = _api_js()
+    start = js.index("function saveToken(")
+    end = js.index("}", start)
+    assert "hideAuthOverlay()" in js[start:end]
+
+
+def test_shared_post_helper_supports_method_param() -> None:
+    """The shared fetch helper accepts a method arg (defaulting to POST)."""
+    assert 'function postAction(path, body, method = "POST")' in _api_js()
+
+
+def test_every_page_has_auth_overlay_and_token_input() -> None:
+    client = _client()
+    for path in ("/ui/", "/ui/activity", "/ui/agents", "/ui/operations",
+                 "/ui/settings", "/ui/knowledge"):
+        body = client.get(path).text
+        assert 'id="auth-overlay"' in body, path
+        assert 'id="token-input"' in body, path
+        assert "/ui/shared/api.js" in body, path
+
+
+# ---------------------------------------------------------------------------
+# Feature preservation — auto-refresh (#195) on data pages
+# ---------------------------------------------------------------------------
+
+def test_auto_refresh_wiring_in_shared_and_pages() -> None:
+    js = _api_js()
+    assert "visibilitychange" in js
+    assert "localStorage" in js
+    assert "function startRefreshTimer(" in js
+    # The data pages expose the auto-refresh select.
+    body = _client().get("/ui/").text
+    assert "auto-refresh-select" in body
+
+
+# ---------------------------------------------------------------------------
+# Feature preservation — actions (#196) live on the Operations page
+# ---------------------------------------------------------------------------
+
+def _ops() -> str:
+    return _client().get("/ui/operations").text
+
+
+def test_operations_actions_panel_and_endpoints() -> None:
+    body = _ops()
+    assert 'id="actions-panel"' in body
+    assert "/v1/compile/run" in body
+    assert "/v1/sync/run" in body
+    assert "/v1/embeddings/index/run" in body
+    assert "/v1/lint/run" in body
+
+
+def test_operations_approval_gate_and_toast() -> None:
+    body = _ops()
+    assert 'id="approval-gate"' in body
+    assert 'id="approval-token-input"' in body
+    assert 'id="action-toast"' in body
+
+
+def test_operations_recent_runs_table() -> None:
+    body = _ops()
+    assert "/v1/runs/recent" in body
+    assert 'id="runs-table"' in body
+
+
+def test_operations_uses_shared_post_helper() -> None:
+    """The action handlers must reuse the shared postAction() helper (no inline
+    duplication of the Bearer-token POST)."""
+    body = _ops()
+    assert "postAction(" in body
+    assert "/ui/shared/api.js" in body
+
+
+# ---------------------------------------------------------------------------
+# Feature preservation — theme toggle (#197)
+# ---------------------------------------------------------------------------
+
+def test_theme_toggle_present() -> None:
+    js = _api_js()
+    assert "function toggleTheme(" in js
+    css = _client().get("/ui/shared/app.css").text
+    assert 'data-theme="light"' in css
+    assert 'id="theme-toggle"' in _client().get("/ui/").text
+
+
+# ---------------------------------------------------------------------------
+# Feature preservation — SSE live updates (#198) on the Activity page
+# ---------------------------------------------------------------------------
+
+def _sse_js() -> str:
+    return _client().get("/ui/shared/sse.js").text
+
+
+def test_sse_uses_stream_ticket_and_eventsource() -> None:
+    js = _sse_js()
+    assert "EventSource" in js
+    assert "/v1/usage/stream-ticket" in js
+    assert "/v1/usage/stream?ticket=" in js
+
+
+def test_sse_cleanup_and_fallback() -> None:
+    js = _sse_js()
+    assert "beforeunload" in js
+    assert "closeSSE(" in js
+    assert 'addEventListener("error"' in js
+    assert "_sseRetried" in js
+
+
+def test_activity_page_loads_sse_module() -> None:
+    body = _client().get("/ui/activity").text
+    assert "/ui/shared/sse.js" in body
+
+
+# ---------------------------------------------------------------------------
+# Feature preservation — agent drill-down (#199) on the Agents page
+# ---------------------------------------------------------------------------
+
+def _agents() -> str:
+    return _client().get("/ui/agents").text
+
+
+def test_agents_drilldown_selector_and_endpoint() -> None:
+    body = _agents()
+    assert "/v1/usage/agents" in body
+    assert 'id="agent-filter-select"' in body
+    assert "agentParams(" in body
+    assert "agent:" in body
+
+
+def test_agents_agent_id_escaped_in_selector() -> None:
+    """XSS guard: agent ids (untrusted telemetry) esc()'d in the selector."""
+    body = _agents()
     start = body.index("function populateAgentFilter(")
     end = body.index("function onAgentFilterChange(", start)
-    fn = body[start:end]
-    assert "esc(a.agent)" in fn, "agent id not escaped in selector"
-
-
-def test_dashboard_actions_esc_used_in_post_results() -> None:
-    """XSS guard: response-derived strings in action handlers must go through esc().
-    Check that esc() calls appear in the postAction / action-handler block."""
-    body = _client().get("/dashboard").text
-    # The action handlers use esc() for error messages and mode strings.
-    # Count occurrences — there must be more than just the original renderBarChart uses.
-    assert body.count("esc(") >= 10, "too few esc() calls — XSS guard may have regressed"
+    assert "esc(a.agent)" in body[start:end]
 
 
 # ---------------------------------------------------------------------------
-# System activity panel (#205)
+# Feature preservation — Knowledge Base Health (regression for B1)
+#
+# The old dashboard's KB-health section (#182) — articles-by-status chart,
+# embedding/compile summary cards, and the growth chart — was fed by
+# /v1/usage/knowledge. It must survive the split. It is GLOBAL KB state, NOT
+# agent-scoped, so it lives on the Overview page and must not thread an agent
+# param into the /v1/usage/knowledge fetch.
 # ---------------------------------------------------------------------------
 
-def test_dashboard_references_usage_system() -> None:
-    """The served body must fetch the system-activity endpoint."""
-    body = _client().get("/dashboard").text
-    assert "/v1/usage/system" in body, "/v1/usage/system endpoint reference missing"
+def _overview() -> str:
+    return _client().get("/ui/").text
 
 
-def test_dashboard_has_system_panel() -> None:
-    """A System activity panel container + render helper must be present, and it
-    must be clearly labelled as the service (not an agent)."""
-    body = _client().get("/dashboard").text
-    assert 'id="system-panel"' in body, "system-panel container id missing"
-    assert 'id="system-activity"' in body, "system-activity container id missing"
-    assert "function renderSystem(" in body, "renderSystem helper missing"
-    assert "System activity" in body, "System activity heading/label missing"
+def test_overview_has_kb_health_markup_and_endpoint() -> None:
+    body = _overview()
+    assert "/v1/usage/knowledge" in body, "KB-health fetch dropped"
+    assert 'id="kb-status-chart"' in body
+    assert 'id="kb-cards"' in body
+    assert 'id="kb-growth-chart"' in body
+    assert "function renderKnowledge(" in body
+    assert "Knowledge Base Health" in body
 
 
-def test_dashboard_system_type_escaped() -> None:
-    """XSS guard: system event types (telemetry-stored) must be esc()'d in the
-    System panel innerHTML."""
-    body = _client().get("/dashboard").text
-    start = body.index("function renderSystem(")
-    end = body.index("\nfunction ", start + 1)
-    fn = body[start:end]
-    assert "esc(type)" in fn, "system event type not escaped in renderSystem"
-
-
-# ---------------------------------------------------------------------------
-# Live updates via SSE (#198)
-# ---------------------------------------------------------------------------
-
-def test_dashboard_uses_eventsource() -> None:
-    """The served body must open an EventSource for live updates."""
-    body = _client().get("/dashboard").text
-    assert "EventSource" in body, "EventSource reference missing"
-
-
-def test_dashboard_references_stream_ticket_endpoint() -> None:
-    """The client must exchange the Bearer token for a short-lived stream ticket."""
-    body = _client().get("/dashboard").text
-    assert "/v1/usage/stream-ticket" in body, "stream-ticket endpoint reference missing"
-
-
-def test_dashboard_references_stream_endpoint() -> None:
-    body = _client().get("/dashboard").text
-    assert "/v1/usage/stream?ticket=" in body, "stream endpoint (with ticket) reference missing"
-
-
-def test_dashboard_sse_cleanup_on_unload() -> None:
-    """SSE connections must be closed on page unload so they don't leak."""
-    body = _client().get("/dashboard").text
-    assert "beforeunload" in body, "beforeunload cleanup listener missing"
-    assert "closeSSE(" in body, "closeSSE cleanup helper missing"
-
-
-def test_dashboard_sse_falls_back_to_polling() -> None:
-    """On SSE error the client must keep polling as the backstop (#195 timer).
-    Assert the error handler closes the source rather than spamming reconnects."""
-    body = _client().get("/dashboard").text
-    start = body.index("function setupSSE(")
-    end = body.index("window.addEventListener(\"beforeunload\"", start)
-    fn = body[start:end]
-    assert 'addEventListener("error"' in fn, "SSE error handler missing"
-    assert "_sseRetried" in fn, "single-reconnect guard missing"
-
-
-# ---------------------------------------------------------------------------
-# Visual overhaul (#197): inline-SVG charts, states, theme toggle.
-# Dependency-free by construction — no CDN/library/asset is permitted.
-# ---------------------------------------------------------------------------
-
-def test_dashboard_has_inline_svg_charts() -> None:
-    """The overhaul replaces div-bar time-series with hand-drawn inline SVG.
-    The served body must contain inline <svg> markup (no charting lib)."""
-    body = _client().get("/dashboard").text
-    assert "<svg" in body, "inline SVG charts missing"
-
-
-def test_dashboard_has_svg_chart_render_helpers() -> None:
-    """The new SVG renderers (sparkline + time-series line/area) must be present."""
-    body = _client().get("/dashboard").text
-    assert "function sparkline(" in body, "sparkline SVG helper missing"
-    assert "function renderTimeChart(" in body, "renderTimeChart helper missing"
-    # The line/area chart emits <path> elements for the line and fill.
-    assert "class=\"data-line\"" in body, "SVG data line class missing"
-
-
-def test_dashboard_has_error_and_empty_states() -> None:
-    """Endpoints returning null/500 must surface an error card, and empty data
-    must show a 'No data' message rather than a broken panel."""
-    body = _client().get("/dashboard").text
-    assert "function renderError(" in body, "renderError state helper missing"
-    assert "error-state" in body, "error-state styling missing"
-    assert "No data yet" in body, "empty-state messaging missing"
-    assert "skeleton" in body, "loading skeleton missing"
-
-
-def test_dashboard_has_theme_toggle() -> None:
-    """The optional light/dark toggle must be wired and persist its choice."""
-    body = _client().get("/dashboard").text
-    assert 'id="theme-toggle"' in body, "theme-toggle control missing"
-    assert "function toggleTheme(" in body, "toggleTheme handler missing"
-    assert 'data-theme="light"' in body, "light theme variant missing"
-
-
-def test_dashboard_chart_tooltips_are_escaped() -> None:
-    """XSS guard for new chart code: per-day breakdown tooltips built into SVG
-    innerHTML must esc() the untrusted bucket keys."""
-    body = _client().get("/dashboard").text
-    start = body.index("function renderTimeChart(")
-    end = body.index("function ", start + 1)
-    fn = body[start:end]
-    assert "esc(k)" in fn, "bucket keys not escaped in chart tooltips"
-    assert "esc(day)" in fn, "day label not escaped in chart tooltips"
-
-
-def test_dashboard_is_dependency_free() -> None:
-    """Hard constraint: no external script/link/font references. The dashboard
-    must remain a single self-contained offline file."""
-    body = _client().get("/dashboard").text
-    lowered = body.lower()
-    # No remote document fetches of any kind (cdn hosts, fonts, etc.).
-    assert "//cdn" not in lowered, "unexpected CDN reference"
-    assert "https://" not in body and "http://" not in body, "external URL reference present"
-    assert "<script src=" not in lowered, "external script tag present"
-    assert "<link " not in lowered, "external link tag present"
-    assert "@import" not in lowered, "external CSS import present"
-
-
-# ---------------------------------------------------------------------------
-# Stacked area chart / multi-series renderTimeChart (#207)
-# ---------------------------------------------------------------------------
-
-def _render_time_chart_fn(body: str) -> str:
-    """Extract the renderTimeChart function body from the dashboard source."""
-    start = body.index("function renderTimeChart(")
-    end = body.index("\nfunction ", start + 1)
-    return body[start:end]
-
-
-def test_dashboard_time_chart_has_legend_container() -> None:
-    """renderTimeChart must emit a legend container so the toggle is visually
-    distinguishable when the grouping dimension changes."""
-    body = _client().get("/dashboard").text
-    fn = _render_time_chart_fn(body)
-    assert "tc-legend" in fn, "legend container class 'tc-legend' missing from renderTimeChart"
-
-
-def test_dashboard_time_chart_iterates_per_key() -> None:
-    """renderTimeChart must iterate over per-key counts in each day's bucket —
-    not just collapse each day to a single total — so multi-series stacking
-    actually reflects the chosen grouping dimension."""
-    body = _client().get("/dashboard").text
-    fn = _render_time_chart_fn(body)
-    # The multi-series path builds seriesData by iterating keys in each bucket.
-    assert "seriesData" in fn, "seriesData (per-key series matrix) missing"
-    assert "seriesKeys" in fn, "seriesKeys (distinct grouping keys) missing"
-
-
-def test_dashboard_time_chart_top_n_fold() -> None:
-    """renderTimeChart must cap the number of series and fold the remainder into
-    an 'other' series so the chart stays legible with many distinct keys."""
-    body = _client().get("/dashboard").text
-    fn = _render_time_chart_fn(body)
-    assert "MAX_SERIES" in fn, "MAX_SERIES cap missing — no top-N fold"
-    assert '"other"' in fn, "'other' fold bucket label missing"
-
-
-def test_dashboard_time_chart_esc_keys_in_legend() -> None:
-    """XSS guard: series keys (type/agent/vault values from telemetry) must be
-    esc()'d wherever they appear in the legend innerHTML."""
-    body = _client().get("/dashboard").text
-    fn = _render_time_chart_fn(body)
-    # The legend label must escape the key before inserting it into innerHTML.
-    assert "esc(sk)" in fn, "series key not esc()'d in legend"
-
-
-def test_dashboard_time_chart_esc_keys_in_tooltip() -> None:
-    """XSS guard: series keys must be esc()'d in hover tooltip strings too."""
-    body = _client().get("/dashboard").text
-    fn = _render_time_chart_fn(body)
-    # tooltip breakdown loop uses esc(k) for each series key
-    assert "esc(k)" in fn, "series key not esc()'d in tooltip"
-    assert "esc(day)" in fn, "day label not esc()'d in tooltip"
-
-
-def test_dashboard_time_chart_legend_css_present() -> None:
-    """The legend CSS classes must be defined in the dashboard stylesheet."""
-    body = _client().get("/dashboard").text
-    assert ".tc-legend" in body, ".tc-legend CSS rule missing"
-    assert ".tc-legend-swatch" in body, ".tc-legend-swatch CSS rule missing"
-
-
-# ---------------------------------------------------------------------------
-# Configuration section (#208)
-# ---------------------------------------------------------------------------
-
-
-def test_dashboard_has_config_panel() -> None:
-    """A Configuration section with runtime + rebuild containers must be present."""
-    body = _client().get("/dashboard").text
-    assert 'id="config-panel"' in body, "config-panel container id missing"
-    assert 'id="config-runtime"' in body, "config-runtime container id missing"
-    assert 'id="config-rebuild"' in body, "config-rebuild container id missing"
-    assert ">Configuration<" in body, "Configuration heading missing"
-
-
-def test_dashboard_config_fetches_endpoint() -> None:
-    """The served body must fetch and PATCH the /v1/config endpoint."""
-    body = _client().get("/dashboard").text
-    assert "/v1/config" in body, "/v1/config endpoint reference missing"
-    assert "function loadConfig(" in body, "loadConfig helper missing"
-    assert "function renderConfig(" in body, "renderConfig helper missing"
-    assert "function onConfigChange(" in body, "onConfigChange PATCH handler missing"
-
-
-def test_dashboard_config_confirms_before_patch() -> None:
-    """onConfigChange must confirm() before applying and toast the result."""
-    body = _client().get("/dashboard").text
-    start = body.index("async function onConfigChange(")
-    end = body.index("\nasync function ", start + 1)
-    if end == -1 or end < start:
-        end = body.index("\nfunction ", start + 1)
-    fn = body[start:end]
-    assert "confirm(" in fn, "config change must confirm before PATCH"
-    assert "postAction(" in fn, "config change must PATCH via postAction"
-    assert "showToast(" in fn, "config change must toast the result"
-
-
-def test_dashboard_config_escapes_strings() -> None:
-    """XSS guard: config field values/labels built into innerHTML must be esc()'d."""
-    body = _client().get("/dashboard").text
-    start = body.index("function renderConfig(")
-    end = body.index("\nasync function loadConfig(", start)
-    fn = body[start:end]
-    assert "esc(" in fn, "config values not escaped in renderConfig"
-
-
-def test_dashboard_config_write_uses_patch_verb() -> None:
-    """Verb-mismatch guard (#208 review): the config write from the UI must use
-    PATCH, not a bare POST. The route is PATCH-only, so a POST would 405. The
-    onConfigChange handler must pass "PATCH" to the fetch helper for /v1/config.
-
-    This fails if the client verb diverges from the PATCH route again.
-    """
-    body = _client().get("/dashboard").text
-    start = body.index("async function onConfigChange(")
-    end = body.index("\nasync function ", start + 1)
-    if end == -1 or end < start:
-        end = body.index("\nfunction ", start + 1)
-    fn = body[start:end]
-    # The config write must explicitly select the PATCH verb.
-    assert '"PATCH"' in fn, "config write must pass the PATCH verb to the fetch helper"
-    assert "/v1/config" in fn, "config write must target /v1/config"
-
-
-def test_dashboard_post_helper_supports_method_param() -> None:
-    """The shared fetch helper must accept a method arg (defaulting to POST) so
-    the PATCH config write and the existing POST actions share one helper."""
-    body = _client().get("/dashboard").text
-    assert 'function postAction(path, body, method = "POST")' in body, (
-        "postAction must accept a method param defaulting to POST"
+def test_overview_kb_health_is_not_agent_scoped() -> None:
+    """KB-health is global state — the knowledge fetch must NOT pass an agent
+    param, and the page must not carry an agent-filter control."""
+    body = _overview()
+    assert 'apiFetch("/v1/usage/knowledge")' in body, (
+        "knowledge must be fetched without params (global, never agent-scoped)"
     )
+    assert 'id="agent-filter-select"' not in body, (
+        "Overview must not add an agent filter — KB-health is global"
+    )
+
+
+def test_overview_kb_health_escapes_status_labels() -> None:
+    """XSS guard: article-status labels (telemetry-stored) esc()'d in the chart."""
+    body = _overview()
+    start = body.index("function renderKnowledge(")
+    end = body.index("async function loadAll(", start)
+    fn = body[start:end]
+    assert "esc(item.label)" in fn, "KB status labels not escaped"
+
+
+# ---------------------------------------------------------------------------
+# Feature preservation — per-agent Activity timeline drill-down (regression B2)
+#
+# The old header agent-filter scoped the /v1/usage/activity chart. The Activity
+# page must carry the agent-filter control AND thread the selected agent into
+# the activity fetch params.
+# ---------------------------------------------------------------------------
+
+def test_activity_has_agent_filter_control() -> None:
+    body = _client().get("/ui/activity").text
+    assert 'id="agent-filter-select"' in body, "activity agent-filter control missing"
+    assert "/v1/usage/agents" in body, "activity must discover agents for the filter"
+    assert "function populateAgentFilter(" in body
+    assert "function onAgentFilterChange(" in body
+
+
+def test_activity_threads_agent_param_into_activity_fetch() -> None:
+    body = _client().get("/ui/activity").text
+    assert "agentParams(" in body, "agentParams helper missing on Activity"
+    # The activity fetch must spread the agent param alongside the `by` grouping.
+    assert "by: _activityBy, ...agentParams()" in body, (
+        "activity fetch does not thread the selected agent"
+    )
+
+
+def test_activity_agent_id_escaped_in_selector() -> None:
+    """XSS guard: agent ids esc()'d in the Activity selector too."""
+    body = _client().get("/ui/activity").text
+    start = body.index("function populateAgentFilter(")
+    end = body.index("function onAgentFilterChange(", start)
+    assert "esc(a.agent)" in body[start:end]
+
+
+# ---------------------------------------------------------------------------
+# Feature preservation — system activity panel (#205) on the Activity page
+# ---------------------------------------------------------------------------
+
+def test_activity_system_panel() -> None:
+    body = _client().get("/ui/activity").text
+    assert "/v1/usage/system" in body
+    assert 'id="system-panel"' in body
+    assert 'id="system-activity"' in body
+    assert "function renderSystem(" in body
+    assert "System activity" in body
+    # XSS guard: system event type esc()'d.
+    start = body.index("function renderSystem(")
+    assert "esc(type)" in body[start:]
+
+
+# ---------------------------------------------------------------------------
+# Feature preservation — chart toggle + stacked-area chart (#207)
+# ---------------------------------------------------------------------------
+
+def test_activity_chart_toggle_present() -> None:
+    body = _client().get("/ui/activity").text
+    assert 'id="activity-by-toggle"' in body
+    assert 'data-by="agent"' in body
+    assert 'data-by="vault"' in body
+    assert "function setActivityBy(" in body
+
+
+def test_shared_time_chart_stacked_series_and_escaping() -> None:
+    js = _api_js()
+    start = js.index("function renderTimeChart(")
+    fn = js[start:]
+    assert "tc-legend" in fn
+    assert "seriesData" in fn
+    assert "seriesKeys" in fn
+    assert "MAX_SERIES" in fn
+    assert '"other"' in fn
+    assert "esc(sk)" in fn   # legend key escaping
+    assert "esc(k)" in fn    # tooltip key escaping
+    assert "esc(day)" in fn  # day label escaping
+
+
+# ---------------------------------------------------------------------------
+# Feature preservation — configuration panel (#208) on the Settings page
+# ---------------------------------------------------------------------------
+
+def _settings() -> str:
+    return _client().get("/ui/settings").text
+
+
+def test_settings_config_panel() -> None:
+    body = _settings()
+    assert 'id="config-panel"' in body
+    assert 'id="config-runtime"' in body
+    assert 'id="config-rebuild"' in body
+    assert ">Configuration<" in body
+
+
+def test_settings_config_endpoint_and_handlers() -> None:
+    body = _settings()
+    assert "/v1/config" in body
+    assert "function loadConfig(" in body
+    assert "function renderConfig(" in body
+    assert "function onConfigChange(" in body
+
+
+def test_settings_config_uses_patch_verb() -> None:
+    """Verb guard (#208): the config write must use PATCH, not a bare POST."""
+    body = _settings()
+    start = body.index("async function onConfigChange(")
+    end = body.index("async function loadAll(", start)
+    fn = body[start:end]
+    assert "confirm(" in fn
+    assert "postAction(" in fn
+    assert '"PATCH"' in fn
+    assert "showToast(" in fn
+
+
+def test_settings_config_escapes_strings() -> None:
+    body = _settings()
+    start = body.index("function renderConfig(")
+    end = body.index("async function loadConfig(", start)
+    assert "esc(" in body[start:end]
+
+
+# ---------------------------------------------------------------------------
+# Hard constraint — dependency-free (no external script/link/font/CDN)
+# ---------------------------------------------------------------------------
+
+def test_ui_pages_are_dependency_free() -> None:
+    """No remote document fetches: only same-origin /ui/shared/ assets are
+    referenced. No CDN host, no external URL, no @import."""
+    client = _client()
+    for path in ("/ui/", "/ui/activity", "/ui/agents", "/ui/operations",
+                 "/ui/settings", "/ui/knowledge"):
+        body = client.get(path).text
+        lowered = body.lower()
+        assert "//cdn" not in lowered, path
+        assert "https://" not in body and "http://" not in body, path
+        assert "@import" not in lowered, path
+
+
+def test_ui_shell_svg_charts_present() -> None:
+    """Charts remain hand-drawn inline SVG (no charting library)."""
+    js = _api_js()
+    assert "function sparkline(" in js
+    assert "function renderTimeChart(" in js
+    assert 'class="data-line"' in js
+
+
+# ---------------------------------------------------------------------------
+# Old single-file dashboard.html is gone
+# ---------------------------------------------------------------------------
+
+def test_old_dashboard_html_removed() -> None:
+    """The monolithic dashboard.html must be deleted — its content now lives on
+    the /ui/ pages."""
+    from pathlib import Path
+
+    from fritz_local_brain import app as app_module
+
+    old = Path(app_module.__file__).parent / "static" / "dashboard.html"
+    assert not old.exists(), "dashboard.html should have been deleted (#220)"

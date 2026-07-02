@@ -1,0 +1,189 @@
+<!DOCTYPE html>
+<!--
+  Fritz Local Brain — Settings page (#220 app shell).
+  The #208 Configuration panel AS-IS: runtime-mutable settings apply live and
+  persist to .env; rebuild-required settings are read-only. Deep-linkable at
+  /ui/settings.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fritz Brain — Settings</title>
+<link rel="stylesheet" href="/ui/shared/app.css">
+</head>
+<body data-page="settings">
+
+<div id="loading"></div>
+
+<div id="auth-overlay">
+  <div id="auth-box">
+    <h2>Fritz Brain Dashboard</h2>
+    <p>Enter the API Bearer token to load usage data.</p>
+    <input type="password" id="token-input" placeholder="Bearer token" autofocus>
+    <button onclick="saveToken()">Continue</button>
+    <div id="auth-error">Invalid token — please try again.</div>
+  </div>
+</div>
+
+<div class="app-shell">
+  <nav class="sidebar" id="sidebar"></nav>
+  <div class="content">
+    <header>
+      <h1>Fritz Brain</h1>
+      <span class="subtitle">Settings</span>
+      <div class="header-controls">
+        <button id="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark theme">🌙</button>
+        <button id="refresh-btn" onclick="manualRefresh()">Refresh</button>
+        <select id="auto-refresh-select" onchange="onIntervalChange()">
+          <option value="0">Auto-refresh: off</option>
+          <option value="15">Every 15s</option>
+          <option value="30" selected>Every 30s</option>
+          <option value="60">Every 60s</option>
+        </select>
+        <span id="last-updated"></span>
+      </div>
+    </header>
+
+    <main>
+      <!-- Configuration (#208): live-mutable settings + read-only rebuild-required -->
+      <h2>Configuration</h2>
+      <div class="section" id="config-panel">
+        <p class="actions-note">Runtime settings apply immediately and persist to <code>.env</code>. Rebuild-required settings are read-only here — change them via <code>fritz:brain-service-setup</code>.</p>
+        <div class="config-group">
+          <div class="config-group-label">Runtime (applies live)</div>
+          <div id="config-runtime"><div class="skeleton skel-chart"></div></div>
+        </div>
+        <div class="config-group">
+          <div class="config-group-label">Rebuild required (read-only)</div>
+          <div id="config-rebuild"></div>
+        </div>
+      </div>
+
+      <!-- Result toast (shared with the config PATCH handler) -->
+      <div id="action-toast">
+        <button class="toast-close" onclick="dismissToast()">✕</button>
+        <span id="action-toast-msg"></span>
+      </div>
+    </main>
+  </div>
+</div>
+
+<div class="chart-tip" id="chart-tip"></div>
+
+<script src="/ui/shared/api.js"></script>
+<script src="/ui/shared/sse.js"></script>
+<script src="/ui/shared/nav.js"></script>
+<script>
+// Settings page: the #208 Configuration panel, verbatim from the old dashboard.
+
+// Human-friendly labels + control kinds for the runtime-mutable fields. Kept in
+// the client only for presentation — the server is the source of truth for what
+// is mutable and how values are validated.
+const CONFIG_LABELS = {
+  scheduler_enabled: "Scheduler enabled",
+  interval_minutes: "Interval (minutes)",
+  scheduler_dry_run: "Dry-run (propose only)",
+  reconciliation_autonomy: "Reconciliation autonomy",
+  telemetry_enabled: "Telemetry enabled",
+  telemetry_store_query_text: "Store query text",
+  telemetry_retention_days: "Telemetry retention (days)",
+  llm_base_url: "LLM base URL",
+  llm_model: "LLM model",
+  llm_api_key: "LLM API key",
+  embedding_enabled: "Embeddings enabled",
+  embedding_model: "Embedding model",
+  local_brain_autostart_installed: "Autostart installed",
+};
+
+function configLabel(name) { return esc(CONFIG_LABELS[name] || name); }
+
+function configControl(name, field) {
+  const v = field.value;
+  if (name === "reconciliation_autonomy") {
+    const applySel = v === "apply" ? " selected" : "";
+    const propSel = v === "propose" ? " selected" : "";
+    return `<select onchange="onConfigChange('${esc(name)}', this.value)">
+      <option value="apply"${applySel}>apply</option>
+      <option value="propose"${propSel}>propose</option>
+    </select>`;
+  }
+  if (typeof v === "boolean") {
+    const checked = v ? " checked" : "";
+    return `<input type="checkbox"${checked} onchange="onConfigChange('${esc(name)}', this.checked)">`;
+  }
+  if (typeof v === "number") {
+    return `<input type="number" min="1" value="${esc(String(v))}" onchange="onConfigChange('${esc(name)}', this.value)">`;
+  }
+  return `<input type="text" value="${esc(v == null ? '' : String(v))}" onchange="onConfigChange('${esc(name)}', this.value)">`;
+}
+
+function renderConfig(cfg) {
+  const runtimeEl = document.getElementById("config-runtime");
+  const rebuildEl = document.getElementById("config-rebuild");
+  if (!cfg || !cfg.fields) {
+    renderError("config-runtime", "Could not load configuration.");
+    rebuildEl.innerHTML = "";
+    return;
+  }
+  const runtime = [];
+  const rebuild = [];
+  Object.entries(cfg.fields).forEach(([name, field]) => {
+    if (field.mutable) {
+      runtime.push(`<div class="config-row">
+        <span class="config-name">${configLabel(name)}</span>
+        <span class="config-ctl">${configControl(name, field)}</span>
+      </div>`);
+    } else {
+      const shown = name === "llm_api_key"
+        ? (field.value ? "•••• set" : "not set")
+        : (field.value == null ? "—" : String(field.value));
+      rebuild.push(`<div class="config-row readonly">
+        <span class="config-name">${configLabel(name)}</span>
+        <span class="config-reprovision-note">${esc(shown)}</span>
+      </div>`);
+    }
+  });
+  runtimeEl.innerHTML = runtime.join("") || '<div class="empty-state">No runtime settings.</div>';
+  rebuildEl.innerHTML = rebuild.join("") || '<div class="empty-state">No rebuild-required settings.</div>';
+}
+
+async function loadConfig() {
+  const cfg = await apiFetch("/v1/config");
+  if (!getToken()) return;
+  renderConfig(cfg);
+}
+
+async function onConfigChange(name, value) {
+  if (!confirm(`Apply new value for ${CONFIG_LABELS[name] || name}?`)) {
+    loadConfig();  // revert the control to the server's current value
+    return;
+  }
+  const result = await postAction("/v1/config", { [name]: value }, "PATCH");
+  if (!result) return;  // 401 handled by postAction
+  if (result.status === 200) {
+    showToast(`Updated ${esc(CONFIG_LABELS[name] || name)}.`, false);
+    renderConfig(result.json);
+  } else {
+    const detail = result.json && result.json.detail ? result.json.detail : `HTTP ${result.status}`;
+    showToast(`Config update failed: ${esc(String(detail))}`, true);
+    loadConfig();  // resync controls with the unchanged server state
+  }
+}
+
+async function loadAll() {
+  if (_inFlight) return;
+  _inFlight = true;
+  document.getElementById("last-updated").textContent = "Loading…";
+
+  await loadConfig();
+
+  _inFlight = false;
+  if (!getToken()) return;
+
+  _lastUpdatedAt = new Date();
+  renderLastUpdated();
+}
+</script>
+</body>
+</html>

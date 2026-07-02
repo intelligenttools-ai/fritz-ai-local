@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<!--
+  Fritz Local Brain — Operations page (#220 app shell).
+  Operator-initiated run triggers (#196: compile / sync / embeddings / lint,
+  with the large-batch approval gate) plus a recent-runs table (/v1/runs/recent).
+  Deep-linkable at /ui/operations.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fritz Brain — Operations</title>
+<link rel="stylesheet" href="/ui/shared/app.css">
+</head>
+<body data-page="operations">
+
+<div id="loading"></div>
+
+<div id="auth-overlay">
+  <div id="auth-box">
+    <h2>Fritz Brain Dashboard</h2>
+    <p>Enter the API Bearer token to load usage data.</p>
+    <input type="password" id="token-input" placeholder="Bearer token" autofocus>
+    <button onclick="saveToken()">Continue</button>
+    <div id="auth-error">Invalid token — please try again.</div>
+  </div>
+</div>
+
+<div class="app-shell">
+  <nav class="sidebar" id="sidebar"></nav>
+  <div class="content">
+    <header>
+      <h1>Fritz Brain</h1>
+      <span class="subtitle">Operations</span>
+      <div class="header-controls">
+        <button id="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark theme">🌙</button>
+        <button id="refresh-btn" onclick="manualRefresh()">Refresh</button>
+        <select id="auto-refresh-select" onchange="onIntervalChange()">
+          <option value="0">Auto-refresh: off</option>
+          <option value="15">Every 15s</option>
+          <option value="30" selected>Every 30s</option>
+          <option value="60">Every 60s</option>
+        </select>
+        <span id="last-updated"></span>
+      </div>
+    </header>
+
+    <main>
+      <!-- Actions panel (#196) -->
+      <h2>Actions</h2>
+      <div class="section" id="actions-panel">
+        <p class="actions-note">Operator-initiated runs. The scheduler owns autonomous draining — use these for on-demand or diagnostic purposes.</p>
+        <div class="action-groups">
+          <div class="action-group">
+            <div class="action-group-label">Compile</div>
+            <div class="action-btns">
+              <button class="btn-action" id="btn-compile-dry" onclick="runCompile(true)">
+                <span class="btn-spinner">⟳</span><span class="btn-label">Compile (dry-run)</span>
+              </button>
+              <button class="btn-action apply" id="btn-compile-apply" onclick="runCompile(false)">
+                <span class="btn-spinner">⟳</span><span class="btn-label">Compile (apply)</span>
+              </button>
+            </div>
+          </div>
+          <div class="action-group">
+            <div class="action-group-label">Sync</div>
+            <div class="action-btns">
+              <button class="btn-action" id="btn-sync-dry" onclick="runSync(true)">
+                <span class="btn-spinner">⟳</span><span class="btn-label">Sync (dry-run)</span>
+              </button>
+              <button class="btn-action apply" id="btn-sync-apply" onclick="runSync(false)">
+                <span class="btn-spinner">⟳</span><span class="btn-label">Sync (apply)</span>
+              </button>
+            </div>
+          </div>
+          <div class="action-group">
+            <div class="action-group-label">Embeddings</div>
+            <div class="action-btns">
+              <button class="btn-action destructive" id="btn-embed-index" onclick="runEmbedIndex()">
+                <span class="btn-spinner">⟳</span><span class="btn-label">Rebuild index</span>
+              </button>
+            </div>
+          </div>
+          <div class="action-group">
+            <div class="action-group-label">Lint</div>
+            <div class="action-btns">
+              <button class="btn-action" id="btn-lint" onclick="runLint()">
+                <span class="btn-spinner">⟳</span><span class="btn-label">Lint</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Approval gate (shown when apply compile returns approval-required) -->
+        <div id="approval-gate">
+          <p id="approval-message">Large compile run requires approval. Provide an approval token to proceed.</p>
+          <input type="text" id="approval-token-input" placeholder="Approval token">
+          <button onclick="retryApplyCompile()">Retry with token</button>
+        </div>
+
+        <!-- Result toast -->
+        <div id="action-toast">
+          <button class="toast-close" onclick="dismissToast()">✕</button>
+          <span id="action-toast-msg"></span>
+        </div>
+      </div>
+
+      <!-- Recent runs -->
+      <h2>Recent runs</h2>
+      <div class="section panel">
+        <div id="runs-table"><div class="skeleton skel-line"></div><div class="skeleton skel-line"></div></div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<div class="chart-tip" id="chart-tip"></div>
+
+<script src="/ui/shared/api.js"></script>
+<script src="/ui/shared/sse.js"></script>
+<script src="/ui/shared/nav.js"></script>
+<script>
+// Operations page: #196 operation triggers + approval gate, plus a recent-runs
+// table. All run handlers reuse the shared postAction() helper and toast.
+
+function showApprovalGate(msg) {
+  const gate = document.getElementById("approval-gate");
+  document.getElementById("approval-message").textContent = msg;
+  document.getElementById("approval-token-input").value = "";
+  gate.style.display = "block";
+}
+
+function hideApprovalGate() {
+  document.getElementById("approval-gate").style.display = "none";
+}
+
+async function retryApplyCompile() {
+  const token = document.getElementById("approval-token-input").value.trim();
+  if (!token) return;
+  hideApprovalGate();
+  await _runCompileWith(false, token);
+}
+
+function setBtnRunning(id, running) {
+  const btn = document.getElementById(id);
+  if (!btn) return;
+  btn.disabled = running;
+  btn.classList.toggle("running", running);
+}
+
+async function runCompile(dryRun) {
+  if (!dryRun) {
+    if (!confirm("Run compile in APPLY mode? This will write compiled articles to the knowledge base.")) return;
+  }
+  hideApprovalGate();
+  await _runCompileWith(dryRun, null);
+}
+
+async function _runCompileWith(dryRun, approvalToken) {
+  const btnId = dryRun ? "btn-compile-dry" : "btn-compile-apply";
+  setBtnRunning(btnId, true);
+  dismissToast();
+  try {
+    const body = { dry_run: dryRun };
+    if (approvalToken) body.approval_token = approvalToken;
+    const result = await postAction("/v1/compile/run", body);
+    if (!result) return; // 401 — auth overlay shown
+
+    const { status, json } = result;
+
+    if (status === 403) {
+      showApprovalGate(json?.detail ?? "Large compile requires approval. Provide a token to proceed.");
+      return;
+    }
+
+    if (!json) { showToast("Compile: no response body", true); return; }
+
+    const requiresApproval =
+      !dryRun &&
+      Array.isArray(json.applied) && json.applied.length === 0 &&
+      Array.isArray(json.errors) &&
+      json.errors.some(e => /requires approval|exceeds threshold/i.test(e));
+
+    if (requiresApproval) {
+      const approvalMsg = json.errors.find(e => /requires approval|exceeds threshold/i.test(e)) || "Large compile requires approval.";
+      showApprovalGate(approvalMsg);
+      return;
+    }
+
+    const applied    = Array.isArray(json.applied)   ? json.applied.length   : 0;
+    const considered = json.captures_considered       ?? "?";
+    const errCount   = Array.isArray(json.errors)    ? json.errors.length    : 0;
+    const skipped    = Array.isArray(json.skipped)   ? json.skipped.length   : 0;
+    const mode       = dryRun ? " [dry-run]" : "";
+    let msg = `Compile${esc(mode)}: applied ${applied} / considered ${considered}, ${errCount} error(s), ${skipped} skipped`;
+    if (errCount > 0) msg += ` — ${esc(json.errors[0])}`;
+    showToast(msg, errCount > 0);
+    if (!dryRun && errCount === 0) loadAll();
+  } catch (e) {
+    showToast(`Compile error: ${esc(String(e))}`, true);
+  } finally {
+    setBtnRunning(btnId, false);
+  }
+}
+
+async function runSync(dryRun) {
+  if (!dryRun) {
+    if (!confirm("Run sync in APPLY mode? This will push changes to remote vaults.")) return;
+  }
+  const btnId = dryRun ? "btn-sync-dry" : "btn-sync-apply";
+  setBtnRunning(btnId, true);
+  dismissToast();
+  try {
+    const result = await postAction("/v1/sync/run", { dry_run: dryRun });
+    if (!result) return;
+    const { json } = result;
+    if (!json) { showToast("Sync: no response body", true); return; }
+    const vaults   = Array.isArray(json.results) ? json.results.length : 0;
+    const errCount = Array.isArray(json.errors)  ? json.errors.length  : 0;
+    const mode     = dryRun ? " [dry-run]" : "";
+    let msg = `Sync${esc(mode)}: ${vaults} vault(s), ${errCount} error(s)`;
+    if (errCount > 0) msg += ` — ${esc(json.errors[0])}`;
+    showToast(msg, errCount > 0);
+    if (!dryRun && errCount === 0) loadAll();
+  } catch (e) {
+    showToast(`Sync error: ${esc(String(e))}`, true);
+  } finally {
+    setBtnRunning(btnId, false);
+  }
+}
+
+async function runEmbedIndex() {
+  if (!confirm("Force-rebuild the embedding index? This re-indexes all documents and may take a while.")) return;
+  setBtnRunning("btn-embed-index", true);
+  dismissToast();
+  try {
+    const result = await postAction("/v1/embeddings/index/run", { force: true });
+    if (!result) return;
+    const { json } = result;
+    if (!json) { showToast("Embed index: no response body", true); return; }
+    const isError = !!json.error || !json.indexed;
+    let msg;
+    if (json.error) {
+      msg = `Embed index error: ${esc(json.error)}`;
+    } else {
+      msg = `Embed index: indexed ${json.documents_indexed ?? 0} document(s)`;
+    }
+    showToast(msg, isError);
+    if (!isError) loadAll();
+  } catch (e) {
+    showToast(`Embed index error: ${esc(String(e))}`, true);
+  } finally {
+    setBtnRunning("btn-embed-index", false);
+  }
+}
+
+async function runLint() {
+  setBtnRunning("btn-lint", true);
+  dismissToast();
+  try {
+    const result = await postAction("/v1/lint/run", {});
+    if (!result) return;
+    const { json } = result;
+    if (!json) { showToast("Lint: no response body", true); return; }
+    const findings = Array.isArray(json.findings) ? json.findings.length : 0;
+    const errCount = Array.isArray(json.errors)   ? json.errors.length   : 0;
+    let msg = `Lint: ${findings} finding(s), ${errCount} error(s)`;
+    if (errCount > 0) msg += ` — ${esc(json.errors[0])}`;
+    showToast(msg, errCount > 0);
+  } catch (e) {
+    showToast(`Lint error: ${esc(String(e))}`, true);
+  } finally {
+    setBtnRunning("btn-lint", false);
+  }
+}
+
+// ---- recent runs ------------------------------------------------------------
+
+function renderRuns(data) {
+  const el = document.getElementById("runs-table");
+  if (data === null) { renderError("runs-table", "Could not load recent runs."); return; }
+  const runs = data ? (data.runs || []) : [];
+  if (!runs.length) {
+    el.innerHTML = '<div class="no-data">No runs recorded yet.</div>';
+    return;
+  }
+  const rows = runs.map(r => {
+    const rateClass = r.status === "ok" ? "sys-rate-ok" : "sys-rate-warn";
+    const mode = r.dry_run ? "dry-run" : "apply";
+    return `<tr>
+      <td>${esc(r.kind)}</td>
+      <td>${esc(mode)}</td>
+      <td class="${rateClass}">${esc(r.status)}</td>
+      <td>${esc(r.finished_at)}</td>
+      <td style="color:var(--muted)">${esc(r.summary)}</td>
+    </tr>`;
+  }).join("");
+  el.innerHTML = `<table>
+    <thead><tr><th>Kind</th><th>Mode</th><th>Status</th><th>Finished</th><th>Summary</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+async function loadAll() {
+  if (_inFlight) return;
+  _inFlight = true;
+  document.getElementById("last-updated").textContent = "Loading…";
+
+  const runs = await apiFetch("/v1/runs/recent");
+
+  _inFlight = false;
+  if (!getToken()) return;
+
+  renderRuns(runs);
+
+  _lastUpdatedAt = new Date();
+  renderLastUpdated();
+}
+</script>
+</body>
+</html>
