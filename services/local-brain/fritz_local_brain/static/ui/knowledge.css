@@ -1,0 +1,213 @@
+/* Fritz Local Brain — Knowledge browser page styles (#222). */
+
+.kb-search-bar {
+  display: flex;
+  gap: .5rem;
+  margin-bottom: 1rem;
+}
+.kb-search-bar input[type="search"] {
+  flex: 1;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--text, inherit);
+  padding: .5rem .65rem;
+  border-radius: 6px;
+  font-size: .9rem;
+}
+.kb-search-bar input:focus { outline: none; border-color: var(--accent); }
+.kb-search-bar button {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  padding: .5rem .9rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: .85rem;
+}
+.kb-search-bar .kb-clear {
+  background: var(--surface2);
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+
+.kb-layout {
+  display: grid;
+  grid-template-columns: 240px 1fr;
+  gap: 1rem;
+  align-items: start;
+}
+
+/* Tree ------------------------------------------------------------------- */
+.kb-tree { max-height: 70vh; overflow-y: auto; }
+.kb-tree-node {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: .3rem .45rem;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: .85rem;
+}
+.kb-tree-node:hover { background: var(--surface2); }
+.kb-tree-node.active { background: var(--surface2); color: var(--accent); font-weight: 600; }
+.kb-tree-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kb-tree-count {
+  color: var(--muted);
+  font-size: .72rem;
+  background: var(--surface2);
+  border-radius: 10px;
+  padding: 0 .45rem;
+  margin-left: .4rem;
+}
+.kb-tree-children { margin-left: .75rem; border-left: 1px solid var(--border); padding-left: .35rem; }
+
+/* List ------------------------------------------------------------------- */
+.kb-list-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: .5rem;
+  margin-bottom: .5rem;
+}
+.kb-list-head input[type="search"] {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: inherit;
+  padding: .3rem .5rem;
+  border-radius: 6px;
+  font-size: .8rem;
+  min-width: 10rem;
+}
+.kb-list-head input:focus { outline: none; border-color: var(--accent); }
+
+.kb-chips { display: flex; flex-wrap: wrap; gap: .35rem; margin-bottom: .75rem; }
+.kb-chip {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: .2rem .6rem;
+  border-radius: 12px;
+  font-size: .75rem;
+  cursor: pointer;
+}
+.kb-chip.active { border-color: var(--accent); color: var(--accent); }
+
+.kb-article-row {
+  padding: .55rem .6rem;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  margin-bottom: .5rem;
+  cursor: pointer;
+}
+.kb-article-row:hover { border-color: var(--accent); }
+.kb-row-main { display: flex; align-items: center; gap: .5rem; }
+.kb-row-title { font-weight: 600; font-size: .9rem; }
+.kb-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .5rem;
+  align-items: center;
+  margin-top: .25rem;
+  color: var(--muted);
+  font-size: .72rem;
+}
+.kb-row-path { font-family: ui-monospace, monospace; }
+.kb-snippet { margin-top: .35rem; color: var(--muted); font-size: .8rem; }
+
+.kb-tag {
+  background: var(--surface2);
+  border-radius: 10px;
+  padding: 0 .45rem;
+  font-size: .68rem;
+  color: var(--muted);
+}
+
+/* Status badges ---------------------------------------------------------- */
+.kb-badge {
+  font-size: .68rem;
+  padding: .05rem .5rem;
+  border-radius: 10px;
+  text-transform: uppercase;
+  letter-spacing: .03em;
+}
+.kb-badge-active       { background: rgba(74,222,128,.15); color: #4ade80; }
+.kb-badge-corroborated { background: rgba(56,189,248,.15); color: #38bdf8; }
+.kb-badge-deprecated   { background: rgba(251,191,36,.15); color: #fbbf24; }
+.kb-badge-superseded   { background: rgba(248,113,113,.15); color: #f87171; }
+.kb-badge-historical   { background: rgba(139,144,176,.18); color: var(--muted); }
+.kb-badge-other        { background: var(--surface2); color: var(--muted); }
+
+/* Detail ----------------------------------------------------------------- */
+.kb-detail-head { display: flex; align-items: center; gap: .75rem; margin-bottom: .6rem; }
+.kb-back {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  padding: .3rem .6rem;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: .8rem;
+}
+.kb-back:hover { border-color: var(--accent); color: var(--accent); }
+.kb-detail-title { font-size: 1.1rem; color: var(--accent); }
+
+.kb-frontmatter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .6rem;
+  align-items: center;
+  padding: .6rem .5rem;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  margin-bottom: .75rem;
+  font-size: .75rem;
+  color: var(--muted);
+}
+.kb-fm-path { font-family: ui-monospace, monospace; }
+
+.kb-supersession { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1rem; }
+.kb-link-chip {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  color: var(--accent);
+  padding: .25rem .6rem;
+  border-radius: 12px;
+  font-size: .75rem;
+  cursor: pointer;
+  font-family: ui-monospace, monospace;
+}
+.kb-link-chip:hover { border-color: var(--accent); }
+.kb-link-chip.kb-link-missing { color: var(--muted); text-decoration: line-through; cursor: default; }
+
+/* Markdown body ---------------------------------------------------------- */
+.kb-body { line-height: 1.6; font-size: .9rem; }
+.kb-body h1, .kb-body h2, .kb-body h3, .kb-body h4 { color: var(--accent); margin: 1rem 0 .5rem; }
+.kb-body p { margin: .5rem 0; }
+.kb-body ul, .kb-body ol { margin: .5rem 0 .5rem 1.4rem; }
+.kb-body code {
+  background: var(--surface2);
+  padding: .1rem .3rem;
+  border-radius: 4px;
+  font-family: ui-monospace, monospace;
+  font-size: .85em;
+}
+.kb-body pre {
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: .75rem;
+  overflow-x: auto;
+}
+.kb-body pre code { background: none; padding: 0; }
+.kb-body blockquote {
+  border-left: 3px solid var(--border);
+  margin: .5rem 0;
+  padding-left: .75rem;
+  color: var(--muted);
+}
+.kb-body a { color: var(--accent); }
+.kb-body hr { border: none; border-top: 1px solid var(--border); margin: 1rem 0; }
+
+@media (max-width: 720px) {
+  .kb-layout { grid-template-columns: 1fr; }
+}
