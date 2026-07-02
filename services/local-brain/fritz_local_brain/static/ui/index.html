@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<!--
+  Fritz Local Brain — Overview page (#220 app shell).
+  Multi-page shell: shared CSS/JS under /ui/shared/. Each page is its own file,
+  deep-linkable by URL. No framework, no build step, fully offline.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fritz Brain — Overview</title>
+<link rel="stylesheet" href="/ui/shared/app.css">
+</head>
+<body data-page="overview">
+
+<div id="loading"></div>
+
+<div id="auth-overlay">
+  <div id="auth-box">
+    <h2>Fritz Brain Dashboard</h2>
+    <p>Enter the API Bearer token to load usage data.</p>
+    <input type="password" id="token-input" placeholder="Bearer token" autofocus>
+    <button onclick="saveToken()">Continue</button>
+    <div id="auth-error">Invalid token — please try again.</div>
+  </div>
+</div>
+
+<div class="app-shell">
+  <nav class="sidebar" id="sidebar"></nav>
+  <div class="content">
+    <header>
+      <h1>Fritz Brain</h1>
+      <span class="subtitle">Overview</span>
+      <div class="header-controls">
+        <button id="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark theme">🌙</button>
+        <button id="refresh-btn" onclick="manualRefresh()">Refresh</button>
+        <select id="auto-refresh-select" onchange="onIntervalChange()">
+          <option value="0">Auto-refresh: off</option>
+          <option value="15">Every 15s</option>
+          <option value="30" selected>Every 30s</option>
+          <option value="60">Every 60s</option>
+        </select>
+        <span id="last-updated"></span>
+      </div>
+    </header>
+
+    <main>
+      <!-- Status / version / health -->
+      <h2>Status</h2>
+      <div class="section">
+        <div class="cards" id="status-cards">
+          <div class="skel-cards"><div class="skeleton skel-card"></div><div class="skeleton skel-card"></div><div class="skeleton skel-card"></div></div>
+        </div>
+      </div>
+
+      <!-- Headline summary + backlog -->
+      <h2>Summary</h2>
+      <div class="section">
+        <div class="cards" id="summary-cards">
+          <div class="skel-cards"><div class="skeleton skel-card"></div><div class="skeleton skel-card"></div><div class="skeleton skel-card"></div></div>
+        </div>
+      </div>
+
+      <!-- Knowledge Base Health (global KB state — never agent-scoped) -->
+      <h2>Knowledge Base Health</h2>
+      <div class="section grid2">
+        <div class="panel">
+          <div class="panel-title">Articles by status</div>
+          <div id="kb-status-chart" style="margin-bottom:1rem"><div class="skeleton skel-line"></div><div class="skeleton skel-line"></div></div>
+          <div class="cards" id="kb-cards" style="margin-bottom:.75rem">
+            <div class="skeleton skel-card"></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Growth (articles per day)</div>
+          <div id="kb-growth-chart"><div class="skeleton skel-chart"></div></div>
+        </div>
+      </div>
+
+      <!-- Links to the other pages -->
+      <h2>Explore</h2>
+      <div class="section">
+        <div class="page-links">
+          <a class="page-link" href="/ui/activity">Activity →</a>
+          <a class="page-link" href="/ui/agents">Agents →</a>
+          <a class="page-link" href="/ui/operations">Operations →</a>
+          <a class="page-link" href="/ui/settings">Settings →</a>
+          <a class="page-link" href="/ui/knowledge">Knowledge →</a>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<div class="chart-tip" id="chart-tip"></div>
+
+<script src="/ui/shared/api.js"></script>
+<script src="/ui/shared/sse.js"></script>
+<script src="/ui/shared/nav.js"></script>
+<script>
+// Overview page: status/version/health, backlog and headline summary stats.
+
+function renderStatus(status) {
+  if (!status) { renderError("status-cards", "Could not load status."); return; }
+  const running = status.service_running !== false;
+  const pending = Object.values(status.pending_captures_by_source || {}).reduce((a, b) => a + b, 0);
+  renderCards("status-cards", [
+    { label: "Service", value: running ? "running" : "down", cls: running ? "green" : "red" },
+    { label: "Version", value: esc(String(status.version ?? "—")), cls: "muted" },
+    { label: "Scheduler", value: status.scheduler_enabled ? "enabled" : "paused",
+      cls: status.scheduler_enabled ? "green" : "yellow" },
+    { label: "Processing", value: esc(String(status.processing_mode ?? "—")), cls: "muted" },
+    { label: "Backlog pending", value: pending, cls: pending > 0 ? "yellow" : "green" },
+  ]);
+}
+
+function renderSummary(data) {
+  if (!data) { renderError("summary-cards", "Could not load summary."); return; }
+  const hitRateBadge = pctBadge(data.hit_rate);
+  const eventsSpark   = Array.isArray(data.events_trend)   ? data.events_trend   : null;
+  const queriesSpark  = Array.isArray(data.queries_trend)  ? data.queries_trend  : null;
+  const articlesSpark = Array.isArray(data.articles_trend) ? data.articles_trend : null;
+  renderCards("summary-cards", [
+    { label: "Total events",    value: data.total_events ?? 0, spark: eventsSpark,   sparkColor: "var(--accent)" },
+    { label: "Total queries",   value: data.total_queries ?? 0, spark: queriesSpark, sparkColor: "var(--accent2)" },
+    { label: "Hit rate",        value: hitRateBadge },
+    { label: "Total articles",  value: data.total_articles ?? 0, spark: articlesSpark, sparkColor: "var(--green)" },
+    { label: "Backlog pending", value: data.backlog_pending ?? 0, cls: (data.backlog_pending ?? 0) > 0 ? "yellow" : "green" },
+    { label: "Distinct agents", value: data.distinct_agents ?? 0 },
+  ]);
+}
+
+// Knowledge Base Health (#182/#205 markup, ported verbatim). Global KB state,
+// NOT agent-scoped — no agent param is ever threaded into /v1/usage/knowledge.
+function renderKnowledge(data) {
+  if (!data) {
+    renderError("kb-status-chart", "Could not load knowledge data.");
+    document.getElementById("kb-cards").innerHTML = "";
+    document.getElementById("kb-growth-chart").innerHTML = '<div class="no-data">No data.</div>';
+    return;
+  }
+
+  // Articles by status
+  const byStatus = data.articles_by_status || {};
+  const statusItems = Object.entries(byStatus)
+    .sort((a,b) => b[1]-a[1])
+    .map(([k,v]) => ({ label: k, count: v }));
+  const statusColors = {
+    active: "#4ade80", corroborated: "#38bdf8",
+    deprecated: "#fbbf24", superseded: "#a78bfa", historical: "#8b90b0"
+  };
+  const kbStatusEl = document.getElementById("kb-status-chart");
+  if (!statusItems.length) {
+    kbStatusEl.innerHTML = '<div class="no-data">No articles yet.</div>';
+  } else {
+    const max = Math.max(...statusItems.map(i => i.count), 1);
+    kbStatusEl.innerHTML = '<div class="bar-chart">' + statusItems.map(item => {
+      const w = Math.round((item.count / max) * 100);
+      const c = statusColors[item.label] || "#6c8bef";
+      return `<div class="bar-row">
+        <div class="bar-label" title="${esc(item.label)}">${esc(item.label)}</div>
+        <div class="bar-track"><div class="bar-fill" style="width:${w}%;background:${c}"></div></div>
+        <div class="bar-count">${item.count}</div>
+      </div>`;
+    }).join("") + '</div>';
+  }
+
+  // Embedding + compile summary cards
+  const emb = data.embedding || {};
+  const comp = data.compile || {};
+  const bl = (data.backlog || {});
+  const backlogTotal = Object.values(bl.pending_captures_by_source || {}).reduce((a,b) => a+b, 0);
+  renderCards("kb-cards", [
+    { label: "Total articles",    value: data.articles_total ?? 0 },
+    { label: "Indexed docs",      value: emb.documents_indexed ?? 0 },
+    { label: "Skipped (embed)",   value: emb.skipped ?? 0 },
+    { label: "Index size",        value: fmtBytes(emb.index_size_bytes), cls: "muted" },
+    { label: "Compile total",     value: comp.total ?? 0 },
+    { label: "Compile success",   value: pctBadge(comp.success_rate) },
+    { label: "Backlog pending",   value: backlogTotal, cls: backlogTotal > 0 ? "yellow" : "green" },
+  ]);
+
+  // Growth chart
+  const growth = data.growth_by_day || {};
+  const growthBuckets = {};
+  Object.entries(growth).forEach(([day, count]) => {
+    growthBuckets[day] = { articles: count };
+  });
+  renderTimeChart("kb-growth-chart", growthBuckets);
+}
+
+async function loadAll() {
+  if (_inFlight) return;
+  _inFlight = true;
+  document.getElementById("last-updated").textContent = "Loading…";
+
+  // knowledge is global KB state — never agent-scoped (no agent param).
+  const [status, summary, knowledge] = await Promise.all([
+    apiFetch("/v1/status"),
+    apiFetch("/v1/usage/summary"),
+    apiFetch("/v1/usage/knowledge"),
+  ]);
+
+  _inFlight = false;
+  if (!getToken()) return;
+
+  renderStatus(status);
+  renderSummary(summary);
+  renderKnowledge(knowledge);
+
+  _lastUpdatedAt = new Date();
+  renderLastUpdated();
+}
+</script>
+</body>
+</html>

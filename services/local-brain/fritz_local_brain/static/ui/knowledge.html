@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<!--
+  Fritz Local Brain — Knowledge page (#220 app shell). STUB.
+  Placeholder for the future knowledge-browsing UI. No backend endpoint yet;
+  arrives with the knowledge API. Deep-linkable at /ui/knowledge.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fritz Brain — Knowledge</title>
+<link rel="stylesheet" href="/ui/shared/app.css">
+<!-- Stub page: no live data, so opt out of SSE. Set in <head> (before api.js
+     runs initShell) to avoid any DOMContentLoaded timing fragility. -->
+<script>window.usesSSE = false;</script>
+</head>
+<body data-page="knowledge">
+
+<div id="loading"></div>
+
+<div id="auth-overlay">
+  <div id="auth-box">
+    <h2>Fritz Brain Dashboard</h2>
+    <p>Enter the API Bearer token to load usage data.</p>
+    <input type="password" id="token-input" placeholder="Bearer token" autofocus>
+    <button onclick="saveToken()">Continue</button>
+    <div id="auth-error">Invalid token — please try again.</div>
+  </div>
+</div>
+
+<div class="app-shell">
+  <nav class="sidebar" id="sidebar"></nav>
+  <div class="content">
+    <header>
+      <h1>Fritz Brain</h1>
+      <span class="subtitle">Knowledge</span>
+      <div class="header-controls">
+        <button id="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark theme">🌙</button>
+      </div>
+    </header>
+
+    <main>
+      <h2>Knowledge</h2>
+      <div class="section panel">
+        <p class="no-data">Knowledge browsing is coming with the knowledge API. This page is a placeholder for now.</p>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script src="/ui/shared/api.js"></script>
+<script src="/ui/shared/nav.js"></script>
+<script>
+// Knowledge stub: no live data. The SSE opt-out (window.usesSSE = false) is set
+// in the <head> above; here we just provide a no-op loadAll (the shared shell
+// still shows the auth overlay when no token is stored).
+function loadAll() { /* no data yet — stub page */ }
+</script>
+</body>
+</html>

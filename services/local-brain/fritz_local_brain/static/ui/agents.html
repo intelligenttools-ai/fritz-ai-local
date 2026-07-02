@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<!--
+  Fritz Local Brain — Agents page (#220 app shell).
+  Per-agent section with the #199 drill-down (agent-filter selector scopes the
+  summary / queries / projects panels). Page-level drill-down comes later; this
+  keeps the existing header-filter behaviour. Deep-linkable at /ui/agents.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fritz Brain — Agents</title>
+<link rel="stylesheet" href="/ui/shared/app.css">
+</head>
+<body data-page="agents">
+
+<div id="loading"></div>
+
+<div id="auth-overlay">
+  <div id="auth-box">
+    <h2>Fritz Brain Dashboard</h2>
+    <p>Enter the API Bearer token to load usage data.</p>
+    <input type="password" id="token-input" placeholder="Bearer token" autofocus>
+    <button onclick="saveToken()">Continue</button>
+    <div id="auth-error">Invalid token — please try again.</div>
+  </div>
+</div>
+
+<div class="app-shell">
+  <nav class="sidebar" id="sidebar"></nav>
+  <div class="content">
+    <header>
+      <h1>Fritz Brain</h1>
+      <span class="subtitle">Agents</span>
+      <div class="header-controls">
+        <button id="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark theme">🌙</button>
+        <button id="refresh-btn" onclick="manualRefresh()">Refresh</button>
+        <select id="auto-refresh-select" onchange="onIntervalChange()">
+          <option value="0">Auto-refresh: off</option>
+          <option value="15">Every 15s</option>
+          <option value="30" selected>Every 30s</option>
+          <option value="60">Every 60s</option>
+        </select>
+        <select id="agent-filter-select" onchange="onAgentFilterChange()">
+          <option value="">All agents</option>
+        </select>
+        <span id="last-updated"></span>
+      </div>
+    </header>
+
+    <main>
+      <h2>Summary</h2>
+      <div class="section">
+        <div class="cards" id="summary-cards">
+          <div class="skel-cards"><div class="skeleton skel-card"></div><div class="skeleton skel-card"></div><div class="skeleton skel-card"></div></div>
+        </div>
+      </div>
+
+      <h2>Queries</h2>
+      <div class="section grid2">
+        <div class="panel">
+          <div class="cards" id="query-cards" style="margin-bottom:.85rem">
+            <div class="skeleton skel-card"></div>
+          </div>
+          <div class="latency-row" id="latency-row" style="display:none"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-title">Top queries</div>
+          <div id="top-queries-chart"><div class="skeleton skel-line"></div><div class="skeleton skel-line"></div></div>
+        </div>
+      </div>
+
+      <h2>Projects / Vaults</h2>
+      <div class="section panel">
+        <div id="projects-table"><div class="skeleton skel-line"></div><div class="skeleton skel-line"></div></div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<div class="chart-tip" id="chart-tip"></div>
+
+<script src="/ui/shared/api.js"></script>
+<script src="/ui/shared/sse.js"></script>
+<script src="/ui/shared/nav.js"></script>
+<script>
+// Agents page: the #199 per-agent drill-down. Empty string = "All agents".
+// The agent list is discovered dynamically from /v1/usage/agents — never a
+// hardcoded enum. The selected agent scopes the summary / queries / projects.
+
+let _agentFilter = "";
+
+/** Build the agent param map for agent-scoped panels (empty when "All agents"). */
+function agentParams() {
+  return _agentFilter ? { agent: _agentFilter } : {};
+}
+
+/** Populate the agent selector from the live /v1/usage/agents discovery list. */
+function populateAgentFilter(data) {
+  const sel = document.getElementById("agent-filter-select");
+  if (!sel) return;
+  const agents = (data && Array.isArray(data.agents)) ? data.agents : [];
+  // esc() every agent id — telemetry-stored, untrusted (stored XSS guard).
+  let html = '<option value="">All agents</option>';
+  for (const a of agents) {
+    const id = esc(a.agent);
+    html += `<option value="${id}">${id} (${a.count ?? 0})</option>`;
+  }
+  sel.innerHTML = html;
+  const present = agents.some(a => a.agent === _agentFilter);
+  if (_agentFilter && !present) _agentFilter = "";
+  sel.value = _agentFilter;
+}
+
+function onAgentFilterChange() {
+  _agentFilter = document.getElementById("agent-filter-select").value;
+  loadAll();
+}
+
+function renderSummary(data) {
+  if (!data) { renderError("summary-cards", "Could not load summary."); return; }
+  const eventsSpark   = Array.isArray(data.events_trend)   ? data.events_trend   : null;
+  const queriesSpark  = Array.isArray(data.queries_trend)  ? data.queries_trend  : null;
+  const articlesSpark = Array.isArray(data.articles_trend) ? data.articles_trend : null;
+  renderCards("summary-cards", [
+    { label: "Total events",    value: data.total_events ?? 0, spark: eventsSpark,   sparkColor: "var(--accent)" },
+    { label: "Total queries",   value: data.total_queries ?? 0, spark: queriesSpark, sparkColor: "var(--accent2)" },
+    { label: "Hit rate",        value: pctBadge(data.hit_rate) },
+    { label: "Total articles",  value: data.total_articles ?? 0, spark: articlesSpark, sparkColor: "var(--green)" },
+    { label: "Backlog pending", value: data.backlog_pending ?? 0, cls: (data.backlog_pending ?? 0) > 0 ? "yellow" : "green" },
+    { label: "Distinct agents", value: data.distinct_agents ?? 0 },
+  ]);
+}
+
+function renderQueries(data) {
+  if (!data) {
+    renderError("query-cards", "Could not load queries.");
+    document.getElementById("latency-row").style.display = "none";
+    document.getElementById("top-queries-chart").innerHTML = '<div class="no-data">No data.</div>';
+    return;
+  }
+
+  renderCards("query-cards", [
+    { label: "Total queries", value: data.total ?? 0 },
+    { label: "Hit rate", value: pctBadge(data.hit_rate) },
+  ]);
+
+  const lat = data.latency_ms || {};
+  const latRow = document.getElementById("latency-row");
+  if (lat.p50 != null || lat.p95 != null || lat.p99 != null) {
+    latRow.style.display = "flex";
+    latRow.innerHTML = [
+      { label: "p50", v: lat.p50 },
+      { label: "p95", v: lat.p95 },
+      { label: "p99", v: lat.p99 },
+    ].map(l => `<div class="lat-card">
+      <div class="label">${l.label}</div>
+      <div class="value">${fmtMs(l.v)}</div>
+    </div>`).join("");
+  } else {
+    latRow.style.display = "none";
+  }
+
+  const top = data.top_queries || [];
+  renderBarChart("top-queries-chart", top.map(q => ({ label: q.query, count: q.count })));
+
+  const byAgent = data.by_agent ? Object.entries(data.by_agent).sort((a,b) => b[1]-a[1]) : [];
+  if (byAgent.length) {
+    const existing = document.getElementById("query-by-agent");
+    const container = existing || (() => {
+      const d = document.createElement("div");
+      d.id = "query-by-agent";
+      d.style.marginTop = ".85rem";
+      document.getElementById("query-cards").after(d);
+      return d;
+    })();
+    container.innerHTML = `<div class="panel-title">Queries by agent</div>`;
+    const tmpId = "qa-inner-" + Date.now();
+    container.innerHTML += `<div id="${tmpId}"></div>`;
+    renderBarChart(tmpId, byAgent.map(([k,v]) => ({ label: k, count: v })));
+  }
+}
+
+function renderProjects(data) {
+  const el = document.getElementById("projects-table");
+  if (data === null) { renderError("projects-table", "Could not load projects."); return; }
+  const projects = data ? (data.projects || []) : [];
+  if (!projects.length) {
+    el.innerHTML = '<div class="no-data">No project data yet.</div>';
+    return;
+  }
+  const rows = projects.map(p => {
+    const typeSummary = Object.entries(p.events_by_type || {})
+      .sort((a,b) => b[1]-a[1]).slice(0,3)
+      .map(([k,v]) => `${esc(k)}:${v}`).join(", ") || "—";
+    return `<tr>
+      <td>${esc(p.vault)}</td>
+      <td class="num">${p.event_count}</td>
+      <td class="num">${p.article_count}</td>
+      <td style="color:var(--muted)">${typeSummary}</td>
+    </tr>`;
+  }).join("");
+  el.innerHTML = `<table>
+    <thead><tr><th>Vault</th><th class="num">Events</th><th class="num">Articles</th><th>Top event types</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+async function loadAll() {
+  if (_inFlight) return;
+  _inFlight = true;
+  document.getElementById("last-updated").textContent = "Loading…";
+
+  // Agent-scoped panels get agent=_agentFilter when a specific agent is selected.
+  // The agents discovery list is always global so the selector shows every agent.
+  const ap = agentParams();
+  const [agents, summary, queries, projects] = await Promise.all([
+    apiFetch("/v1/usage/agents"),
+    apiFetch("/v1/usage/summary", ap),
+    apiFetch("/v1/usage/queries", ap),
+    apiFetch("/v1/usage/projects", ap),
+  ]);
+
+  _inFlight = false;
+  if (!getToken()) return;
+
+  populateAgentFilter(agents);
+  renderSummary(summary);
+  renderQueries(queries);
+  renderProjects(projects);
+
+  _lastUpdatedAt = new Date();
+  renderLastUpdated();
+}
+</script>
+</body>
+</html>
