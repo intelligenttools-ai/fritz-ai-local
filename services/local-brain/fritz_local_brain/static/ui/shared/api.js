@@ -45,7 +45,7 @@ function saveToken() {
   // path in apiFetch (clearToken + showAuthOverlay(true)).
   hideAuthOverlay();
   loadAll();
-  setupSSE();  // #198: live updates (best-effort; polling is the backstop)
+  if (window.usesSSE !== false) setupSSE();  // #198: live updates (best-effort; polling is the backstop)
 }
 
 // ---- theme toggle (#197) ----------------------------------------------------
@@ -230,7 +230,7 @@ function bindChartTip() {
   document.addEventListener("mouseover", (e) => {
     const dot = e.target.closest && e.target.closest(".data-dot");
     if (!dot) return;
-    tip.innerHTML = dot.getAttribute("data-tip") || "";
+    tip.textContent = dot.getAttribute("data-tip") || "";
     const r = dot.getBoundingClientRect();
     tip.style.left = (window.scrollX + r.left + r.width / 2) + "px";
     tip.style.top  = (window.scrollY + r.top) + "px";
