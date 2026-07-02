@@ -55,7 +55,10 @@ from ..models import (
     QueryRunRequest,
     QueryRunResult,
     RecentRunsResult,
+    RunDetail,
+    RunListResult,
     StatusResult,
+    UsageAgentDetailResult,
     SyncRunRequest,
     SyncRunResult,
     UsageActivityResult,
@@ -69,6 +72,7 @@ from ..models import (
 from ..operation_locks import OperationAlreadyRunning, compile_lock, lint_lock, sync_lock
 from ..query_workflow import run_query
 from ..run_history import recent_runs, record_compile, record_sync
+from ..telemetry import get_run, list_runs
 from ..status import build_status
 from ..sync_workflow import run_sync
 from .auth import require_token
@@ -100,7 +104,7 @@ async def compile_run(request: CompileRunRequest) -> CompileRunResult:
         async with compile_lock.guard(settings.brain_home):
             try:
                 result = await run_compile(settings, request)
-                record_compile(result)
+                record_compile(result, settings, source="api")
                 schedule_embedding_refresh_after_compile_result(settings, result, reason="compile")
                 return result
             except UsageLimitExceeded as exc:
@@ -117,15 +121,54 @@ async def sync_run(request: SyncRunRequest) -> SyncRunResult:
     try:
         async with sync_lock.guard(settings.brain_home):
             result = await run_sync(settings, request)
-            record_sync(result)
+            record_sync(result, settings, source="api")
             return result
     except OperationAlreadyRunning as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+def _to_run_detail(row: dict) -> RunDetail:
+    """Map a persisted ``runs`` row (telemetry) to the RunDetail model.
+
+    ``errors`` is surfaced as a top-level list (lifted out of ``detail``) so
+    callers get the actual messages without digging into the nested record.
+    """
+    detail = row.get("detail") or {}
+    errors = detail.get("errors") if isinstance(detail, dict) else None
+    return RunDetail(
+        id=row["id"],
+        kind=row["kind"],
+        started_at=row["started_at"],
+        finished_at=row["finished_at"],
+        duration_ms=row.get("duration_ms"),
+        dry_run=bool(row.get("dry_run")),
+        status=row["status"],
+        source=row.get("source"),
+        summary=row.get("summary"),
+        errors=list(errors) if isinstance(errors, list) else [],
+        detail=detail if isinstance(detail, dict) else {},
+    )
+
+
+@router.get("/v1/runs", response_model=RunListResult, dependencies=[Depends(require_token)])
+async def runs_list(limit: int = 10, kind: str | None = Query(default=None)) -> RunListResult:
+    """List persisted runs (#223). Supersedes ``/v1/runs/recent`` (kept as alias)."""
+    rows = list_runs(get_settings(), limit=limit, kind=kind)
+    return RunListResult(runs=[_to_run_detail(r) for r in rows])
+
+
 @router.get("/v1/runs/recent", response_model=RecentRunsResult, dependencies=[Depends(require_token)])
 async def runs_recent(limit: int = 10) -> RecentRunsResult:
     return RecentRunsResult(runs=recent_runs(limit))
+
+
+@router.get("/v1/runs/{run_id}", response_model=RunDetail, dependencies=[Depends(require_token)])
+async def run_detail(run_id: str) -> RunDetail:
+    """Full detail for one persisted run (#223); 404 for an unknown id."""
+    row = get_run(get_settings(), run_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"Unknown run id: {run_id}")
+    return _to_run_detail(row)
 
 
 @router.get("/v1/embeddings/status", response_model=EmbeddingStatusResult, dependencies=[Depends(require_token)])
@@ -203,6 +246,21 @@ async def usage_agents(
     to: str | None = Query(default=None, alias="to"),
 ) -> UsageAgentsResult:
     return UsageAgentsResult(agents=usage.agents(get_settings(), since=from_, until=to))
+
+
+@router.get("/v1/usage/agents/{agent}", response_model=UsageAgentDetailResult, dependencies=[Depends(require_token)])
+async def usage_agent_detail(
+    agent: str,
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = Query(default=None, alias="to"),
+    limit: int = 20,
+    offset: int = 0,
+) -> UsageAgentDetailResult:
+    """Per-agent drill-down (#223): first/last seen, type breakdown, daily series,
+    paginated recent events. Test-agent isolation is enforced by the agent filter."""
+    return UsageAgentDetailResult(
+        **usage.agent_detail(get_settings(), agent, since=from_, until=to, limit=limit, offset=offset)
+    )
 
 
 @router.get("/v1/usage/activity", response_model=UsageActivityResult, dependencies=[Depends(require_token)])

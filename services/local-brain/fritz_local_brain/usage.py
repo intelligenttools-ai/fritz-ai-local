@@ -125,6 +125,74 @@ def agents(
     ]
 
 
+def agent_detail(
+    settings: Settings,
+    agent: str,
+    *,
+    since: str | None = None,
+    until: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """Per-agent drill-down for ``GET /v1/usage/agents/{agent}`` (#223).
+
+    Returns first/last seen, an event-type breakdown, a daily activity series,
+    and a paginated slice of recent events (newest first) for the single
+    normalized ``agent``. Test-agent isolation (#206) is preserved by the
+    ``agent`` filter itself: :func:`telemetry.query_events` matches ONLY events
+    whose normalized agent equals the requested value, so a real agent's detail
+    never includes test-agent rows (and querying a test agent returns only its
+    own rows) — neither bleeds into the other. Empty-safe: an unknown agent
+    yields ``event_count=0`` with empty breakdown/series/events.
+    """
+    events = query_events(settings, since=since, until=until, agent=agent)
+
+    first_seen: str | None = None
+    last_seen: str | None = None
+    by_type: dict[str, int] = {}
+    daily: dict[str, int] = {}
+    for e in events:
+        ts = e.get("ts") or ""
+        if ts:
+            if first_seen is None or ts < first_seen:
+                first_seen = ts
+            if last_seen is None or ts > last_seen:
+                last_seen = ts
+            day = ts[:10]
+            daily[day] = daily.get(day, 0) + 1
+        etype = e.get("event_type") or _NONE_KEY
+        by_type[etype] = by_type.get(etype, 0) + 1
+
+    # Recent events: newest first, then paginate.
+    ordered = sorted(events, key=lambda e: e.get("ts") or "", reverse=True)
+    bounded_limit = max(0, limit)
+    bounded_offset = max(0, offset)
+    page = ordered[bounded_offset : bounded_offset + bounded_limit]
+    recent = [
+        {
+            "ts": e.get("ts"),
+            "event_type": e.get("event_type"),
+            "vault": e.get("vault"),
+            "status": e.get("status"),
+            "duration_ms": e.get("duration_ms"),
+            "run_id": e.get("run_id"),
+        }
+        for e in page
+    ]
+
+    return {
+        "agent": agent,
+        "event_count": len(events),
+        "first_seen": first_seen,
+        "last_seen": last_seen,
+        "events_by_type": by_type,
+        "daily_activity": daily,
+        "recent_events": recent,
+        "limit": bounded_limit,
+        "offset": bounded_offset,
+    }
+
+
 def system(
     settings: Settings,
     *,

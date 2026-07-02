@@ -109,8 +109,115 @@ def test_knowledge_has_supersession_navigation() -> None:
     body = _knowledge()
     assert "supersedes" in body
     assert "superseded_by" in body
-    # clickable links that load the linked article
+    # clickable links that load the linked article (via delegated listener)
     assert "loadArticle(" in body
+
+
+# ---------------------------------------------------------------------------
+# BLOCKER regression — stored XSS via onclick JS-string-literal injection
+#
+# esc() maps ' -> &#39;, but the HTML parser DECODES &#39; back to ' before the
+# JS engine sees an onclick attribute — so an interpolated `onclick="fn('${x}')"`
+# lets a target like  x');alert(document.cookie);//  (from compile-agent-written
+# supersedes/superseded_by frontmatter, or a filesystem path containing ') run
+# arbitrary JS. FIX: navigation targets ride in data-* (attribute context) and
+# clicks are DELEGATED — no untrusted value is ever interpolated into inline JS.
+# ---------------------------------------------------------------------------
+
+def test_no_untrusted_value_interpolated_into_inline_onclick() -> None:
+    """None of the four navigation sinks may build an inline onclick with an
+    interpolated ${...} target — that is the decode-then-execute hole."""
+    body = _knowledge()
+    # The specific vulnerable forms must be gone.
+    assert "onclick=\"loadArticle('${" not in body
+    assert "onclick=\"selectNode('${" not in body
+    assert "onclick='loadArticle(" not in body
+    # More generally: no onclick attribute anywhere contains a ${ interpolation.
+    for m in re.finditer(r'onclick\s*=\s*(["\'])(.*?)\1', body):
+        assert "${" not in m.group(2), f"interpolated inline onclick: {m.group(0)!r}"
+
+
+def test_navigation_targets_ride_in_data_attributes() -> None:
+    """Tree nodes, article rows and supersession chips carry their target in a
+    data-* attribute (esc()'d for attribute context), read via dataset."""
+    body = _knowledge()
+    assert 'data-path="${path}"' in body        # tree node + article row
+    assert 'data-target="${target}"' in body    # supersession chip
+    assert ".dataset.path" in body
+    assert ".dataset.target" in body
+
+
+def test_clicks_are_delegated_not_inline() -> None:
+    """Container-level delegated listeners (survive innerHTML re-renders) replace
+    the inline onclick interpolation."""
+    body = _knowledge()
+    assert "function bindDelegates(" in body
+    assert 'addEventListener("click"' in body
+    assert 'closest(".kb-tree-node")' in body
+    assert 'closest(".kb-article-row")' in body
+    assert 'closest(".kb-link-chip[data-target]")' in body
+
+
+def test_single_quote_target_does_not_break_out_of_handler() -> None:
+    """The concrete exploit string must be neutralized: rendering a supersession
+    chip / tree node / article row whose target contains  x');alert(1);//  must
+    NOT emit an inline onclick that interpolates it. We reproduce the render
+    contract: the value lands ONLY in a data-* attribute (esc()'d), never in JS.
+    """
+    body = _knowledge()
+    # The render templates put the target in data-*, and the esc() applied to it
+    # means a ' becomes &#39; INSIDE an attribute (harmless there — attributes are
+    # not JS). Assert the vulnerable inline-JS template literals are absent AND
+    # the data-* carriers are present (proven above); here we assert the chip and
+    # row builders no longer contain an onclick at all.
+    # linkChip: present target -> <button data-target=...>, missing -> <span>.
+    start = body.index("function linkChip(")
+    end = body.index("function backToList(", start)
+    chip = body[start:end]
+    assert "onclick" not in chip, "linkChip must not use inline onclick"
+    assert 'data-target="${target}"' in chip
+    # missing target renders a non-clickable span (nit fix).
+    assert "<span" in chip and "kb-link-missing" in chip
+
+
+# ---------------------------------------------------------------------------
+# NIT regression — missing supersession links are NOT clickable
+# ---------------------------------------------------------------------------
+
+def test_missing_supersession_link_is_non_clickable_span() -> None:
+    body = _knowledge()
+    start = body.index("function linkChip(")
+    end = body.index("function backToList(", start)
+    chip = body[start:end]
+    # When exists === false, render a <span> (no data-target, no listener match).
+    assert "l.exists === false" in chip
+    assert "<span" in chip
+    # The delegated handler only fires for chips WITH data-target.
+    assert 'closest(".kb-link-chip[data-target]")' in body
+
+
+# ---------------------------------------------------------------------------
+# SHOULD-FIX regression — search is scoped to the resolvable brain store
+# ---------------------------------------------------------------------------
+
+def test_search_scoped_to_brain_store() -> None:
+    """POST /v1/search/run must carry vault:"brain" so every result path is
+    store-root-resolvable by /v1/knowledge/article (no capture/external 404s)."""
+    body = _knowledge()
+    assert 'vault: "brain"' in body
+    # Both the live search and the deep-link restore variant must scope.
+    assert body.count('vault: "brain"') >= 2
+
+
+def test_search_nonbrain_results_not_clickable() -> None:
+    """Defense in depth: a search hit whose vault !== "brain" must not be
+    click-through (no data-path), so it can't 404 against the store root."""
+    body = _knowledge()
+    start = body.index("function renderSearchMatch(")
+    end = body.index("function clearSearch(", start)
+    fn = body[start:end]
+    assert 'm.vault === "brain"' in fn
+    assert "kb-row-static" in fn  # non-clickable class for non-brain hits
 
 
 # ---------------------------------------------------------------------------

@@ -53,7 +53,7 @@ async def brain_compile(
             settings,
             CompileRunRequest(dry_run=dry_run, max_captures=max_captures, approval_token=approval_token),
         )
-        record_compile(result)
+        record_compile(result, settings, source="agent")
         schedule_embedding_refresh_after_compile_result(settings, result, reason="mcp compile")
         return result.model_dump(mode="json")
 
@@ -71,7 +71,7 @@ async def brain_sync(
     _require_mcp_token(settings, api_token)
     async with sync_lock.guard(settings.brain_home):
         result = await run_sync(settings, SyncRunRequest(dry_run=dry_run, vault=vault, approval_token=approval_token))
-        record_sync(result)
+        record_sync(result, settings, source="agent")
         return result.model_dump(mode="json")
 
 
