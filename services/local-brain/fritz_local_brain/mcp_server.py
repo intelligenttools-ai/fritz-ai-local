@@ -125,7 +125,10 @@ async def brain_query(
     api_token: str | None = None,
     agent: str | None = None,
 ) -> dict[str, Any]:
-    """Run the same read-only query workflow as POST /v1/query/run."""
+    """EXACT literal-substring lookup only — NOT the default brain check; use brain_search for normal recall.
+
+    Same read-only query workflow as POST /v1/query/run.
+    """
 
     settings = get_settings()
     _require_mcp_token(settings, api_token)
@@ -152,7 +155,13 @@ async def brain_search(
     api_token: str | None = None,
     agent: str | None = None,
 ) -> dict[str, Any]:
-    """Run service-backed search, including container-managed vector search."""
+    """The DEFAULT brain check (semantic vector search when embeddings and a current index are available).
+
+    Prefer short conceptual queries (2-6 terms), not verbatim log/keyword dumps.
+    Good: "proxmox cloudinit template debian". Bad: "racktaq Proxmox Debian 13
+    cloudinit template gateway VM WireGuard macOS client 192.168.1.53". Same
+    workflow as POST /v1/search/run.
+    """
 
     settings = get_settings()
     _require_mcp_token(settings, api_token)
