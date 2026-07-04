@@ -33,22 +33,31 @@ from brain_common import (
     local_brain_service_available, local_brain_service_instructions,
     local_brain_setup_suggestion, local_brain_setup_suggestions_enabled,
     local_brain_service_configured, local_brain_configuration_decision_prompt,
+    _resolve_client_agent, claude_form,
 )
 
 
-# Always-on per-turn save policy (Pi parity — Pi injects this via
-# before_agent_start). Durable operational knowledge confirmed this turn must be
-# SAVED, not merely answered. Kept short because it is injected every turn.
-SAVE_POLICY = (
-    "BRAIN SAVE: If this turn confirms durable operational knowledge "
-    "(decisions, fixes, URLs, token/credential locations, runbook facts), SAVE it "
-    "via the /fritz:brain-save skill — do not merely answer it."
-)
+def _save_policy() -> str:
+    """Always-on per-turn save policy (Pi parity — Pi injects this via
+    before_agent_start). Durable operational knowledge confirmed this turn must
+    be SAVED, not merely answered. Kept short because it is injected every turn.
+
+    Runtime-aware (#239): the Claude runtime only ever resolves the sanitized
+    plugin-qualified skill name, so reference that for `agent == 'claude'`;
+    every other runtime keeps the `/fritz:brain-save` skill-tree name.
+    """
+    ref = claude_form("/fritz:brain-save") if _resolve_client_agent() == "claude" else "/fritz:brain-save"
+    return (
+        "BRAIN SAVE: If this turn confirms durable operational knowledge "
+        "(decisions, fixes, URLs, token/credential locations, runbook facts), SAVE it "
+        f"via the {ref} skill — do not merely answer it."
+    )
 
 
 def _emit(hook_input: dict, context: str) -> None:
     """Emit additionalContext (with the per-turn save policy appended) and exit."""
-    context = f"{context}\n\n{SAVE_POLICY}" if context else SAVE_POLICY
+    save_policy = _save_policy()
+    context = f"{context}\n\n{save_policy}" if context else save_policy
     response = {
         "hookSpecificOutput": {
             "hookEventName": hook_input.get("hook_event_name", "UserPromptSubmit"),
@@ -343,10 +352,11 @@ def main():
             )
         else:
             vault_names = list(vaults.keys())
+            query_ref = claude_form("/fritz:brain-query") if _resolve_client_agent() == "claude" else "/fritz:brain-query"
             reminder = (
                 "BRAIN CHECK: Before answering, search the knowledge base. "
                 f"Vaults: {', '.join(vault_names)}. "
-                "Use /fritz:brain-query or search knowledge/ directories and "
+                f"Use {query_ref} or search knowledge/ directories and "
                 "~/.brain/capture/daily/ for relevant prior decisions, patterns, and facts."
             )
             if not local_brain_service_configured() and should_suggest_local_brain_service(prompt):

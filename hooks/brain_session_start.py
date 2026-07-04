@@ -34,6 +34,7 @@ from brain_common import (
     get_local_brain_service_desired, local_brain_service_operational,
     local_brain_service_setup_forcing_instruction,
     version_is_behind,
+    _resolve_client_agent, claude_form,
     BRAIN_HOME, FRITZ_REPO,
 )
 
@@ -105,7 +106,10 @@ def check_for_updates(context_parts: list[str]):
                 context_parts.append(f"- {commit}")
             if len(commits) > 10:
                 context_parts.append(f"- ... and {len(commits) - 10} more")
-            context_parts.append(f"\nRun `/fritz:update` to upgrade, or: `git -C {FRITZ_REPO} pull`\n")
+            if _resolve_client_agent() == "claude":
+                context_parts.append(f"\nRun `{claude_form('/fritz:update')}` to upgrade, or: `git -C {FRITZ_REPO} pull`\n")
+            else:
+                context_parts.append(f"\nRun `/fritz:update` to upgrade, or: `git -C {FRITZ_REPO} pull`\n")
 
     except (subprocess.TimeoutExpired, OSError):
         # Network/auth failure — don't cache, allow retry next session
@@ -151,9 +155,14 @@ def check_service_version_drift(context_parts: list[str]):
         context_parts.append(
             f"\n## Local Brain service is behind (running v{running_version}, repo at v{repo_version})\n"
         )
-        context_parts.append(
-            "The running container predates the merged code. Run `/fritz:brain-service-setup` to rebuild & redeploy.\n"
-        )
+        if _resolve_client_agent() == "claude":
+            context_parts.append(
+                f"The running container predates the merged code. Run `{claude_form('/fritz:brain-service-setup')}` to rebuild & redeploy.\n"
+            )
+        else:
+            context_parts.append(
+                "The running container predates the merged code. Run `/fritz:brain-service-setup` to rebuild & redeploy.\n"
+            )
 
 
 def inject_project_context(context_parts: list[str], vault_path: Path, manifest: dict, fritz_local: dict | None):
@@ -227,11 +236,18 @@ def main():
 
     service_configured = local_brain_service_configured()
     service_available = local_brain_service_available()
+    is_claude = _resolve_client_agent() == "claude"
     if service_available:
-        context_parts.append("Knowledge base at `~/.brain/`. The optional Local Brain service is running, so use it for supported workflows. Use `/fritz:brain-ingest` for imports and setup/update skills for workflows the service does not provide.\n")
+        if is_claude:
+            context_parts.append(f"Knowledge base at `~/.brain/`. The optional Local Brain service is running, so use it for supported workflows. Use `{claude_form('/fritz:brain-ingest')}` for imports and setup/update skills for workflows the service does not provide.\n")
+        else:
+            context_parts.append("Knowledge base at `~/.brain/`. The optional Local Brain service is running, so use it for supported workflows. Use `/fritz:brain-ingest` for imports and setup/update skills for workflows the service does not provide.\n")
         context_parts.append(local_brain_service_instructions())
     else:
-        context_parts.append("Knowledge base at `~/.brain/`. Use `/fritz:brain-query` to search, `/fritz:brain-compile` to promote captures, `/fritz:brain-ingest` to import sources.\n")
+        if is_claude:
+            context_parts.append(f"Knowledge base at `~/.brain/`. Use `{claude_form('/fritz:brain-query')}` to search, `{claude_form('/fritz:brain-compile')}` to promote captures, `{claude_form('/fritz:brain-ingest')}` to import sources.\n")
+        else:
+            context_parts.append("Knowledge base at `~/.brain/`. Use `/fritz:brain-query` to search, `/fritz:brain-compile` to promote captures, `/fritz:brain-ingest` to import sources.\n")
 
     # List available vaults
     registry = load_registry()
@@ -292,7 +308,10 @@ def main():
             processing_active = data.get("processing_active", True)
             if processing_active is False:
                 context_parts.append("\n## Brain captures pending — processing not active\n")
-                context_parts.append(f"There are **{topics} uncompiled topics** captured since {since}. Captures are being saved, but live processing is not active in minimal-capture mode. Enable `settings.local_brain_service.enabled` or run `/fritz:brain-compile` manually when you want to promote them.\n")
+                if _resolve_client_agent() == "claude":
+                    context_parts.append(f"There are **{topics} uncompiled topics** captured since {since}. Captures are being saved, but live processing is not active in minimal-capture mode. Enable `settings.local_brain_service.enabled` or run `{claude_form('/fritz:brain-compile')}` manually when you want to promote them.\n")
+                else:
+                    context_parts.append(f"There are **{topics} uncompiled topics** captured since {since}. Captures are being saved, but live processing is not active in minimal-capture mode. Enable `settings.local_brain_service.enabled` or run `/fritz:brain-compile` manually when you want to promote them.\n")
             elif not service_configured:
                 # Service not yet configured: this is a CONFIGURATION decision
                 # prompt, not a hand-compile nudge. When the service IS active the

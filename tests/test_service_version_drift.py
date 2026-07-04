@@ -24,6 +24,12 @@ sys.path.insert(0, str(HOOKS))
 import brain_session_start  # noqa: E402
 
 
+def _clear_claude_markers(monkeypatch):
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
+    monkeypatch.delenv("FRITZ_AGENT", raising=False)
+
+
 def _patch(
     monkeypatch,
     tmp_path: Path,
@@ -32,7 +38,16 @@ def _patch(
     repo: str | None,
     available: bool = True,
     update_check: bool = True,
+    claude: bool = False,
 ):
+    # pytest itself may run inside a Claude Code session (CLAUDECODE set in the
+    # ambient env), which would otherwise make _resolve_client_agent() resolve
+    # to 'claude' by default here too. These behavioral tests pin the non-Claude
+    # (unchanged) rendering, so clear the markers explicitly (#239); pass
+    # claude=True to instead exercise the Claude-runtime rendering.
+    _clear_claude_markers(monkeypatch)
+    if claude:
+        monkeypatch.setenv("CLAUDECODE", "1")
     monkeypatch.setattr(brain_session_start, "BRAIN_HOME", tmp_path)
     monkeypatch.setattr(brain_session_start, "local_brain_service_available", lambda: available)
     monkeypatch.setattr(brain_session_start, "get_local_brain_service_version", lambda: running)
@@ -55,6 +70,16 @@ def test_behind_emits_nudge(monkeypatch, tmp_path):
     out = _run(monkeypatch, tmp_path, running="1.3.55", repo="1.3.57")
     assert "Local Brain service is behind" in out
     assert "/fritz:brain-service-setup" in out
+
+
+def test_behind_emits_nudge_claude_uses_sanitized_skill_name(monkeypatch, tmp_path):
+    """#239 — for the Claude runtime, the nudge must reference the sanitized
+    plugin-qualified skill name Claude Code actually registers, not the raw
+    /fritz:brain-service-setup skill-tree name."""
+    out = _run(monkeypatch, tmp_path, running="1.3.55", repo="1.3.57", claude=True)
+    assert "Local Brain service is behind" in out
+    assert "/fritz-brain:fritz-brain-service-setup" in out
+    assert "/fritz:brain-service-setup" not in out
 
 
 def test_equal_no_nudge(monkeypatch, tmp_path):
