@@ -470,7 +470,7 @@ def test_shared_time_chart_stacked_series_and_escaping() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Feature preservation — configuration panel (#208) on the Settings page
+# Feature preservation + expansion — settings page config editor (#208 -> #227)
 # ---------------------------------------------------------------------------
 
 def _settings() -> str:
@@ -480,8 +480,7 @@ def _settings() -> str:
 def test_settings_config_panel() -> None:
     body = _settings()
     assert 'id="config-panel"' in body
-    assert 'id="config-runtime"' in body
-    assert 'id="config-rebuild"' in body
+    assert 'id="config-groups"' in body
     assert ">Configuration<" in body
 
 
@@ -490,26 +489,239 @@ def test_settings_config_endpoint_and_handlers() -> None:
     assert "/v1/config" in body
     assert "function loadConfig(" in body
     assert "function renderConfig(" in body
-    assert "function onConfigChange(" in body
+    assert "function saveGroup(" in body
 
 
 def test_settings_config_uses_patch_verb() -> None:
     """Verb guard (#208): the config write must use PATCH, not a bare POST."""
     body = _settings()
-    start = body.index("async function onConfigChange(")
-    end = body.index("async function loadAll(", start)
+    start = body.index("async function saveGroup(")
+    end = body.index("// ---- connection tests", start)
     fn = body[start:end]
-    assert "confirm(" in fn
     assert "postAction(" in fn
     assert '"PATCH"' in fn
     assert "showToast(" in fn
 
 
+def _config_render_src(body: str) -> str:
+    """The config-render function bodies (controls -> renderConfig), where all
+    server data is turned into innerHTML. Handlers live below this slice."""
+    start = body.index("// ---- controls")
+    end = body.index("// ---- delegated listeners")
+    return body[start:end]
+
+
 def test_settings_config_escapes_strings() -> None:
+    """XSS guard (strengthened, #227 review): every untrusted sink in the config
+    render path is wrapped in esc() — asserted per-sink, not just 'esc appears'."""
     body = _settings()
-    start = body.index("function renderConfig(")
-    end = body.index("async function loadConfig(", start)
-    assert "esc(" in body[start:end]
+    render = _config_render_src(body)
+    # field value (text control), field-level rejected reason, service status value:
+    assert "esc(v == null" in render           # field value -> input value=
+    assert "esc(fieldErrors[name])" in render   # server rejection reason
+    assert "esc(shown)" in render               # service read-only value
+    # whole-request error (PATCH .detail is stored in groupErrors then rendered):
+    assert "esc(groupErrors[g.id])" in render
+    # requires indicator sourced from metadata is esc()'d too:
+    assert "esc(field.requires)" in render
+
+
+def test_settings_no_interpolated_inline_handlers() -> None:
+    """#227 review FIX 1: the config render path must use delegated listeners, not
+    inline on*= handlers with interpolated data (esc() does NOT sanitize inside a
+    JS-handler-source attribute)."""
+    body = _settings()
+    render = _config_render_src(body)
+    for attr in ("onclick=", "oninput=", "onchange=", "onkeyup=", "onkeydown="):
+        assert attr not in render, f"inline handler {attr} in config render path"
+    # Positive: behaviour is wired through data-* + delegated listeners.
+    assert "data-action=" in render
+    assert "data-field=" in render
+    assert 'el.addEventListener("click", onConfigClick)' in body
+    assert 'el.addEventListener("input", onConfigInput)' in body
+
+
+def test_settings_secret_never_serialized_into_value_attr() -> None:
+    """#227 review FIX 2: the Replace <input> must carry NO value= attribute, and
+    the key must never be stored in `pending` — it is read from the live element
+    at save/test time only."""
+    body = _settings()
+    start = body.index("function secretControl(")
+    end = body.index("function selectControl(", start)
+    # Ignore comment lines (which explain WHY there is no value=).
+    code_lines = [ln for ln in body[start:end].splitlines() if not ln.lstrip().startswith("//")]
+    secret_fn = "\n".join(code_lines)
+    # The password input has no value= binding at all (no key serialized to HTML).
+    assert "value=" not in secret_fn
+    assert 'type="password"' in secret_fn
+    # Save/test read the key from the live element, not from a stored copy.
+    assert 'document.getElementById("secret-input-" + f)' in body
+    assert "secret-input-${prefix}_api_key" in body
+    # onSecretInput stores only the Symbol marker, never the typed value.
+    s2 = body.index("function onSecretInput(")
+    e2 = body.index("function revealSecretInput(", s2)
+    on_secret = body[s2:e2]
+    assert "SECRET_PENDING" in on_secret
+    assert "pending[name] = value" not in on_secret
+    assert "pending[name] = inp.value" not in on_secret
+
+
+def test_settings_autorefresh_skips_active_edit() -> None:
+    """#227 review FIX 3: a background poll must not clobber an in-progress edit."""
+    body = _settings()
+    assert "function isConfigBusy(" in body
+    assert "document.activeElement" in body
+    assert "revealedSecrets.size" in body
+    start = body.index("async function loadConfig(")
+    end = body.index("async function loadAll(", start)
+    fn = body[start:end]
+    assert "isConfigBusy()" in fn
+    # Text/number edits are captured on `input` (not just blur) so pending stays
+    # current as the user types — the delegated input listener covers them.
+    assert 'el.addEventListener("input", onConfigInput)' in body
+
+
+def test_settings_reindex_notice_cleared_each_save() -> None:
+    """#227 review FIX 4: the reindex notice is cleared before each save and only
+    re-set when THIS response reports reindex_scheduled === true."""
+    body = _settings()
+    start = body.index("async function saveGroup(")
+    end = body.index("// ---- connection tests", start)
+    fn = body[start:end]
+    assert "delete groupErrors.__reindex" in fn
+    assert "json.reindex_scheduled === true" in fn
+
+
+def test_settings_five_grouped_sections() -> None:
+    """#227: the flat list becomes 5 grouped sections."""
+    body = _settings()
+    for title in ("LLM", "Embeddings", "Scheduler", "Telemetry", "Service"):
+        assert f'"{title}"' in body or f">{title}<" in body or f"{title} (read-only)" in body
+
+
+def test_settings_group_field_membership() -> None:
+    """Each section groups the exact fields specified for #227."""
+    body = _settings()
+    start = body.index("const GROUPS = [")
+    end = body.index("];", start)
+    groups_src = body[start:end]
+    assert '"llm_protocol", "llm_base_url", "llm_model", "llm_api_key", "llm_timeout_seconds"' in groups_src
+    assert '"embedding_enabled", "embedding_protocol", "embedding_base_url", "embedding_model",' in groups_src
+    assert '"embedding_api_key", "embedding_timeout_seconds"' in groups_src
+    assert '"scheduler_enabled", "interval_minutes", "scheduler_dry_run", "reconciliation_autonomy"' in groups_src
+    assert '"telemetry_enabled", "telemetry_store_query_text", "telemetry_retention_days"' in groups_src
+
+
+def test_settings_test_connection_buttons_hit_test_endpoints() -> None:
+    """Per-section Test buttons POST the section's UNSAVED form values."""
+    body = _settings()
+    assert "/v1/config/test-${prefix}" in body  # built from GROUPS' g.test: "llm" | "embedding"
+    assert 'test: "llm"' in body
+    assert 'test: "embedding"' in body
+    assert "function testConnection(" in body
+    start = body.index("async function testConnection(")
+    end = body.index("// ---- load ----", start)
+    fn = body[start:end]
+    assert "pending" in fn  # reads unsaved (dirty) values, not the saved config
+
+
+def test_settings_test_button_handlers_read_result_fields() -> None:
+    body = _settings()
+    start = body.index("function setTestResult(")
+    end = body.index("async function testConnection(", start)
+    fn = body[start:end]
+    assert ".ok" in fn
+    assert ".latency_ms" in fn
+    assert ".error" in fn
+
+
+def test_settings_secret_ux_for_both_api_keys() -> None:
+    """Both llm_api_key AND embedding_api_key get configured/not-set + Replace + Clear."""
+    body = _settings()
+    assert "function secretControl(" in body
+    start = body.index("function secretControl(")
+    end = body.index("function selectControl(", start)
+    fn = body[start:end]
+    assert "configured" in fn
+    assert "not set" in fn
+    # Replace + Clear are delegated actions (no inline handlers), and their
+    # handler functions exist elsewhere in the module.
+    assert 'data-action="replace"' in fn
+    assert 'data-action="clear"' in fn
+    assert "function revealSecretInput(" in body
+    assert "function clearSecret(" in body
+    # Both secret fields are driven through the SAME generic control (field.secret),
+    # not field-name-specific branches, so both get identical treatment.
+    assert 'name === "llm_api_key"' not in fn
+    assert 'name === "embedding_api_key"' not in fn
+
+
+def test_settings_dirty_state_per_section() -> None:
+    """Save is disabled until something in that section changed, and it re-enables per-group."""
+    body = _settings()
+    assert "function hasPendingInGroup(" in body
+    assert 'id="save-${' in body or 'id="save-' in body
+    start = body.index("function groupHtml(")
+    end = body.index("function serviceGroupHtml(", start)
+    fn = body[start:end]
+    assert "hasPendingInGroup(g.id)" in fn
+    assert "disabled" in fn
+
+
+def test_settings_save_reapplies_from_server_response() -> None:
+    """Save re-renders from response.config (server-confirmed), not optimistically,
+    and handles applied/rejected/reindex_scheduled — not just a bare .detail."""
+    body = _settings()
+    start = body.index("async function saveGroup(")
+    end = body.index("// ---- connection tests", start)
+    fn = body[start:end]
+    assert "json.config" in fn
+    assert "json.applied" in fn
+    assert "json.rejected" in fn
+    assert "json.reindex_scheduled" in fn
+    assert "renderConfig()" in fn
+
+
+def test_settings_rejected_fields_shown_as_field_errors() -> None:
+    body = _settings()
+    assert "fieldErrors" in body
+    assert "field-error" in body
+    start = body.index("async function saveGroup(")
+    end = body.index("// ---- connection tests", start)
+    fn = body[start:end]
+    assert "fieldErrors[fname] = reason" in fn
+
+
+def test_settings_reindex_notice_surfaced() -> None:
+    body = _settings()
+    assert "reindex_scheduled" in body
+    assert "reindex-notice" in body
+    assert "rebuild scheduled" in body
+
+
+def test_settings_protocol_and_autonomy_selects_exact_values() -> None:
+    body = _settings()
+    start = body.index("const PROTOCOL_OPTIONS")
+    end = body.index("const FLOAT_FIELDS", start)
+    src = body[start:end]
+    assert '"openai-compatible"' in src
+    assert '"anthropic-compatible"' in src
+    assert '"apply"' in src
+    assert '"propose"' in src
+
+
+def test_settings_requires_indicator_from_metadata() -> None:
+    """Each field row shows requires: runtime|rebuild sourced from field.requires."""
+    body = _settings()
+    assert "field.requires" in body
+    assert "requires: " in body
+
+
+def test_settings_service_section_read_only_with_guidance() -> None:
+    body = _settings()
+    assert "install-autostart" in body
+    assert "fritz:brain-service-setup" in body
+    assert "/v1/status" in body
 
 
 # ---------------------------------------------------------------------------
