@@ -856,27 +856,23 @@ def get_context_injection_level(fritz_local: dict | None) -> str:
     """Determine context injection level.
 
     Precedence:
-    1. .fritz-local.json context_injection field
-    2. Global settings.context_injection in registry.yaml
-    3. Default: "off"
+    1. valid ``.fritz-local.json`` ``context_injection`` field
+    2. valid central ``registry.yaml`` ``settings.context_injection`` value
+    3. default: ``"off"``
 
-    If .fritz-local.json exists but has no context_injection → "off"
-    If no .fritz-local.json → "off" (today's behavior)
-
-    This delegates the value lookup to :func:`get_setting` but keeps a stricter
-    edge-case rule: when a ``.fritz-local.json`` IS present, its (possibly
-    invalid/absent) value is authoritative and never falls through to the
-    central layer — a present-but-uninjected project is "off". Only when no
-    project file is present do we consult the central ``settings:`` value.
+    A project value wins only when it is one of ``off``/``light``/``full``;
+    an absent or invalid project value falls through to the registry setting,
+    then to the default. An explicit project ``off`` is valid and therefore
+    beats a central ``light``/``full`` value.
     """
     valid = ("off", "light", "full")
-    if fritz_local is not None:
-        # Project file present: its value is authoritative, no central fallthrough.
-        level = fritz_local.get("context_injection")
-        return level if level in valid else "off"
+    if isinstance(fritz_local, dict):
+        project_level = fritz_local.get("context_injection")
+        if project_level in valid:
+            return project_level
+        fritz_local = {}
 
-    # No .fritz-local.json: resolve through the shared path (central → default).
-    level = get_setting("context_injection", "off")
+    level = get_setting("context_injection", "off", fritz_local=fritz_local)
     return level if level in valid else "off"
 
 

@@ -199,32 +199,34 @@ def search_knowledge_files(vault_path: Path, manifest: dict, keywords: list[str]
     if not results and not feedback_results:
         return ""
 
-    # Build output within char limit
-    parts = []
-    chars_used = 0
+    # Build output within char limit using whole lines only. Never truncate a
+    # path line mid-string, and keep the final instruction whenever content is emitted.
+    instruction = "Read these files before responding."
+    lines = ["Brain knowledge relevant to your prompt:"]
 
-    if results:
-        parts.append("Brain knowledge relevant to your prompt:\n")
-        parts.append("Knowledge articles:")
+    def _fits(candidate: list[str]) -> bool:
+        return len("\n".join(candidate + [instruction])) <= max_chars
+
+    if not _fits(lines):
+        return ""
+
+    if results and _fits(lines + ["Knowledge articles:"]):
+        lines.append("Knowledge articles:")
         for path in results[:10]:
             line = f"- {path}"
-            if chars_used + len(line) > max_chars:
+            if not _fits(lines + [line]):
                 break
-            parts.append(line)
-            chars_used += len(line)
+            lines.append(line)
 
-    if feedback_results:
-        parts.append("\nFeedback (user corrections):")
+    if feedback_results and _fits(lines + ["Feedback (user corrections):"]):
+        lines.append("Feedback (user corrections):")
         for path in feedback_results:
             line = f"- {path}"
-            if chars_used + len(line) > max_chars:
+            if not _fits(lines + [line]):
                 break
-            parts.append(line)
-            chars_used += len(line)
+            lines.append(line)
 
-    parts.append("\nRead these files before responding.")
-
-    return "\n".join(parts)
+    return "\n".join(lines + [instruction])
 
 
 def should_check_brain(prompt: str) -> str | None:

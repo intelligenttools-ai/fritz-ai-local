@@ -3,7 +3,7 @@ name: brain-service-setup
 description: >
   Interactive runbook to provision or reconfigure the Fritz Local Brain Docker
   service. Asks the full question set (LLM backend, embeddings, scheduler,
-  autostart, optional one-time backlog drain, API token), confirms a
+  autostart, context injection, optional one-time backlog drain, API token), confirms a
   summary, then delegates ALL execution to the PROV1 provisioning engine
   (scripts/local-brain-service.py provision). Does not write any config or
   start any container before every answer is confirmed.
@@ -188,7 +188,19 @@ Map to `--reconciliation-autonomy <value>`. Defaults to `apply` if left blank.
 
 ---
 
-**Q10 — One-time backlog drain (optional)**
+**Q10 — Context injection level**
+
+> "What context-injection level should hooks use when matching prompts to
+> existing knowledge? I recommend `light` for retrieval at the moment of need.
+>
+>   off / light / full  (default/recommended: light)"
+
+Record `context_injection` as exactly one of `off`, `light`, or `full`. Map it
+to `--context-injection <value>`.
+
+---
+
+**Q11 — One-time backlog drain (optional)**
 
 > "Do you want to trigger a one-time apply-mode compile immediately after
 > provisioning, to drain any pending captures from the backlog?
@@ -197,7 +209,7 @@ Map to `--reconciliation-autonomy <value>`. Defaults to `apply` if left blank.
 
 If yes, ask one follow-up sub-question:
 
-**Q10a — Drain approval token** (only if Q10 = yes)
+**Q11a — Drain approval token** (only if Q11 = yes)
 
 > "If the backlog is large (above the service's batch threshold), the compile
 > will require an approval token to proceed. Enter a token string now, or leave
@@ -216,7 +228,7 @@ If yes, ask one follow-up sub-question:
 
 ---
 
-**Q11 — API token**
+**Q12 — API token**
 
 > "The service exposes a local REST API protected by a Bearer token.
 >
@@ -227,7 +239,7 @@ If yes, ask one follow-up sub-question:
 
 ---
 
-**Q12 — Telemetry (usage dashboard)**
+**Q13 — Telemetry (usage dashboard)**
 
 > "The service can record usage telemetry that powers the `/dashboard` view.
 >
@@ -242,7 +254,7 @@ retention.
 
 ---
 
-After all twelve questions (plus sub-questions) are answered, proceed to Phase 2.
+After all thirteen questions (plus sub-questions) are answered, proceed to Phase 2.
 
 ---
 
@@ -273,6 +285,7 @@ Scheduler
   Mode     : dry-run (propose only)
 
 Autostart              : no
+Context injection      : light
 Reconciliation autonomy: apply
 Drain backlog          : no  (skip one-time post-provision compile)
 API token              : (auto-generate)
@@ -318,6 +331,7 @@ python scripts/local-brain-service.py provision \
   [--embedding-model <model>] \
   [--scheduler-enabled] \
   [--scheduler-apply] \
+  --context-injection <off|light|full> \
   --api-port 8765 \
   [--install-autostart] \
   [--api-token <token>] \
@@ -338,15 +352,16 @@ safe to re-run to reconfigure. Pass flags that match the confirmed answers:
 | scheduler yes + apply mode | `--scheduler-enabled --scheduler-apply` |
 | scheduler yes + propose mode | `--scheduler-enabled` (dry-run is the default) |
 | autostart yes | `--install-autostart` |
+| context injection level | `--context-injection <off|light|full>` |
 | API token provided | `--api-token <token>` (omit to auto-generate) |
 | persistent approval token provided (Q8) | `--approval-token <token>` |
 | reconciliation autonomy = propose (Q9) | `--reconciliation-autonomy propose` |
 | reconciliation autonomy = apply (Q9) | `--reconciliation-autonomy apply` (default; may omit) |
-| telemetry enabled (Q12) | `--telemetry-enabled` (default; may omit) |
-| telemetry disabled (Q12) | `--no-telemetry-enabled` |
-| store query text (Q12) | `--telemetry-store-query-text` (default; may omit) |
-| do not store query text (Q12) | `--no-telemetry-store-query-text` |
-| telemetry retention (Q12) | `--telemetry-retention-days <days>` (default 90; 0 = keep forever) |
+| telemetry enabled (Q13) | `--telemetry-enabled` (default; may omit) |
+| telemetry disabled (Q13) | `--no-telemetry-enabled` |
+| store query text (Q13) | `--telemetry-store-query-text` (default; may omit) |
+| do not store query text (Q13) | `--no-telemetry-store-query-text` |
+| telemetry retention (Q13) | `--telemetry-retention-days <days>` (default 90; 0 = keep forever) |
 | drain backlog yes | `--drain-backlog` |
 | drain backlog yes + one-time approval token | `--drain-backlog --drain-approval-token <token>` |
 

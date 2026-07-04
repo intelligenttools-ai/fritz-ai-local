@@ -60,6 +60,63 @@ def test_brain_setup_prompt_still_injects_service_query(monkeypatch, capsys, tmp
     assert "SERVICE QUERY INSTRUCTIONS" in context
 
 
+def test_light_context_from_registry_injects_matching_article_path(monkeypatch, capsys, tmp_path):
+    vault = tmp_path / "vault"
+    knowledge = vault / "knowledge"
+    manifest_dir = vault / ".brain"
+    knowledge.mkdir(parents=True)
+    manifest_dir.mkdir()
+    article = knowledge / "frobnicator-routing.md"
+    article.write_text("# Frobnicator Routing\n\nUse the blue route.", encoding="utf-8")
+    (manifest_dir / "manifest.yaml").write_text("paths:\n  knowledge: knowledge\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        brain_common,
+        "load_registry",
+        lambda: {"settings": {"context_injection": "light", "max_injection_chars": 4000}},
+    )
+    monkeypatch.setattr(brain_prompt_check, "BRAIN_HOME", tmp_path)
+    monkeypatch.setattr(brain_prompt_check, "resolve_project_vault", lambda cwd: ("test", {"path": str(vault)}, vault, None))
+    monkeypatch.setattr(brain_prompt_check, "local_brain_service_configured", lambda: True)
+    monkeypatch.setattr(brain_prompt_check, "local_brain_setup_suggestions_enabled", lambda: False)
+
+    hook_input = {
+        "hook_event_name": "UserPromptSubmit",
+        "cwd": str(vault),
+        "user_prompt": "What is the frobnicator routing decision?",
+    }
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(hook_input)))
+
+    with pytest.raises(SystemExit):
+        brain_prompt_check.main()
+
+    context = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert str(article) in context
+
+
+def test_light_context_search_is_bounded_without_project_dirs(tmp_path):
+    vault = tmp_path / "vault"
+    knowledge = vault / "knowledge"
+    knowledge.mkdir(parents=True)
+    article = knowledge / "frobnicator-routing.md"
+    article.write_text("# Frobnicator Routing\n", encoding="utf-8")
+    max_chars = 96
+
+    context = brain_prompt_check.search_knowledge_files(
+        vault,
+        {"paths": {"knowledge": "knowledge"}},
+        ["frobnicator"],
+        None,
+        max_chars,
+    )
+
+    assert len(context) <= max_chars
+    if context:
+        assert "Read these files before responding." in context
+    path_lines = [line for line in context.splitlines() if line.startswith("- ")]
+    assert path_lines in ([], [f"- {article}"])
+
+
 def test_knowledge_search_skips_symlinked_markdown(tmp_path):
     vault = tmp_path / "vault"
     knowledge = vault / "knowledge"

@@ -111,18 +111,19 @@ def test_context_injection_project_wins(monkeypatch, tmp_path):
     assert brain_common.get_context_injection_level({"context_injection": "light"}) == "light"
 
 
-def test_context_injection_present_file_without_key_is_off(monkeypatch, tmp_path):
-    """Historical edge case: a present .fritz-local.json without the key -> off.
+def test_context_injection_project_off_beats_registry_light(monkeypatch, tmp_path):
+    _set_central(monkeypatch, tmp_path, {"context_injection": "light"})
+    assert brain_common.get_context_injection_level({"context_injection": "off"}) == "off"
 
-    This must NOT fall through to a central value of 'full'.
-    """
+
+def test_context_injection_present_file_without_key_falls_through_to_registry(monkeypatch, tmp_path):
     _set_central(monkeypatch, tmp_path, {"context_injection": "full"})
-    assert brain_common.get_context_injection_level({"project": "demo"}) == "off"
+    assert brain_common.get_context_injection_level({"project": "demo"}) == "full"
 
 
-def test_context_injection_invalid_project_value_is_off(monkeypatch, tmp_path):
+def test_context_injection_invalid_project_value_falls_through_to_registry(monkeypatch, tmp_path):
     _set_central(monkeypatch, tmp_path, {"context_injection": "full"})
-    assert brain_common.get_context_injection_level({"context_injection": "loud"}) == "off"
+    assert brain_common.get_context_injection_level({"context_injection": "loud"}) == "full"
 
 
 def test_context_injection_no_project_uses_central(monkeypatch, tmp_path):
