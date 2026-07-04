@@ -95,6 +95,11 @@ hook edits**.
    python3 scripts/install.py smoke-test
    ```
 
+Legacy non-plugin installs: `python3 hooks/install_claude_hooks.py` can still
+write the four Claude hooks manually. For Claude Code, manual
+`~/.claude/settings.json` hook edits are not supported; the plugin above owns
+the hook registrations and avoids duplicate fires.
+
 Full detail: [`bindings/claude/README.md`](bindings/claude/README.md). The
 plugin satisfies the full nine-capability bar.
 
