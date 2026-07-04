@@ -18,6 +18,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -30,23 +31,65 @@ HOOKS = REPO_ROOT / "hooks"
 PLUGIN = REPO_ROOT / "bindings" / "claude"
 PLUGIN_MANIFEST = PLUGIN / ".claude-plugin" / "plugin.json"
 MARKETPLACE = PLUGIN / ".claude-plugin" / "marketplace.json"
+ROOT_MARKETPLACE = REPO_ROOT / ".claude-plugin" / "marketplace.json"
 HOOKS_JSON = PLUGIN / "hooks" / "hooks.json"
 PLUGIN_SKILLS = PLUGIN / "skills"
+SYNC_SCRIPT = REPO_ROOT / "scripts" / "sync_claude_plugin.py"
+
+GENERATED_HOOK_FILES = (
+    "brain_session_start.py",
+    "brain_prompt_check.py",
+    "brain_capture.py",
+    "brain_autocapture_hook.py",
+    "brain_common.py",
+    "brain_bootstrap.py",
+    "brain_autocapture.py",
+    "brain_save_fact.py",
+)
+GENERATED_ADAPTER_FILES = (
+    "__init__.py",
+    "base.py",
+    "registry.py",
+    "claude_code.py",
+    "codex.py",
+    "gemini.py",
+    "hermes.py",
+    "pi_agent.py",
+)
 
 PY = sys.executable
 
 
-def _run_hook(script: Path, payload: dict, brain_home: Path, cwd: Path) -> subprocess.CompletedProcess:
+def _run_hook(
+    script: Path,
+    payload: dict,
+    brain_home: Path,
+    cwd: Path,
+    plugin_root: Path = PLUGIN,
+    standalone: bool = False,
+) -> subprocess.CompletedProcess:
     """Run a plugin hook script with hook-input JSON on stdin (tmp brain)."""
-    env = dict(os.environ)
-    env["BRAIN_HOME"] = str(brain_home)
-    env["FRITZ_REPO_PATH"] = str(REPO_ROOT)
-    # Keep the live ~/.brain untouched even if a hook resolves HOME.
-    env["HOME"] = str(brain_home.parent)
-    # Claude Code sets CLAUDE_PLUGIN_ROOT for plugin-launched hooks; it doubles
-    # as the agent-detection marker so the Claude transcript adapter is selected
-    # even when the transcript lives in a tmp dir (not ~/.claude/projects).
-    env["CLAUDE_PLUGIN_ROOT"] = str(PLUGIN)
+    if standalone:
+        env = {
+            "BRAIN_HOME": str(brain_home),
+            # Keep the live ~/.brain untouched even if a hook resolves HOME.
+            "HOME": str(brain_home.parent),
+            # Claude Code sets CLAUDE_PLUGIN_ROOT for plugin-launched hooks; it doubles
+            # as the agent-detection marker so the Claude transcript adapter is selected
+            # even when the transcript lives in a tmp dir (not ~/.claude/projects).
+            "CLAUDE_PLUGIN_ROOT": str(plugin_root),
+        }
+        env.pop("PYTHONPATH", None)
+    else:
+        env = dict(os.environ)
+        env["BRAIN_HOME"] = str(brain_home)
+        env["FRITZ_REPO_PATH"] = str(REPO_ROOT)
+        # Keep the live ~/.brain untouched even if a hook resolves HOME.
+        env["HOME"] = str(brain_home.parent)
+        # Claude Code sets CLAUDE_PLUGIN_ROOT for plugin-launched hooks; it doubles
+        # as the agent-detection marker so the Claude transcript adapter is selected
+        # even when the transcript lives in a tmp dir (not ~/.claude/projects).
+        env["CLAUDE_PLUGIN_ROOT"] = str(plugin_root)
     return subprocess.run(
         [PY, str(script)],
         input=json.dumps(payload),
@@ -58,13 +101,13 @@ def _run_hook(script: Path, payload: dict, brain_home: Path, cwd: Path) -> subpr
     )
 
 
-def _resolve_plugin_command(command: str) -> Path:
+def _resolve_plugin_command(command: str, plugin_root: Path = PLUGIN) -> Path:
     """Resolve a ``hooks.json`` command's script path via ${CLAUDE_PLUGIN_ROOT}.
 
     Claude expands ``${CLAUDE_PLUGIN_ROOT}`` to the plugin root (``PLUGIN``).
     The command looks like ``python3 ${CLAUDE_PLUGIN_ROOT}/hooks/foo.py``.
     """
-    expanded = command.replace("${CLAUDE_PLUGIN_ROOT}", str(PLUGIN))
+    expanded = command.replace("${CLAUDE_PLUGIN_ROOT}", str(plugin_root))
     # The script path is the last whitespace-delimited token.
     return Path(expanded.split()[-1])
 
@@ -75,7 +118,7 @@ def _resolve_plugin_command(command: str) -> Path:
 def test_plugin_json_valid_with_required_fields():
     data = json.loads(PLUGIN_MANIFEST.read_text(encoding="utf-8"))
     assert data["name"] == "fritz-brain"
-    assert isinstance(data.get("version"), str) and data["version"]
+    assert data.get("version") == (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip()
     assert data.get("description")
     # Declares hooks + skills so enabling the plugin registers everything.
     assert data.get("hooks") == "./hooks/hooks.json"
@@ -91,6 +134,16 @@ def test_marketplace_json_lists_plugin_with_local_source():
     assert fritz is not None, "marketplace must list the fritz-brain plugin"
     # Local directory source path.
     assert fritz.get("source") == "./"
+
+
+def test_repo_root_marketplace_points_at_claude_binding():
+    data = json.loads(ROOT_MARKETPLACE.read_text(encoding="utf-8"))
+    assert isinstance(data.get("name"), str) and data["name"]
+    plugins = data.get("plugins")
+    assert isinstance(plugins, list) and plugins
+    fritz = next((p for p in plugins if p.get("name") == "fritz-brain"), None)
+    assert fritz is not None, "repo-root marketplace must list the fritz-brain plugin"
+    assert fritz.get("source") == "bindings/claude"
 
 
 # --- hooks.json: events, ordering, and resolvable commands ------------------
@@ -119,22 +172,67 @@ def test_all_hook_commands_use_plugin_root_and_resolve():
                 assert "${CLAUDE_PLUGIN_ROOT}" in cmd, f"{event} cmd must use ${{CLAUDE_PLUGIN_ROOT}}: {cmd}"
                 script = _resolve_plugin_command(cmd)
                 assert script.exists(), f"{event} script does not resolve: {script}"
-                # Symlinks must resolve to the canonical repo hooks (single source).
-                assert script.resolve().parent == HOOKS.resolve(), (
-                    f"{script} must resolve into the repo hooks dir"
-                )
+                assert not script.is_symlink(), f"{event} script must be a generated real file: {script}"
 
 
-def test_plugin_hook_symlinks_point_at_repo_hooks():
-    for name in (
-        "brain_session_start.py",
-        "brain_prompt_check.py",
-        "brain_capture.py",
-        "brain_autocapture_hook.py",
-    ):
-        link = PLUGIN / "hooks" / name
-        assert link.is_symlink(), f"{name} should be a committed symlink"
-        assert link.resolve() == (HOOKS / name).resolve()
+def test_generated_claude_plugin_files_match_canonical_sources():
+    """Generated plugin copies must stay byte-identical to canonical sources."""
+    for name in GENERATED_HOOK_FILES:
+        plugin_file = PLUGIN / "hooks" / name
+        assert plugin_file.is_file() and not plugin_file.is_symlink(), f"{name} must be a real file"
+        assert plugin_file.read_bytes() == (HOOKS / name).read_bytes(), f"{name} drifted"
+
+    for name in GENERATED_ADAPTER_FILES:
+        plugin_file = PLUGIN / "adapters" / name
+        assert plugin_file.is_file() and not plugin_file.is_symlink(), f"adapters/{name} must be a real file"
+        assert plugin_file.read_bytes() == (REPO_ROOT / "adapters" / name).read_bytes(), (
+            f"adapters/{name} drifted"
+        )
+
+
+def test_sync_claude_plugin_check_mode_passes():
+    proc = subprocess.run(
+        [PY, str(SYNC_SCRIPT), "--check"],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+
+
+def test_copied_claude_plugin_runs_hooks_without_repo_checkout(tmp_path):
+    """Copying only bindings/claude must leave hook commands executable."""
+    standalone = tmp_path / "fritz-brain"
+    shutil.copytree(PLUGIN, standalone)
+    brain = tmp_path / "home" / ".brain"
+    brain.mkdir(parents=True)
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    transcript = proj / "session.jsonl"
+    _claude_transcript(
+        transcript,
+        [
+            {"type": "user", "message": {"role": "user", "content": "The forgejo server is at https://git.example.ai. Please remember this for future sessions."}},
+            {"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "Saved for future sessions."}]}},
+        ],
+    )
+    payloads = {
+        "brain_session_start.py": {"cwd": str(proj), "hook_event_name": "SessionStart"},
+        "brain_prompt_check.py": {
+            "cwd": str(proj),
+            "hook_event_name": "UserPromptSubmit",
+            "user_prompt": "where is the forgejo server?",
+        },
+        "brain_capture.py": {"cwd": str(proj), "hook_event_name": "Stop", "transcript_path": str(transcript)},
+        "brain_autocapture_hook.py": {"cwd": str(proj), "hook_event_name": "Stop", "transcript_path": str(transcript)},
+    }
+    data = json.loads((standalone / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+    commands = [hook["command"] for groups in data.values() for group in groups for hook in group["hooks"]]
+    for command in commands:
+        script = _resolve_plugin_command(command, standalone)
+        proc = _run_hook(script, payloads[script.name], brain, proj, standalone, standalone=True)
+        assert proc.returncode == 0, f"{script.name} failed\nSTDOUT:{proc.stdout}\nSTDERR:{proc.stderr}"
 
 
 # --- C1: SessionStart context injection -------------------------------------
