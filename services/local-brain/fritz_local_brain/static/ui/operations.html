@@ -2,8 +2,9 @@
 <!--
   Fritz Local Brain — Operations page (#220 app shell).
   Operator-initiated run triggers (#196: compile / sync / embeddings / lint,
-  with the large-batch approval gate) plus a recent-runs table (/v1/runs/recent).
-  Deep-linkable at /ui/operations.
+  with the large-batch approval gate) plus a runs table (/v1/runs, kind filter)
+  with a per-run detail drill-down (#224: GET /v1/runs/{id}), deep-linkable via
+  ?run=<id> with browser back/forward support.
 -->
 <html lang="en">
 <head>
@@ -105,10 +106,29 @@
         </div>
       </div>
 
-      <!-- Recent runs -->
-      <h2>Recent runs</h2>
-      <div class="section panel">
-        <div id="runs-table"><div class="skeleton skel-line"></div><div class="skeleton skel-line"></div></div>
+      <!-- Runs list + per-run detail drill-down (#224) -->
+      <div id="runs-list-view">
+        <h2>Runs</h2>
+        <div class="section panel">
+          <div class="runs-toolbar">
+            <label for="kind-filter-select">Kind</label>
+            <select id="kind-filter-select" onchange="onKindFilterChange()">
+              <option value="">All kinds</option>
+              <option value="compile">compile</option>
+              <option value="sync">sync</option>
+              <option value="lint">lint</option>
+              <option value="embeddings">embeddings</option>
+            </select>
+          </div>
+          <div id="runs-table"><div class="skeleton skel-line"></div><div class="skeleton skel-line"></div></div>
+        </div>
+      </div>
+
+      <div id="run-detail-view" style="display:none">
+        <div class="section panel">
+          <button class="back-btn" onclick="backToRuns()">← Back to runs</button>
+          <div id="run-detail"></div>
+        </div>
       </div>
     </main>
   </div>
@@ -195,7 +215,10 @@ async function _runCompileWith(dryRun, approvalToken) {
     let msg = `Compile${esc(mode)}: applied ${applied} / considered ${considered}, ${errCount} error(s), ${skipped} skipped`;
     if (errCount > 0) msg += ` — ${esc(json.errors[0])}`;
     showToast(msg, errCount > 0);
-    if (!dryRun && errCount === 0) loadAll();
+    // A run result came back (json present) — the run finished and is now in the
+    // table, whether it succeeded or errored. Only the null/approval paths above
+    // return early (no run exists yet).
+    loadRuns();
   } catch (e) {
     showToast(`Compile error: ${esc(String(e))}`, true);
   } finally {
@@ -221,7 +244,7 @@ async function runSync(dryRun) {
     let msg = `Sync${esc(mode)}: ${vaults} vault(s), ${errCount} error(s)`;
     if (errCount > 0) msg += ` — ${esc(json.errors[0])}`;
     showToast(msg, errCount > 0);
-    if (!dryRun && errCount === 0) loadAll();
+    loadRuns();  // finished run (ok or error) is now in the table
   } catch (e) {
     showToast(`Sync error: ${esc(String(e))}`, true);
   } finally {
@@ -246,7 +269,7 @@ async function runEmbedIndex() {
       msg = `Embed index: indexed ${json.documents_indexed ?? 0} document(s)`;
     }
     showToast(msg, isError);
-    if (!isError) loadAll();
+    loadRuns();  // finished run (ok or error) is now in the table
   } catch (e) {
     showToast(`Embed index error: ${esc(String(e))}`, true);
   } finally {
@@ -267,6 +290,7 @@ async function runLint() {
     let msg = `Lint: ${findings} finding(s), ${errCount} error(s)`;
     if (errCount > 0) msg += ` — ${esc(json.errors[0])}`;
     showToast(msg, errCount > 0);
+    loadRuns();  // finished run (ok or error) is now in the table
   } catch (e) {
     showToast(`Lint error: ${esc(String(e))}`, true);
   } finally {
@@ -274,11 +298,48 @@ async function runLint() {
   }
 }
 
-// ---- recent runs ------------------------------------------------------------
+// ---- runs table + per-run detail drill-down (#224) --------------------------
+//
+// Deep-linkable at ?run=<id>. Rows carry data-run-id (delegated click handler,
+// bound once) — never inline onclick with interpolated data.
+
+let _kindFilter = "";
+let _stateApplied = false;
+
+/** Read the current URL query into { run }. */
+function readQuery() {
+  const p = new URLSearchParams(window.location.search);
+  return { run: p.get("run") || "" };
+}
+
+/** Reflect a view into the URL (push = new history entry; replace otherwise). */
+function writeQuery(state, push) {
+  const p = new URLSearchParams();
+  if (state.run) p.set("run", state.run);
+  const qs = p.toString();
+  const url = window.location.pathname + (qs ? "?" + qs : "");
+  if (push) history.pushState(state, "", url);
+  else history.replaceState(state, "", url);
+}
+
+function showRunsListView() {
+  document.getElementById("runs-list-view").style.display = "";
+  document.getElementById("run-detail-view").style.display = "none";
+}
+
+function showRunDetailView() {
+  document.getElementById("runs-list-view").style.display = "none";
+  document.getElementById("run-detail-view").style.display = "";
+}
+
+function onKindFilterChange() {
+  _kindFilter = document.getElementById("kind-filter-select").value;
+  loadRuns();
+}
 
 function renderRuns(data) {
   const el = document.getElementById("runs-table");
-  if (data === null) { renderError("runs-table", "Could not load recent runs."); return; }
+  if (data === null) { renderError("runs-table", "Could not load runs."); return; }
   const runs = data ? (data.runs || []) : [];
   if (!runs.length) {
     el.innerHTML = '<div class="no-data">No runs recorded yet.</div>';
@@ -287,7 +348,8 @@ function renderRuns(data) {
   const rows = runs.map(r => {
     const rateClass = r.status === "ok" ? "sys-rate-ok" : "sys-rate-warn";
     const mode = r.dry_run ? "dry-run" : "apply";
-    return `<tr>
+    const id = esc(r.id || "");
+    return `<tr data-run-id="${id}">
       <td>${esc(r.kind)}</td>
       <td>${esc(mode)}</td>
       <td class="${rateClass}">${esc(r.status)}</td>
@@ -301,20 +363,103 @@ function renderRuns(data) {
   </table>`;
 }
 
+async function loadRuns() {
+  const params = { limit: 20 };
+  if (_kindFilter) params.kind = _kindFilter;
+  const data = await apiFetch("/v1/runs", params);
+  renderRuns(data);
+}
+
+/** Render one run's full detail: counts (from `detail`), errors, duration, source. */
+function renderRunDetail(r) {
+  const el = document.getElementById("run-detail");
+  const mode = r.dry_run ? "dry-run" : "apply";
+  el.innerHTML = `
+    <h2 style="font-size:1.1rem;color:var(--accent);margin-bottom:.6rem">${esc(r.kind)} · ${esc(r.id)}</h2>
+    <div class="cards" id="run-detail-cards"></div>
+    <div class="section panel" style="margin-top:1rem">
+      <div class="panel-title">Errors</div>
+      <div id="run-detail-errors"></div>
+    </div>`;
+
+  const detail = (r && r.detail) || {};
+  const detailCards = Object.entries(detail)
+    .filter(([k, v]) => k !== "errors" && typeof v !== "object")
+    .map(([k, v]) => ({ label: esc(k.replace(/_/g, " ")), value: esc(String(v)) }));
+
+  renderCards("run-detail-cards", [
+    { label: "Status", value: esc(r.status || ""), cls: r.status === "ok" ? "green" : "red" },
+    { label: "Mode", value: esc(mode) },
+    { label: "Duration", value: fmtMs(r.duration_ms) },
+    { label: "Source", value: esc(r.source || "—") },
+    { label: "Started", value: esc(r.started_at || "—") },
+    { label: "Finished", value: esc(r.finished_at || "—") },
+    { label: "Summary", value: esc(r.summary || "—") },
+    ...detailCards,
+  ]);
+
+  const errors = Array.isArray(r.errors) ? r.errors : [];
+  const errEl = document.getElementById("run-detail-errors");
+  errEl.innerHTML = errors.length
+    ? `<ul>${errors.map(e => `<li>${esc(e)}</li>`).join("")}</ul>`
+    : '<div class="no-data">No errors.</div>';
+}
+
+async function loadRun(id, push = true) {
+  showRunDetailView();
+  const data = await apiFetch(`/v1/runs/${encodeURIComponent(id)}`);
+  if (!data) { renderError("run-detail", "Could not load run."); return; }
+  if (push) writeQuery({ run: id }, true);
+  renderRunDetail(data);
+}
+
+function backToRuns() {
+  showRunsListView();
+  writeQuery({}, true);
+}
+
+/** Apply a URL state to the view (no history push — this IS the navigation). */
+async function applyState(state) {
+  if (state.run) {
+    await loadRun(state.run, false);
+  } else {
+    showRunsListView();
+  }
+}
+
+// Browser back/forward.
+window.addEventListener("popstate", () => { applyState(readQuery()); });
+
+// Row clicks: delegated listener on the (re-rendered) runs-table container —
+// SECURITY: reads el.dataset, never inline onclick with interpolated data.
+let _delegatesBound = false;
+function bindDelegates() {
+  if (_delegatesBound) return;
+  _delegatesBound = true;
+  document.getElementById("runs-table").addEventListener("click", (e) => {
+    const row = e.target.closest("tr[data-run-id]");
+    if (row && row.dataset.runId) loadRun(row.dataset.runId);
+  });
+}
+
 async function loadAll() {
+  bindDelegates();
   if (_inFlight) return;
   _inFlight = true;
   document.getElementById("last-updated").textContent = "Loading…";
 
-  const runs = await apiFetch("/v1/runs/recent");
+  await loadRuns();
 
   _inFlight = false;
   if (!getToken()) return;
 
-  renderRuns(runs);
-
   _lastUpdatedAt = new Date();
   renderLastUpdated();
+
+  if (!_stateApplied) {
+    _stateApplied = true;
+    await applyState(readQuery());
+  }
 }
 </script>
 </body>

@@ -2,8 +2,10 @@
 <!--
   Fritz Local Brain — Agents page (#220 app shell).
   Per-agent section with the #199 drill-down (agent-filter selector scopes the
-  summary / queries / projects panels). Page-level drill-down comes later; this
-  keeps the existing header-filter behaviour. Deep-linkable at /ui/agents.
+  summary / queries / projects panels), plus a per-agent detail drill-down
+  (#224: agent cards -> GET /v1/usage/agents/{agent}), deep-linkable via
+  ?agent=<name> with browser back/forward support. Recent events that
+  reference a run cross-link to the Operations run detail.
 -->
 <html lang="en">
 <head>
@@ -49,30 +51,46 @@
     </header>
 
     <main>
-      <h2>Summary</h2>
-      <div class="section">
-        <div class="cards" id="summary-cards">
-          <div class="skel-cards"><div class="skeleton skel-card"></div><div class="skeleton skel-card"></div><div class="skeleton skel-card"></div></div>
-        </div>
-      </div>
-
-      <h2>Queries</h2>
-      <div class="section grid2">
-        <div class="panel">
-          <div class="cards" id="query-cards" style="margin-bottom:.85rem">
-            <div class="skeleton skel-card"></div>
+      <div id="agents-list-view">
+        <h2>Agents</h2>
+        <div class="section">
+          <div class="cards" id="agent-cards">
+            <div class="skel-cards"><div class="skeleton skel-card"></div><div class="skeleton skel-card"></div></div>
           </div>
-          <div class="latency-row" id="latency-row" style="display:none"></div>
         </div>
-        <div class="panel">
-          <div class="panel-title">Top queries</div>
-          <div id="top-queries-chart"><div class="skeleton skel-line"></div><div class="skeleton skel-line"></div></div>
+
+        <h2>Summary</h2>
+        <div class="section">
+          <div class="cards" id="summary-cards">
+            <div class="skel-cards"><div class="skeleton skel-card"></div><div class="skeleton skel-card"></div><div class="skeleton skel-card"></div></div>
+          </div>
+        </div>
+
+        <h2>Queries</h2>
+        <div class="section grid2">
+          <div class="panel">
+            <div class="cards" id="query-cards" style="margin-bottom:.85rem">
+              <div class="skeleton skel-card"></div>
+            </div>
+            <div class="latency-row" id="latency-row" style="display:none"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-title">Top queries</div>
+            <div id="top-queries-chart"><div class="skeleton skel-line"></div><div class="skeleton skel-line"></div></div>
+          </div>
+        </div>
+
+        <h2>Projects / Vaults</h2>
+        <div class="section panel">
+          <div id="projects-table"><div class="skeleton skel-line"></div><div class="skeleton skel-line"></div></div>
         </div>
       </div>
 
-      <h2>Projects / Vaults</h2>
-      <div class="section panel">
-        <div id="projects-table"><div class="skeleton skel-line"></div><div class="skeleton skel-line"></div></div>
+      <div id="agent-detail-view" style="display:none">
+        <div class="section panel">
+          <button class="back-btn" onclick="backToAgents()">← Back to agents</button>
+          <div id="agent-detail"></div>
+        </div>
       </div>
     </main>
   </div>
@@ -115,6 +133,27 @@ function populateAgentFilter(data) {
 function onAgentFilterChange() {
   _agentFilter = document.getElementById("agent-filter-select").value;
   loadAll();
+}
+
+/** Agent cards (#224): one clickable card per agent -> per-agent drill-down.
+ * data-agent carries the target (delegated click handler) — never inline
+ * onclick with interpolated data. */
+function renderAgentCards(data) {
+  const el = document.getElementById("agent-cards");
+  if (data === null) { renderError("agent-cards", "Could not load agents."); return; }
+  const agents = (data && Array.isArray(data.agents)) ? data.agents : [];
+  if (!agents.length) {
+    el.innerHTML = '<div class="no-data">No agents recorded yet.</div>';
+    return;
+  }
+  el.innerHTML = agents.map(a => {
+    const id = esc(a.agent);
+    return `<div class="card agent-card" data-agent="${id}">
+      <div class="label">${id}</div>
+      <div class="value">${a.count ?? 0}</div>
+      <div class="agent-card-meta">last seen ${esc(a.last_seen || "—")}</div>
+    </div>`;
+  }).join("");
 }
 
 function renderSummary(data) {
@@ -206,7 +245,168 @@ function renderProjects(data) {
   </table>`;
 }
 
+// ---- per-agent detail drill-down (#224) --------------------------------------
+//
+// Deep-linkable at ?agent=<name>, backed by GET /v1/usage/agents/{agent}.
+// Recent-events rows whose run_id is set cross-link to the Operations run
+// detail (/ui/operations?run=<id>) — a real page navigation, not SPA routing.
+
+const AGENT_EVENTS_LIMIT = 20;
+let _currentAgent = "";
+let _agentEventsOffset = 0;
+let _stateApplied = false;
+
+/** Read the current URL query into { agent }. */
+function readQuery() {
+  const p = new URLSearchParams(window.location.search);
+  return { agent: p.get("agent") || "" };
+}
+
+/** Reflect a view into the URL (push = new history entry; replace otherwise). */
+function writeQuery(state, push) {
+  const p = new URLSearchParams();
+  if (state.agent) p.set("agent", state.agent);
+  const qs = p.toString();
+  const url = window.location.pathname + (qs ? "?" + qs : "");
+  if (push) history.pushState(state, "", url);
+  else history.replaceState(state, "", url);
+}
+
+function showAgentsListView() {
+  document.getElementById("agents-list-view").style.display = "";
+  document.getElementById("agent-detail-view").style.display = "none";
+}
+
+function showAgentDetailView() {
+  document.getElementById("agents-list-view").style.display = "none";
+  document.getElementById("agent-detail-view").style.display = "";
+}
+
+/** Render one agent's full detail: header cards, event-type breakdown, daily
+ * activity chart, and a paginated recent-events list. */
+function renderAgentDetail(d) {
+  const el = document.getElementById("agent-detail");
+  el.innerHTML = `
+    <h2 style="font-size:1.1rem;color:var(--accent);margin-bottom:.6rem">${esc(d.agent)}</h2>
+    <div class="cards" id="agent-detail-cards"></div>
+    <div class="section grid2" style="margin-top:1rem">
+      <div class="panel">
+        <div class="panel-title">Event types</div>
+        <div id="agent-detail-types"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">Daily activity</div>
+        <div id="agent-detail-chart"></div>
+      </div>
+    </div>
+    <div class="section panel" style="margin-top:1rem">
+      <div class="panel-title">Recent events</div>
+      <div id="agent-detail-events"></div>
+      <div class="agent-events-pager">
+        <button class="back-btn" onclick="pageAgentEvents(-1)" ${d.offset > 0 ? "" : "disabled"}>← Prev</button>
+        <span>${Math.min(d.offset + 1, d.event_count)}–${Math.min(d.offset + d.limit, d.event_count)} of ${d.event_count}</span>
+        <button class="back-btn" onclick="pageAgentEvents(1)" ${d.offset + d.limit < d.event_count ? "" : "disabled"}>Next →</button>
+      </div>
+    </div>`;
+
+  renderCards("agent-detail-cards", [
+    { label: "Total events", value: d.event_count ?? 0 },
+    { label: "First seen", value: esc(d.first_seen || "—") },
+    { label: "Last seen", value: esc(d.last_seen || "—") },
+  ]);
+
+  const typeItems = Object.entries(d.events_by_type || {})
+    .sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => ({ label: k, count: v }));
+  renderBarChart("agent-detail-types", typeItems);
+
+  const buckets = {};
+  for (const [day, n] of Object.entries(d.daily_activity || {})) buckets[day] = { events: n };
+  renderTimeChart("agent-detail-chart", buckets);
+
+  renderAgentEvents(Array.isArray(d.recent_events) ? d.recent_events : []);
+}
+
+/** Recent-events table. run_id, when set, cross-links to the Operations run
+ * detail — a real <a> navigation (not a delegated data-* click), so both
+ * encodeURIComponent (URL correctness) and esc() (attribute-context safety)
+ * guard the interpolated id. */
+function renderAgentEvents(events) {
+  const el = document.getElementById("agent-detail-events");
+  if (!events.length) { el.innerHTML = '<div class="no-data">No events yet.</div>'; return; }
+  const rows = events.map(e => {
+    const runLink = e.run_id
+      ? `<a href="/ui/operations?run=${esc(encodeURIComponent(e.run_id))}">${esc(String(e.run_id).slice(0, 8))}</a>`
+      : "—";
+    return `<tr>
+      <td>${esc(e.ts || "")}</td>
+      <td>${esc(e.event_type || "")}</td>
+      <td>${esc(e.vault || "")}</td>
+      <td>${esc(e.status || "")}</td>
+      <td class="num">${fmtMs(e.duration_ms)}</td>
+      <td>${runLink}</td>
+    </tr>`;
+  }).join("");
+  el.innerHTML = `<table>
+    <thead><tr><th>Time</th><th>Type</th><th>Vault</th><th>Status</th><th class="num">Duration</th><th>Run</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+}
+
+async function fetchAndRenderAgentDetail(push) {
+  const data = await apiFetch(`/v1/usage/agents/${encodeURIComponent(_currentAgent)}`, {
+    limit: AGENT_EVENTS_LIMIT,
+    offset: _agentEventsOffset,
+  });
+  if (!data) { renderError("agent-detail", "Could not load agent."); return; }
+  if (push) writeQuery({ agent: _currentAgent }, true);
+  renderAgentDetail(data);
+}
+
+async function loadAgent(agent, push = true) {
+  _currentAgent = agent;
+  _agentEventsOffset = 0;
+  showAgentDetailView();
+  await fetchAndRenderAgentDetail(push);
+}
+
+async function pageAgentEvents(direction) {
+  const next = _agentEventsOffset + direction * AGENT_EVENTS_LIMIT;
+  if (next < 0) return;
+  _agentEventsOffset = next;
+  await fetchAndRenderAgentDetail(false);
+}
+
+function backToAgents() {
+  showAgentsListView();
+  writeQuery({}, true);
+}
+
+/** Apply a URL state to the view (no history push — this IS the navigation). */
+async function applyState(state) {
+  if (state.agent) {
+    await loadAgent(state.agent, false);
+  } else {
+    showAgentsListView();
+  }
+}
+
+// Browser back/forward.
+window.addEventListener("popstate", () => { applyState(readQuery()); });
+
+// Agent cards: delegated click listener (survives the innerHTML re-render).
+let _delegatesBound = false;
+function bindDelegates() {
+  if (_delegatesBound) return;
+  _delegatesBound = true;
+  document.getElementById("agent-cards").addEventListener("click", (e) => {
+    const card = e.target.closest(".agent-card");
+    if (card && card.dataset.agent) loadAgent(card.dataset.agent);
+  });
+}
+
 async function loadAll() {
+  bindDelegates();
   if (_inFlight) return;
   _inFlight = true;
   document.getElementById("last-updated").textContent = "Loading…";
@@ -225,12 +425,18 @@ async function loadAll() {
   if (!getToken()) return;
 
   populateAgentFilter(agents);
+  renderAgentCards(agents);
   renderSummary(summary);
   renderQueries(queries);
   renderProjects(projects);
 
   _lastUpdatedAt = new Date();
   renderLastUpdated();
+
+  if (!_stateApplied) {
+    _stateApplied = true;
+    await applyState(readQuery());
+  }
 }
 </script>
 </body>

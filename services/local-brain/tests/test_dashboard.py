@@ -187,7 +187,7 @@ def test_operations_approval_gate_and_toast() -> None:
 
 def test_operations_recent_runs_table() -> None:
     body = _ops()
-    assert "/v1/runs/recent" in body
+    assert "/v1/runs" in body
     assert 'id="runs-table"' in body
 
 
@@ -197,6 +197,48 @@ def test_operations_uses_shared_post_helper() -> None:
     body = _ops()
     assert "postAction(" in body
     assert "/ui/shared/api.js" in body
+
+
+# ---------------------------------------------------------------------------
+# Run detail drill-down (#224): GET /v1/runs + ?run= deep link
+# ---------------------------------------------------------------------------
+
+def test_operations_run_detail_view_and_endpoint() -> None:
+    """The run-detail view fetches GET /v1/runs/{id} and is deep-linkable."""
+    body = _ops()
+    assert 'id="run-detail"' in body
+    assert "/v1/runs/" in body
+    assert "function loadRun(" in body
+    assert "popstate" in body
+    assert "data-run-id" in body
+
+
+def test_operations_run_detail_escapes_untrusted_fields() -> None:
+    """XSS guard: the run-detail renderer must esc() EACH untrusted field it
+    renders (not merely contain esc() somewhere). If any of these fields is
+    later interpolated unescaped, the matching assertion here must fail."""
+    body = _ops()
+    start = body.index("function renderRunDetail(")
+    end = body.index("\n}", start)
+    fn = body[start:end]
+    for token in (
+        "esc(r.kind",
+        "esc(r.id",
+        "esc(r.status",
+        "esc(r.source",
+        "esc(r.started_at",
+        "esc(r.finished_at",
+        "esc(r.summary",
+        "esc(e)",  # each error message in the errors.map(...)
+    ):
+        assert token in fn, f"run detail must escape via {token}"
+
+
+def test_operations_runs_table_kind_filter() -> None:
+    """The runs table is backed by GET /v1/runs with an optional kind filter."""
+    body = _ops()
+    assert "/v1/runs" in body
+    assert "kind" in body
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +303,50 @@ def test_agents_agent_id_escaped_in_selector() -> None:
     start = body.index("function populateAgentFilter(")
     end = body.index("function onAgentFilterChange(", start)
     assert "esc(a.agent)" in body[start:end]
+
+
+# ---------------------------------------------------------------------------
+# Per-agent drill-down (#224): GET /v1/usage/agents/{agent} + ?agent= deep link
+# ---------------------------------------------------------------------------
+
+def test_agents_drilldown_detail_view_and_endpoint() -> None:
+    """Agent cards drill into a detail view backed by GET /v1/usage/agents/{agent}."""
+    body = _agents()
+    assert "/v1/usage/agents/" in body
+    assert "function loadAgent(" in body
+    assert "writeQuery" in body
+    assert "data-agent" in body
+
+
+def test_agents_detail_escapes_untrusted_fields() -> None:
+    """XSS guard: the agent-detail + recent-events renderers must esc() EACH
+    untrusted field they render (not merely contain esc() somewhere). The run
+    cross-link id must be BOTH encodeURIComponent()'d (URL) and esc()'d
+    (attribute). If any field is later interpolated unescaped, the matching
+    assertion here must fail."""
+    body = _agents()
+
+    detail_start = body.index("function renderAgentDetail(")
+    detail_end = body.index("\n}", detail_start)
+    detail_fn = body[detail_start:detail_end]
+    for token in ("esc(d.agent", "esc(d.first_seen", "esc(d.last_seen"):
+        assert token in detail_fn, f"agent detail must escape via {token}"
+
+    ev_start = body.index("function renderAgentEvents(")
+    ev_end = body.index("\n}", ev_start)
+    ev_fn = body[ev_start:ev_end]
+    for token in ("esc(e.ts", "esc(e.event_type", "esc(e.vault", "esc(e.status"):
+        assert token in ev_fn, f"agent recent-events must escape via {token}"
+    # The run cross-link id is untrusted → encodeURIComponent for URL correctness
+    # AND esc() for the attribute-context safety of the href.
+    assert "encodeURIComponent(e.run_id" in ev_fn
+    assert "esc(encodeURIComponent(e.run_id" in ev_fn
+
+
+def test_agents_recent_events_link_to_run_detail() -> None:
+    """recent_events rows with a run_id must cross-link to Operations run detail."""
+    body = _agents()
+    assert "/ui/operations?run=" in body
 
 
 # ---------------------------------------------------------------------------
