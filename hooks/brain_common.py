@@ -468,6 +468,22 @@ def _resolve_client_agent() -> str:
     return "unknown"
 
 
+def claude_form(skill_ref: str) -> str:
+    """Convert a canonical ``/fritz:*`` skill reference to the slash-command
+    form Claude Code actually registers for it (#239).
+
+    The Claude plugin (name ``fritz-brain``) ships each skill as a directory
+    under ``bindings/claude/skills/`` named e.g. ``fritz:brain-query``. Claude
+    Code registers plugin skills as ``<plugin-name>:<dir-name-with-colons-as-
+    hyphens>``, so the live slash form is ``/fritz-brain:fritz-brain-query``,
+    not the raw ``/fritz:brain-query`` skill-tree name. Only the Claude
+    runtime resolves names this way; every other runtime (pi, Codex, Hermes)
+    uses ``/fritz:*`` unchanged.
+    """
+    ref = skill_ref.lstrip("/").replace(":", "-")
+    return f"/fritz-brain:{ref}"
+
+
 def _try_service_compile(timeout: float = 30.0) -> tuple[str, int | None] | None:
     base_url = _validated_local_brain_base_url()
     if base_url is None:
@@ -736,19 +752,24 @@ def local_brain_service_operational(timeout: float = 0.5) -> bool:
 def local_brain_service_setup_forcing_instruction() -> str:
     """Return the imperative instruction injected when desired==docker but NOT operational.
 
-    This text MUST contain ``/fritz:brain-service-setup`` so tests can assert its
-    presence, and must be unambiguous that the agent cannot proceed without it.
+    This text MUST contain the brain-service-setup skill reference so tests can
+    assert its presence, and must be unambiguous that the agent cannot proceed
+    without it. Runtime-aware (#239): the Claude runtime only resolves the
+    sanitized plugin-qualified skill name, so emit that for ``agent ==
+    'claude'``; every other runtime keeps the raw ``/fritz:brain-service-setup``
+    skill-tree name unchanged.
     """
+    setup = claude_form("/fritz:brain-service-setup") if _resolve_client_agent() == "claude" else "/fritz:brain-service-setup"
     return (
         "## REQUIRED ACTION: Local Brain Docker Service Not Running\n\n"
         "The registry declares `local_brain_service.desired: docker`, meaning the "
         "Dockerized Local Brain service is the REQUIRED runtime for this install, "
         "but the service is NOT currently operational.\n\n"
-        "You MUST run `/fritz:brain-service-setup` before proceeding with any "
+        f"You MUST run `{setup}` before proceeding with any "
         "brain-related work. Do NOT skip this step, do NOT attempt to work around "
         "it by using local slash-skills, and do NOT ask the user for permission — "
         "the desired state has already been declared in the registry.\n\n"
-        "After `/fritz:brain-service-setup` completes successfully and the service "
+        f"After `{setup}` completes successfully and the service "
         "responds at its configured URL, continue with the original task."
     )
 
@@ -759,6 +780,28 @@ def local_brain_service_instructions() -> str:
     base_url = get_local_brain_base_url().rstrip("/")
     auth = _local_brain_auth_header()
     agent = _resolve_client_agent()
+
+    if agent == "claude":
+        return (
+            "## Local Brain Service Active\n\n"
+            f"The Dockerized Local Brain service is reachable at `{base_url}`. "
+            "For supported workflows, use this service layer first instead of duplicating the old local slash-skill workflow.\n\n"
+            "Agent integration order: call `brain_search` (the registered MCP tool) as your default brain check, "
+            "with `brain_query`, `brain_compile`, `brain_sync`, and `brain_lint` available as registered MCP tools for their respective workflows — "
+            "call these MCP tools directly, one native tool call, instead of shelling out.\n\n"
+            "Fallback only if the MCP tools are unavailable, use curl from the host. The optional CLI is for installed local packages only; do not assume it is on the host PATH.\n\n"
+            "Fallback service-backed workflows (curl):\n"
+            f"- Search/brain check, semantic when embeddings are enabled: `curl -fsS -X POST {base_url}/v1/search/run{auth} -H 'content-type: application/json' -H 'X-Brain-Agent: {agent}' -d '{{\"query\":\"<query>\"}}'`\n"
+            f"- Exact query compatibility only, not the default brain check: `curl -fsS -X POST {base_url}/v1/query/run{auth} -H 'content-type: application/json' -H 'X-Brain-Agent: {agent}' -d '{{\"query\":\"<query>\"}}'`\n"
+            f"- Compile: `curl -fsS -X POST {base_url}/v1/compile/run{auth} -H 'content-type: application/json' -H 'X-Brain-Agent: {agent}' -d '{{\"dry_run\":true}}'`\n"
+            f"- Sync: `curl -fsS -X POST {base_url}/v1/sync/run{auth} -H 'content-type: application/json' -H 'X-Brain-Agent: {agent}' -d '{{\"dry_run\":true}}'`\n"
+            f"- Lint: `curl -fsS -X POST {base_url}/v1/lint/run{auth} -H 'content-type: application/json' -d '{{}}'`\n"
+            f"- Embeddings: `curl -fsS {base_url}/v1/embeddings/status{auth}` and `curl -fsS -X POST {base_url}/v1/embeddings/probe{auth} -H 'content-type: application/json' -d '{{\"dry_run\":true}}'`\n\n"
+            f"Do not also run `{claude_form('/fritz:brain-query')}`, `{claude_form('/fritz:brain-compile')}`, `{claude_form('/fritz:brain-sync')}`, or `{claude_form('/fritz:brain-lint')}` "
+            "for the same work unless the service is unavailable or the human explicitly requests the non-service path. "
+            "Use the existing local skills only for workflows the service does not provide, such as setup, ingest, update, and writing the handover document itself."
+        )
+
     return (
         "## Local Brain Service Active\n\n"
         f"The Dockerized Local Brain service is reachable at `{base_url}`. "

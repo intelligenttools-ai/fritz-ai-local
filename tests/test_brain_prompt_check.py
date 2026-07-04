@@ -672,7 +672,9 @@ def test_google_prompt_produces_save_policy_output(monkeypatch, capsys, tmp_path
         monkeypatch, capsys, tmp_path,
         "google the postgres connection string location",
     )
-    assert "/fritz:brain-save" in context, (
+    # Runs in-process with the ambient (Claude Code) env, so the save-policy
+    # skill reference is the sanitized plugin-qualified name (#239).
+    assert "/fritz-brain:fritz-brain-save" in context, (
         "'google…' was wrongly suppressed as trivial; save policy not injected"
     )
 
@@ -686,7 +688,9 @@ def test_going_prompt_produces_save_policy_output(monkeypatch, capsys, tmp_path)
         monkeypatch, capsys, tmp_path,
         "going to store the API token in 1Password",
     )
-    assert "/fritz:brain-save" in context, (
+    # Runs in-process with the ambient (Claude Code) env, so the save-policy
+    # skill reference is the sanitized plugin-qualified name (#239).
+    assert "/fritz-brain:fritz-brain-save" in context, (
         "'going…' was wrongly suppressed as trivial; save policy not injected"
     )
 

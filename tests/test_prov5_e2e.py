@@ -90,7 +90,16 @@ def _run_session_start(
 
     Returns the additionalContext string from the hook JSON output.
     Reuses the idiom from test_prov3_forcing_prompt.py.
+
+    pytest runs inside a Claude Code session (CLAUDECODE set); these e2e stages
+    pin the raw non-Claude forcing-instruction skill name, so clear the Claude
+    markers to keep the rendering byte-identical to the non-Claude runtime
+    (#239). Claude-runtime sanitization is covered in test_prov3_forcing_prompt.
     """
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
+    monkeypatch.delenv("FRITZ_AGENT", raising=False)
+
     reg = registry_path if registry_path is not None else _write_registry(tmp_path, settings)
 
     monkeypatch.setattr(brain_common, "BRAIN_HOME", tmp_path)

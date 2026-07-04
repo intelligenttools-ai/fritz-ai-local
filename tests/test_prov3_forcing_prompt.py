@@ -39,6 +39,12 @@ def _write_registry(tmp_path: Path, settings: dict) -> Path:
     return registry_path
 
 
+def _clear_claude_markers(monkeypatch):
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
+    monkeypatch.delenv("FRITZ_AGENT", raising=False)
+
+
 def _run_session_start(
     monkeypatch,
     capsys,
@@ -47,6 +53,7 @@ def _run_session_start(
     *,
     operational: bool,
     cwd: str | None = None,
+    claude: bool = False,
 ) -> str:
     """Run brain_session_start.main() with a controlled environment.
 
@@ -55,7 +62,17 @@ def _run_session_start(
       local_brain_service_operational so the live ~/.brain is never touched.
     - ``cwd`` overrides the hook-input cwd (defaults to ``str(ROOT)``).
     - Returns the additionalContext string from the hook output.
+
+    pytest itself runs inside a Claude Code session (CLAUDECODE set), which
+    would otherwise make _resolve_client_agent() resolve to 'claude' and render
+    the sanitized forcing-instruction skill name. These tests pin the raw
+    non-Claude form, so markers are cleared by default (#239); pass
+    ``claude=True`` to exercise the Claude-runtime rendering.
     """
+    _clear_claude_markers(monkeypatch)
+    if claude:
+        monkeypatch.setenv("CLAUDECODE", "1")
+
     registry_path = _write_registry(tmp_path, settings)
 
     # Point both brain_common and brain_session_start at the temp home.
@@ -286,10 +303,33 @@ def test_local_brain_service_operational_ignores_enabled_flag(monkeypatch, tmp_p
 
 
 def test_local_brain_service_setup_forcing_instruction_contains_skill(monkeypatch, tmp_path):
-    """The forcing instruction text must contain the skill name."""
+    """The forcing instruction text must contain the raw skill name for
+    non-Claude runtimes (markers cleared so ambient CLAUDECODE doesn't leak)."""
+    _clear_claude_markers(monkeypatch)
     text = brain_common.local_brain_service_setup_forcing_instruction()
     assert "/fritz:brain-service-setup" in text
     assert "REQUIRED" in text
+
+
+def test_forcing_instruction_claude_uses_sanitized_skill_name(monkeypatch, tmp_path):
+    """#239 — for the Claude runtime the forcing instruction must reference the
+    sanitized plugin-qualified skill name Claude Code actually registers, and
+    must NOT emit the raw /fritz:brain-service-setup colon-form name."""
+    _clear_claude_markers(monkeypatch)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    text = brain_common.local_brain_service_setup_forcing_instruction()
+    assert "/fritz-brain:fritz-brain-service-setup" in text
+    assert "/fritz:brain-service-setup" not in text
+    assert "REQUIRED" in text
+
+
+def test_session_start_forcing_instruction_claude_sanitized(monkeypatch, capsys, tmp_path):
+    """#239 — session-start injects the sanitized forcing skill name for Claude."""
+    settings = {"local_brain_service": {"enabled": True, "desired": "docker"}}
+    context = _run_session_start(monkeypatch, capsys, tmp_path, settings, operational=False, claude=True)
+    assert "/fritz-brain:fritz-brain-service-setup" in context
+    assert "/fritz:brain-service-setup" not in context
+    assert "REQUIRED ACTION" in context
 
 
 # ---------------------------------------------------------------------------

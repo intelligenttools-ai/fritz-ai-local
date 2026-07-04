@@ -609,8 +609,13 @@ def test_a1_hook_calls_bootstrap_before_brain_common(script_name):
 
 def test_a2_prompt_check_injects_save_policy(tmp_path):
     """A2 — UserPromptSubmit injection now also carries a SAVE policy (Pi parity):
-    durable knowledge confirmed this turn must be SAVED via /fritz:brain-save,
+    durable knowledge confirmed this turn must be SAVED via the brain-save skill,
     not merely answered — in addition to the existing search-before-answer nudge.
+
+    This hook runs as a plugin-launched Claude subprocess (inherits the ambient
+    CLAUDECODE env), so the save-policy skill reference is the sanitized Claude
+    plugin-qualified name Claude Code actually registers, not the raw
+    /fritz:brain-save skill-tree name (#239).
     """
     brain = tmp_path / "home" / ".brain"
     daily = brain / "capture" / "daily"
@@ -629,8 +634,8 @@ def test_a2_prompt_check_injects_save_policy(tmp_path):
     ctx = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
     # Existing search nudge still present.
     assert "BRAIN CHECK" in ctx
-    # New save policy present.
-    assert "/fritz:brain-save" in ctx
+    # New save policy present, sanitized for the Claude runtime.
+    assert "/fritz-brain:fritz-brain-save" in ctx
     assert "SAVE" in ctx
 
 
@@ -802,7 +807,9 @@ def test_a2_save_policy_on_substantive_non_query_prompt(tmp_path):
     assert proc.stdout.strip(), "must produce output for a substantive non-query prompt"
     out = json.loads(proc.stdout)
     ctx = out["hookSpecificOutput"]["additionalContext"]
-    assert "/fritz:brain-save" in ctx, "save policy must be injected for substantive non-query prompts"
+    # Sanitized Claude plugin-qualified skill name (#239) — this subprocess
+    # inherits the ambient CLAUDECODE env.
+    assert "/fritz-brain:fritz-brain-save" in ctx, "save policy must be injected for substantive non-query prompts"
     assert "SAVE" in ctx
 
 
@@ -826,7 +833,7 @@ def test_a2_save_policy_and_brain_check_both_on_query_prompt(tmp_path):
     assert proc.returncode == 0, proc.stderr
     ctx = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
     assert "BRAIN CHECK" in ctx
-    assert "/fritz:brain-save" in ctx
+    assert "/fritz-brain:fritz-brain-save" in ctx
     assert "SAVE" in ctx
 
 
@@ -904,7 +911,7 @@ def test_fix_a_empty_brain_still_emits_save_policy(tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip(), "must produce output even with empty brain"
     ctx = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
-    assert "/fritz:brain-save" in ctx, "save policy must fire even for empty brain"
+    assert "/fritz-brain:fritz-brain-save" in ctx, "save policy must fire even for empty brain"
     assert "SAVE" in ctx
 
 
@@ -935,5 +942,5 @@ def test_fix_b_short_substantive_prompt_emits_save_policy(tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip(), "short substantive prompt must produce output"
     ctx = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
-    assert "/fritz:brain-save" in ctx, "save policy must fire for short substantive prompts"
+    assert "/fritz-brain:fritz-brain-save" in ctx, "save policy must fire for short substantive prompts"
     assert "SAVE" in ctx
