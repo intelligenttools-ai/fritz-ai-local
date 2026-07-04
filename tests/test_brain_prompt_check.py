@@ -208,6 +208,11 @@ def test_service_instructions_prefer_semantic_search_for_brain_check(monkeypatch
     assert instructions.index("/v1/search/run") < instructions.index("/v1/query/run")
 
 
+def _clear_claude_markers(monkeypatch):
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
+
+
 def test_resolve_client_agent_uses_fritz_agent_env(monkeypatch):
     monkeypatch.setenv("FRITZ_AGENT", "pi")
     assert brain_common._resolve_client_agent() == "pi"
@@ -215,12 +220,41 @@ def test_resolve_client_agent_uses_fritz_agent_env(monkeypatch):
 
 def test_resolve_client_agent_defaults_to_unknown(monkeypatch):
     monkeypatch.delenv("FRITZ_AGENT", raising=False)
+    _clear_claude_markers(monkeypatch)
     assert brain_common._resolve_client_agent() == "unknown"
 
 
 def test_resolve_client_agent_whitespace_falls_back_to_unknown(monkeypatch):
     monkeypatch.setenv("FRITZ_AGENT", "   ")
+    _clear_claude_markers(monkeypatch)
     assert brain_common._resolve_client_agent() == "unknown"
+
+
+def test_resolve_client_agent_detects_claude_from_claudecode_env(monkeypatch):
+    monkeypatch.delenv("FRITZ_AGENT", raising=False)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
+    assert brain_common._resolve_client_agent() == "claude"
+
+
+def test_resolve_client_agent_detects_claude_from_entrypoint_env(monkeypatch):
+    monkeypatch.delenv("FRITZ_AGENT", raising=False)
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+    monkeypatch.setenv("CLAUDE_CODE_ENTRYPOINT", "cli")
+    assert brain_common._resolve_client_agent() == "claude"
+
+
+def test_resolve_client_agent_detects_claude_from_empty_claudecode_env(monkeypatch):
+    monkeypatch.delenv("FRITZ_AGENT", raising=False)
+    monkeypatch.setenv("CLAUDECODE", "")
+    monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
+    assert brain_common._resolve_client_agent() == "claude"
+
+
+def test_resolve_client_agent_fritz_agent_wins_over_claude_markers(monkeypatch):
+    monkeypatch.setenv("FRITZ_AGENT", "pi")
+    monkeypatch.setenv("CLAUDECODE", "1")
+    assert brain_common._resolve_client_agent() == "pi"
 
 
 def test_service_instructions_include_x_brain_agent_in_search_and_query(monkeypatch):
@@ -236,6 +270,50 @@ def test_service_instructions_include_x_brain_agent_in_search_and_query(monkeypa
     query_line = next(line for line in instructions.splitlines() if "/v1/query/run" in line)
     assert "X-Brain-Agent" in search_line
     assert "X-Brain-Agent" in query_line
+
+
+_NON_CLAUDE_INSTRUCTIONS_SNAPSHOT = (
+    "## Local Brain Service Active\n\n"
+    "The Dockerized Local Brain service is reachable at `http://127.0.0.1:8765`. "
+    "For supported workflows, use this service layer first instead of duplicating the old local slash-skill workflow.\n\n"
+    "Agent integration order: use registered MCP tools first when available and authorized (`brain_search`, `brain_query`, `brain_compile`, `brain_sync`, `brain_lint`), "
+    "then HTTP calls from the host. The optional CLI is for installed local packages only; do not assume it is on the host PATH.\n\n"
+    "Supported service-backed workflows:\n"
+    "- Search/brain check, semantic when embeddings are enabled: `curl -fsS -X POST http://127.0.0.1:8765/v1/search/run -H 'content-type: application/json' -H 'X-Brain-Agent: unknown' -d '{\"query\":\"<query>\"}'`\n"
+    "- Exact query compatibility only, not the default brain check: `curl -fsS -X POST http://127.0.0.1:8765/v1/query/run -H 'content-type: application/json' -H 'X-Brain-Agent: unknown' -d '{\"query\":\"<query>\"}'`\n"
+    "- Compile: `curl -fsS -X POST http://127.0.0.1:8765/v1/compile/run -H 'content-type: application/json' -H 'X-Brain-Agent: unknown' -d '{\"dry_run\":true}'`\n"
+    "- Sync: `curl -fsS -X POST http://127.0.0.1:8765/v1/sync/run -H 'content-type: application/json' -H 'X-Brain-Agent: unknown' -d '{\"dry_run\":true}'`\n"
+    "- Lint: `curl -fsS -X POST http://127.0.0.1:8765/v1/lint/run -H 'content-type: application/json' -d '{}'`\n"
+    "- Embeddings: `curl -fsS http://127.0.0.1:8765/v1/embeddings/status` and `curl -fsS -X POST http://127.0.0.1:8765/v1/embeddings/probe -H 'content-type: application/json' -d '{\"dry_run\":true}'`\n\n"
+    "Do not also run `/fritz:brain-query`, `/fritz:brain-compile`, `/fritz:brain-sync`, or `/fritz:brain-lint` "
+    "for the same work unless the service is unavailable or the human explicitly requests the non-service path. "
+    "Use the existing local skills only for workflows the service does not provide, such as setup, ingest, update, and writing the handover document itself."
+)
+
+
+def test_service_instructions_snapshot_unchanged_for_non_claude_runtime(monkeypatch):
+    """Pins the rendered instructions when the agent resolves to 'unknown' (#238):
+    a regression in the template for non-Claude runtimes must fail this test."""
+    monkeypatch.delenv("FRITZ_AGENT", raising=False)
+    _clear_claude_markers(monkeypatch)
+    monkeypatch.setattr(brain_common, "get_local_brain_base_url", lambda: "http://127.0.0.1:8765")
+    monkeypatch.setattr(brain_common, "get_local_brain_api_token", lambda: None)
+
+    instructions = brain_common.local_brain_service_instructions()
+
+    assert instructions == _NON_CLAUDE_INSTRUCTIONS_SNAPSHOT
+
+
+def test_service_instructions_render_claude_label_when_claudecode_set(monkeypatch):
+    monkeypatch.delenv("FRITZ_AGENT", raising=False)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setattr(brain_common, "get_local_brain_base_url", lambda: "http://127.0.0.1:8765")
+    monkeypatch.setattr(brain_common, "get_local_brain_api_token", lambda: None)
+
+    instructions = brain_common.local_brain_service_instructions()
+
+    assert "X-Brain-Agent: claude" in instructions
+    assert "X-Brain-Agent: unknown" not in instructions
 
 
 def test_service_instructions_use_registry_token_command_without_leaking_token(monkeypatch):

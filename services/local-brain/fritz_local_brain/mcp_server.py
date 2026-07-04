@@ -49,7 +49,17 @@ _http_authenticated: contextvars.ContextVar[bool] = contextvars.ContextVar(
 
 
 def _resolve_mcp_agent(agent: str | None) -> str:
-    return (agent or os.environ.get("FRITZ_AGENT") or "").strip() or "unknown"
+    """Precedence: explicit `agent` arg > FRITZ_AGENT > (http transport ? "claude" : "unknown").
+
+    Claude Code's MCP client only speaks over the plugin-registered HTTP
+    transport (#238), so a call authenticated by ``streamable_http_app`` with
+    no other attribution is assumed to be Claude. The stdio path never sets
+    ``_http_authenticated``, so it keeps defaulting to "unknown".
+    """
+    explicit = (agent or os.environ.get("FRITZ_AGENT") or "").strip()
+    if explicit:
+        return explicit
+    return "claude" if _http_authenticated.get() else "unknown"
 
 
 @mcp.tool()
