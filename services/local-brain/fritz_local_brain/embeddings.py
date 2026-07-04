@@ -17,7 +17,7 @@ from uuid import uuid4
 from openai import AsyncOpenAI
 
 from .captures import list_queryable_captures, read_capture
-from .config import Settings
+from .config import Settings, redact_secrets
 from .knowledge import store_root
 from .logs import append_global_log
 from .manifests import load_manifest, resolve_manifest_path
@@ -88,7 +88,8 @@ async def probe_embedding_dimensions(settings: Settings, request: EmbeddingProbe
     try:
         embedding = await _embed_text(settings, "dimension probe")
     except Exception as exc:  # noqa: BLE001 - external model clients raise provider-specific errors.
-        result.error = str(exc)
+        # Redact the embedding API key: an upstream error can echo it (#226 security).
+        result.error = redact_secrets(str(exc), [settings.normalized_embedding_api_key()])
         return result
 
     dimensions = len(embedding)
@@ -269,7 +270,10 @@ async def _refresh_embedding_index_unlocked(
             try:
                 vector = await _embed_text(settings, document["text"])
             except Exception as exc:  # noqa: BLE001 - per-document failures must not abort the whole index build.
-                append_global_log(settings.brain_home, "EMBEDDINGS", f"skipped {doc_vault}/{doc_path}: {exc}", False)
+                # Redact the embedding API key before logging: an upstream error
+                # can echo the Authorization header/key (#226 security).
+                safe_exc = redact_secrets(str(exc), [settings.normalized_embedding_api_key()])
+                append_global_log(settings.brain_home, "EMBEDDINGS", f"skipped {doc_vault}/{doc_path}: {safe_exc}", False)
                 skipped += 1
                 skipped_keys.append([doc_vault, doc_path])
                 if _is_oversize_embed_error(exc):

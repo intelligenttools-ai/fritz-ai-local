@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+from collections.abc import Iterable
 from functools import lru_cache
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
@@ -226,14 +228,29 @@ CONFIG_FIELD_META: dict[str, ConfigFieldMeta] = {
     "telemetry_enabled": ConfigFieldMeta(mutable=True, env_key="TELEMETRY_ENABLED", type="bool"),
     "telemetry_store_query_text": ConfigFieldMeta(mutable=True, env_key="TELEMETRY_STORE_QUERY_TEXT", type="bool"),
     "telemetry_retention_days": ConfigFieldMeta(mutable=True, env_key="TELEMETRY_RETENTION_DAYS", type="int"),
-    # Rebuild-required — surfaced read-only; PATCH rejects with re-provision guidance.
-    "llm_base_url": ConfigFieldMeta(mutable=False, env_key="LLM_BASE_URL", type="str"),
-    "llm_model": ConfigFieldMeta(mutable=False, env_key="LLM_MODEL", type="str"),
-    "llm_api_key": ConfigFieldMeta(mutable=False, env_key="LLM_API_KEY", type="str", secret=True),
-    "embedding_enabled": ConfigFieldMeta(mutable=False, env_key="EMBEDDING_ENABLED", type="bool"),
-    "embedding_model": ConfigFieldMeta(mutable=False, env_key="EMBEDDING_MODEL", type="str"),
+    # #226: LLM + embedding provider settings are runtime-mutable — build_model()
+    # and _embed_text() build their clients per call from the live settings
+    # singleton, so a PATCH takes effect on the next operation (no rebuild).
+    "llm_protocol": ConfigFieldMeta(mutable=True, env_key="LLM_PROTOCOL", type="str"),
+    "llm_base_url": ConfigFieldMeta(mutable=True, env_key="LLM_BASE_URL", type="str"),
+    "llm_model": ConfigFieldMeta(mutable=True, env_key="LLM_MODEL", type="str"),
+    "llm_api_key": ConfigFieldMeta(mutable=True, env_key="LLM_API_KEY", type="str", secret=True),
+    "llm_timeout_seconds": ConfigFieldMeta(mutable=True, env_key="LLM_TIMEOUT_SECONDS", type="float"),
+    "embedding_enabled": ConfigFieldMeta(mutable=True, env_key="EMBEDDING_ENABLED", type="bool"),
+    "embedding_protocol": ConfigFieldMeta(mutable=True, env_key="EMBEDDING_PROTOCOL", type="str"),
+    "embedding_base_url": ConfigFieldMeta(mutable=True, env_key="EMBEDDING_BASE_URL", type="str"),
+    "embedding_model": ConfigFieldMeta(mutable=True, env_key="EMBEDDING_MODEL", type="str"),
+    "embedding_api_key": ConfigFieldMeta(mutable=True, env_key="EMBEDDING_API_KEY", type="str", secret=True),
+    "embedding_timeout_seconds": ConfigFieldMeta(mutable=True, env_key="EMBEDDING_TIMEOUT_SECONDS", type="float"),
+    # Rebuild-required — host-side install state; surfaced read-only. PATCH rejects
+    # with re-provision guidance via the fritz:brain-service-setup skill.
     "local_brain_autostart_installed": ConfigFieldMeta(mutable=False, env_key="AUTOSTART_INSTALLED", type="bool"),
 }
+
+# #226: embedding provider fields whose change invalidates the vector index
+# fingerprint (see _provider_fingerprint) — a PATCH to any of these schedules a
+# reindex so the store re-embeds under the new provider.
+EMBEDDING_PROVIDER_FIELDS = frozenset({"embedding_protocol", "embedding_base_url", "embedding_model"})
 
 REPROVISION_GUIDANCE = "requires re-provision via fritz:brain-service-setup"
 
@@ -270,6 +287,15 @@ def coerce_config_value(field: str, raw: object) -> object:
     """
 
     meta = CONFIG_FIELD_META[field]
+    if meta.secret:
+        # Write-only: a non-empty string SETS the key; null or empty/blank string
+        # CLEARS it (None). Any other JSON type is rejected — never coerce a bool
+        # or number into key material (e.g. 123 -> "123").
+        if raw is None:
+            return None
+        if not isinstance(raw, str):
+            raise ConfigCoercionError(f"{field} must be a string or null, got: {type(raw).__name__}")
+        return raw if raw.strip() else None
     if meta.type == "bool":
         if isinstance(raw, bool):
             return raw
@@ -287,6 +313,14 @@ def coerce_config_value(field: str, raw: object) -> object:
         if value < 1:
             raise ConfigCoercionError(f"{field} must be >= 1, got: {value}")
         return value
+    if meta.type == "float":
+        try:
+            value_f = float(str(raw).strip())
+        except (TypeError, ValueError):
+            raise ConfigCoercionError(f"{field} must be a number, got: {raw!r}") from None
+        if not math.isfinite(value_f) or value_f <= 0:
+            raise ConfigCoercionError(f"{field} must be a finite number > 0, got: {value_f}")
+        return value_f
     if meta.type == "autonomy":
         text = str(raw).strip().lower()
         if text not in {"apply", "propose"}:
@@ -298,9 +332,29 @@ def coerce_config_value(field: str, raw: object) -> object:
 def config_env_value(field: str, value: object) -> str:
     """Serialize a coerced value to its .env string form for persistence."""
 
+    if value is None:
+        return ""  # cleared secret / unset value
     if isinstance(value, bool):
         return "true" if value else "false"
     return str(value)
+
+
+def redact_secrets(text: str | None, secrets: Iterable[str | None]) -> str | None:
+    """Replace any occurrence of a secret value in ``text`` with ``***``.
+
+    Defensive redaction for probe/refresh error text and logs (#226 security):
+    upstream SDK exceptions can echo the Authorization header / API key from the
+    provider's response body. We strip the actual key material before the string
+    is ever returned to a caller or written to a log, keeping the class/status +
+    message useful for debugging without leaking the key.
+    """
+
+    if not text:
+        return text
+    for secret in secrets:
+        if secret and str(secret).strip():
+            text = text.replace(str(secret), "***")
+    return text
 
 
 @lru_cache

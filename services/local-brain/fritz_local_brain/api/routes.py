@@ -17,6 +17,7 @@ from .. import usage
 from ..compile_workflow import run_compile
 from ..config import (
     CONFIG_FIELD_META,
+    EMBEDDING_PROVIDER_FIELDS,
     REPROVISION_GUIDANCE,
     ConfigCoercionError,
     coerce_config_value,
@@ -24,6 +25,7 @@ from ..config import (
     config_field_value,
     get_settings,
 )
+from ..llm import probe_llm
 from .. import env_persist
 from ..telemetry import latest_event_id, record_query_event
 from ..embeddings import (
@@ -41,6 +43,8 @@ from ..models import (
     ConfigField,
     ConfigPatchResult,
     ConfigResult,
+    ConfigTestRequest,
+    ConfigTestResult,
     EmbeddingIndexRequest,
     EmbeddingIndexResult,
     EmbeddingProbeRequest,
@@ -478,6 +482,7 @@ def _config_fields(settings) -> dict[str, ConfigField]:
             value=config_field_value(settings, name),
             mutable=meta.mutable,
             requires=meta.requires,
+            secret=meta.secret,
         )
         for name, meta in CONFIG_FIELD_META.items()
     }
@@ -518,6 +523,10 @@ async def config_patch(body: dict[str, object]) -> ConfigPatchResult:
         except ConfigCoercionError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    # Snapshot embedding-provider values BEFORE applying so we can tell whether a
+    # provider field EFFECTIVELY changed (a same-value PATCH must not reindex).
+    provider_before = {field: getattr(settings, field) for field in EMBEDDING_PROVIDER_FIELDS}
+
     # Pass 2 — only now that validation fully passed, apply to the live singleton
     # and persist the changed env keys.
     env_updates: dict[str, str] = {}
@@ -528,4 +537,75 @@ async def config_patch(body: dict[str, object]) -> ConfigPatchResult:
     if env_updates:
         env_persist.persist_env_updates(env_updates)
 
-    return ConfigPatchResult(applied=list(coerced), rejected=rejected, config=_config_fields(settings))
+    # #226: an embedding-provider change invalidates the vector-index fingerprint,
+    # so the existing index is stale. Schedule a rebuild via the existing
+    # embeddings machinery and report it explicitly in the response — but only if a
+    # provider field actually CHANGED value, not merely appeared in the patch.
+    provider_changed = any(
+        field in coerced and coerced[field] != provider_before[field]
+        for field in EMBEDDING_PROVIDER_FIELDS
+    )
+    reindex_scheduled = False
+    if provider_changed:
+        reindex_scheduled = bool(
+            schedule_embedding_refresh_after_compile(settings, reason="config change")
+        )
+
+    return ConfigPatchResult(
+        applied=list(coerced),
+        rejected=rejected,
+        config=_config_fields(settings),
+        reindex_scheduled=reindex_scheduled,
+    )
+
+
+def _probe_settings(settings, body: ConfigTestRequest, *, prefix: str, **forced) -> object:
+    """Build a THROWAWAY settings copy for a connection probe (#226).
+
+    Body-supplied values override the live config so the UI can test candidate
+    values before saving; omitted values fall back to the current config. The
+    singleton is never mutated — ``model_copy`` returns a detached object.
+
+    SECURITY (FIX 1 — secret exfiltration): the SAVED api_key is a write-only
+    secret and must never be sent to a caller-controlled endpoint. It may be used
+    ONLY when the request overrides neither ``base_url`` nor ``protocol`` (i.e. the
+    caller is testing the already-saved endpoint). As soon as the caller overrides
+    the endpoint, only a body-supplied ``api_key`` is used; if none is supplied the
+    probe runs with NO key — the saved key is never inherited by the copy.
+    """
+
+    update: dict[str, object] = dict(forced)
+    for body_field, attr in (
+        ("protocol", f"{prefix}_protocol"),
+        ("base_url", f"{prefix}_base_url"),
+        ("model", f"{prefix}_model"),
+        ("api_key", f"{prefix}_api_key"),
+        ("timeout_seconds", f"{prefix}_timeout_seconds"),
+    ):
+        value = getattr(body, body_field)
+        if value is not None:
+            update[attr] = value
+
+    endpoint_overridden = body.base_url is not None or body.protocol is not None
+    if endpoint_overridden and body.api_key is None:
+        # Do NOT let the throwaway copy inherit the saved key for an endpoint the
+        # caller controls — clear it so the probe sends no saved secret.
+        update[f"{prefix}_api_key"] = None
+    return settings.model_copy(update=update)
+
+
+@router.post("/v1/config/test-llm", response_model=ConfigTestResult, dependencies=[Depends(require_token)])
+async def config_test_llm(body: ConfigTestRequest) -> ConfigTestResult:
+    return await probe_llm(_probe_settings(get_settings(), body, prefix="llm"))
+
+
+@router.post("/v1/config/test-embedding", response_model=ConfigTestResult, dependencies=[Depends(require_token)])
+async def config_test_embedding(body: ConfigTestRequest) -> ConfigTestResult:
+    # Force embedding_enabled so the probe runs even when embeddings are not yet
+    # switched on (pre-save test). Nothing is persisted (dry_run) or mutated.
+    settings = _probe_settings(get_settings(), body, prefix="embedding", embedding_enabled=True)
+    start = perf_counter()
+    probe = await probe_embedding_dimensions(settings, EmbeddingProbeRequest(dry_run=True))
+    latency = round((perf_counter() - start) * 1000, 1)
+    ok = probe.error is None and probe.dimensions is not None
+    return ConfigTestResult(ok=ok, latency_ms=latency, error=probe.error)
