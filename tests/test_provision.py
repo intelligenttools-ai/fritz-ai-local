@@ -219,6 +219,18 @@ class TestWriteRegistry:
         assert svc["base_url"] == "http://127.0.0.1:8765"
         assert svc["api_token"] == "tok-abc123"
 
+    def test_writes_explicit_context_injection_setting(self, tmp_path):
+        mod = load_engine()
+        cfg = mod.ProvisionConfig(base_url="http://127.0.0.1:8765", context_injection="light")
+        reg_path = self._registry_path(tmp_path)
+
+        step, changed = mod._run_write_registry(cfg, "tok-abc123", reg_path)
+
+        assert step.status == "ok"
+        assert changed
+        data = yaml.safe_load(reg_path.read_text())
+        assert data["settings"]["context_injection"] == "light"
+
     def test_preserves_vaults_and_external_targets(self, tmp_path):
         mod = load_engine()
         cfg = mod.ProvisionConfig(base_url="http://127.0.0.1:8765")
@@ -1004,6 +1016,31 @@ class TestReconciliationAutonomy:
         # Verify invalid value is rejected
         with pytest.raises(SystemExit):
             parser.parse_args(["provision", "--reconciliation-autonomy", "invalid"])
+
+    def test_argparse_context_injection_flag(self):
+        import argparse
+
+        mod = load_engine()
+        parser = argparse.ArgumentParser()
+        sub = parser.add_subparsers()
+        mod.add_provision_subparser(sub)
+
+        ns = parser.parse_args(["provision", "--context-injection", "light"])
+        assert ns.context_injection == "light"
+
+        with pytest.raises(SystemExit):
+            parser.parse_args(["provision", "--context-injection", "loud"])
+
+    def test_reconfigure_argparse_rejects_context_injection_flag(self):
+        import argparse
+
+        mod = load_engine()
+        parser = argparse.ArgumentParser()
+        sub = parser.add_subparsers()
+        mod.add_reconfigure_subparser(sub)
+
+        with pytest.raises(SystemExit):
+            parser.parse_args(["reconfigure", "--context-injection", "light"])
 
 
 class TestTelemetryProvisioning:
