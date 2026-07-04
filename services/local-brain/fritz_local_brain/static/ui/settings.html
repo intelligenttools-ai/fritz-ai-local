@@ -1,9 +1,9 @@
 <!DOCTYPE html>
 <!--
   Fritz Local Brain — Settings page (#220 app shell).
-  The #208 Configuration panel AS-IS: runtime-mutable settings apply live and
-  persist to .env; rebuild-required settings are read-only. Deep-linkable at
-  /ui/settings.
+  #227: full grouped settings editor (LLM/Embeddings/Scheduler/Telemetry/Service)
+  on top of the #226 runtime-mutable config API. Superseded the #208 flat panel.
+  Deep-linkable at /ui/settings.
 -->
 <html lang="en">
 <head>
@@ -46,18 +46,11 @@
     </header>
 
     <main>
-      <!-- Configuration (#208): live-mutable settings + read-only rebuild-required -->
+      <!-- Configuration (#208 -> #227): grouped, fully-editable settings. -->
       <h2>Configuration</h2>
       <div class="section" id="config-panel">
         <p class="actions-note">Runtime settings apply immediately and persist to <code>.env</code>. Rebuild-required settings are read-only here — change them via <code>fritz:brain-service-setup</code>.</p>
-        <div class="config-group">
-          <div class="config-group-label">Runtime (applies live)</div>
-          <div id="config-runtime"><div class="skeleton skel-chart"></div></div>
-        </div>
-        <div class="config-group">
-          <div class="config-group-label">Rebuild required (read-only)</div>
-          <div id="config-rebuild"></div>
-        </div>
+        <div id="config-groups"><div class="skeleton skel-chart"></div></div>
       </div>
 
       <!-- Result toast (shared with the config PATCH handler) -->
@@ -75,12 +68,27 @@
 <script src="/ui/shared/sse.js"></script>
 <script src="/ui/shared/nav.js"></script>
 <script>
-// Settings page: the #208 Configuration panel, verbatim from the old dashboard.
+// Settings page (#227): grouped config editor built on the #226 runtime-mutable
+// config API (GET/PATCH /v1/config, POST /v1/config/test-llm|test-embedding).
+//
+// The server is the source of truth for mutability/requires/secret (each field
+// carries this in GET /v1/config); grouping, labels and one-line descriptions
+// are presentation-only and kept here. Any field NOT explicitly grouped below
+// still renders (under Service) via the generic mutable/secret-driven control,
+// so a future config field appears without a UI edit.
 
-// Human-friendly labels + control kinds for the runtime-mutable fields. Kept in
-// the client only for presentation — the server is the source of truth for what
-// is mutable and how values are validated.
-const CONFIG_LABELS = {
+const FIELD_LABELS = {
+  llm_protocol: "Protocol",
+  llm_base_url: "Base URL",
+  llm_model: "Model",
+  llm_api_key: "API key",
+  llm_timeout_seconds: "Timeout (seconds)",
+  embedding_enabled: "Embeddings enabled",
+  embedding_protocol: "Protocol",
+  embedding_base_url: "Base URL",
+  embedding_model: "Model",
+  embedding_api_key: "API key",
+  embedding_timeout_seconds: "Timeout (seconds)",
   scheduler_enabled: "Scheduler enabled",
   interval_minutes: "Interval (minutes)",
   scheduler_dry_run: "Dry-run (propose only)",
@@ -88,87 +96,458 @@ const CONFIG_LABELS = {
   telemetry_enabled: "Telemetry enabled",
   telemetry_store_query_text: "Store query text",
   telemetry_retention_days: "Telemetry retention (days)",
-  llm_base_url: "LLM base URL",
-  llm_model: "LLM model",
-  llm_api_key: "LLM API key",
-  embedding_enabled: "Embeddings enabled",
-  embedding_model: "Embedding model",
   local_brain_autostart_installed: "Autostart installed",
 };
 
-function configLabel(name) { return esc(CONFIG_LABELS[name] || name); }
+const FIELD_DESC = {
+  llm_protocol: "API wire format the LLM endpoint speaks.",
+  llm_base_url: "Base URL of the LLM endpoint.",
+  llm_model: "Model identifier sent with each request.",
+  llm_api_key: "Bearer credential for the LLM endpoint.",
+  llm_timeout_seconds: "Per-request timeout before giving up.",
+  embedding_enabled: "Turn on vector embeddings for semantic search.",
+  embedding_protocol: "API wire format the embeddings endpoint speaks.",
+  embedding_base_url: "Base URL of the embeddings endpoint.",
+  embedding_model: "Embedding model identifier.",
+  embedding_api_key: "Bearer credential for the embeddings endpoint.",
+  embedding_timeout_seconds: "Per-request timeout before giving up.",
+  scheduler_enabled: "Run compile/sync automatically on an interval.",
+  interval_minutes: "Minutes between scheduled runs.",
+  scheduler_dry_run: "Propose changes without applying them.",
+  reconciliation_autonomy: "Whether reconciliation applies changes or only proposes them.",
+  telemetry_enabled: "Record run/query telemetry.",
+  telemetry_store_query_text: "Persist the literal query text in telemetry.",
+  telemetry_retention_days: "Days telemetry rows are kept before pruning.",
+  local_brain_autostart_installed: "Whether the service is registered to start on login.",
+};
 
-function configControl(name, field) {
-  const v = field.value;
-  if (name === "reconciliation_autonomy") {
-    const applySel = v === "apply" ? " selected" : "";
-    const propSel = v === "propose" ? " selected" : "";
-    return `<select onchange="onConfigChange('${esc(name)}', this.value)">
-      <option value="apply"${applySel}>apply</option>
-      <option value="propose"${propSel}>propose</option>
-    </select>`;
-  }
-  if (typeof v === "boolean") {
-    const checked = v ? " checked" : "";
-    return `<input type="checkbox"${checked} onchange="onConfigChange('${esc(name)}', this.checked)">`;
-  }
-  if (typeof v === "number") {
-    return `<input type="number" min="1" value="${esc(String(v))}" onchange="onConfigChange('${esc(name)}', this.value)">`;
-  }
-  return `<input type="text" value="${esc(v == null ? '' : String(v))}" onchange="onConfigChange('${esc(name)}', this.value)">`;
+// Field-name hard-maps for the two allowed-value selects (#227 scope explicitly
+// permits this — the metadata API has no enum, only value/mutable/requires/secret).
+const PROTOCOL_OPTIONS = ["openai-compatible", "anthropic-compatible"];
+const AUTONOMY_OPTIONS = ["apply", "propose"];
+const FLOAT_FIELDS = new Set(["llm_timeout_seconds", "embedding_timeout_seconds"]);
+
+// Read-only guidance shown for a non-mutable field (or a status-only value).
+const GUIDANCE = {
+  local_brain_autostart_installed: "change via scripts/local-brain-service.py install-autostart",
+};
+const DEFAULT_GUIDANCE = "change via fritz:brain-service-setup";
+
+const GROUPS = [
+  { id: "llm", title: "LLM", test: "llm",
+    fields: ["llm_protocol", "llm_base_url", "llm_model", "llm_api_key", "llm_timeout_seconds"] },
+  { id: "embeddings", title: "Embeddings", test: "embedding",
+    fields: ["embedding_enabled", "embedding_protocol", "embedding_base_url", "embedding_model",
+             "embedding_api_key", "embedding_timeout_seconds"] },
+  { id: "scheduler", title: "Scheduler",
+    fields: ["scheduler_enabled", "interval_minutes", "scheduler_dry_run", "reconciliation_autonomy"] },
+  { id: "telemetry", title: "Telemetry",
+    fields: ["telemetry_enabled", "telemetry_store_query_text", "telemetry_retention_days"] },
+];
+const GROUPED_FIELD_SET = new Set(GROUPS.flatMap(g => g.fields));
+
+// ---- module state -----------------------------------------------------------
+// Survives across auto-refresh reloads: loadConfig() SKIPS re-rendering while an
+// edit is in progress (focused control, open secret input, or unsaved pending),
+// so the 30s poll never clobbers a half-typed value — the point of dirty-state
+// tracking.
+//
+// SECRET HANDLING (SECURITY): a typed API key is NEVER stored in `pending` or
+// any JS variable and NEVER serialized into HTML. `pending[secretField]` only
+// ever holds one of: SECRET_PENDING (a Symbol — "a new key is waiting in the
+// live <input>, read it from the element at save/test time") or null ("clear").
+// The key text lives solely inside the live password <input>.value.
+
+const SECRET_PENDING = Symbol("secret-pending");
+
+let currentConfig = null;   // last GET/PATCH /v1/config response ({fields:...})
+let statusData = null;      // last GET /v1/status response (for version/brain_home)
+let pending = {};           // fieldName -> unsaved value; secret -> SECRET_PENDING|null only
+let fieldErrors = {};       // fieldName -> server rejection reason
+let groupErrors = {};       // groupId -> whole-request error (e.g. HTTP 400 detail)
+let revealedSecrets = new Set(); // fieldNames currently showing a "Replace" input
+
+function configLabel(name) { return esc(FIELD_LABELS[name] || name); }
+function groupForField(name) {
+  const g = GROUPS.find(gr => gr.fields.includes(name));
+  return g ? g.id : null;
+}
+function hasPendingInGroup(groupId) {
+  const g = GROUPS.find(gr => gr.id === groupId);
+  return !!g && g.fields.some(f => Object.prototype.hasOwnProperty.call(pending, f));
 }
 
-function renderConfig(cfg) {
-  const runtimeEl = document.getElementById("config-runtime");
-  const rebuildEl = document.getElementById("config-rebuild");
-  if (!cfg || !cfg.fields) {
-    renderError("config-runtime", "Could not load configuration.");
-    rebuildEl.innerHTML = "";
+// ---- controls ----------------------------------------------------------------
+// Control kind is derived from the field's own metadata (secret/mutable, plus
+// typeof(value) for the boolean/number/string split) so an unlisted future
+// field still renders sensibly; only the two allowed-value selects are
+// hard-mapped by name (permitted by #227 scope).
+//
+// SECURITY: NO inline event handlers anywhere. Every control carries data-field /
+// data-kind / data-action / data-group / data-test attributes; behaviour is wired
+// through DELEGATED listeners on #config-groups (see bindConfigListeners). This
+// matches the #224 pages (operations/agents) and keeps untrusted data out of
+// JS-handler-source attributes, where esc() would NOT make it safe.
+
+function currentValue(name, field) {
+  return Object.prototype.hasOwnProperty.call(pending, name) ? pending[name] : field.value;
+}
+
+function secretControl(name, field) {
+  const setFlag = field.value === true;
+  const status = setFlag ? "configured ✓" : "not set";
+  if (revealedSecrets.has(name)) {
+    // SECURITY: the password input has NO value= attribute — the typed key lives
+    // ONLY in the live element's .value and is read from it at save/test time,
+    // never re-serialized into HTML (so it can't leak into innerHTML/view-source).
+    return `<span class="secret-status">${esc(status)}</span>
+      <input type="password" class="secret-input" id="secret-input-${esc(name)}"
+        data-field="${esc(name)}" data-kind="secret" placeholder="New key" autocomplete="off">
+      <button type="button" class="btn-action" data-action="cancel-secret" data-field="${esc(name)}">Cancel</button>`;
+  }
+  const pendingNote = pending[name] === null
+    ? ' <span class="pending-note">(will clear on save)</span>' : "";
+  return `<span class="secret-status">${esc(status)}</span>${pendingNote}
+    <button type="button" class="btn-action" data-action="replace" data-field="${esc(name)}">Replace</button>
+    <button type="button" class="btn-action destructive" data-action="clear" data-field="${esc(name)}"${setFlag ? "" : " disabled"}>Clear</button>`;
+}
+
+function selectControl(name, field, options) {
+  const v = currentValue(name, field);
+  const opts = options.map(o =>
+    `<option value="${esc(o)}"${o === v ? " selected" : ""}>${esc(o)}</option>`).join("");
+  return `<select data-field="${esc(name)}" data-kind="select">${opts}</select>`;
+}
+
+function fieldControl(name, field) {
+  if (field.secret) return secretControl(name, field);
+  if (name === "llm_protocol" || name === "embedding_protocol") return selectControl(name, field, PROTOCOL_OPTIONS);
+  if (name === "reconciliation_autonomy") return selectControl(name, field, AUTONOMY_OPTIONS);
+  const v = currentValue(name, field);
+  if (typeof field.value === "boolean") {
+    const checked = v ? " checked" : "";
+    return `<input type="checkbox"${checked} data-field="${esc(name)}" data-kind="checkbox">`;
+  }
+  if (typeof field.value === "number") {
+    const isFloat = FLOAT_FIELDS.has(name);
+    return `<input type="number" min="${isFloat ? "0" : "1"}" step="${isFloat ? "any" : "1"}"
+      value="${esc(String(v))}" data-field="${esc(name)}" data-kind="number">`;
+  }
+  return `<input type="text" value="${esc(v == null ? "" : String(v))}"
+    data-field="${esc(name)}" data-kind="text">`;
+}
+
+// ---- row + group rendering ---------------------------------------------------
+
+function fieldRow(name, field) {
+  const label = configLabel(name);
+  const desc = esc(FIELD_DESC[name] || "");
+  const requires = esc(field.requires);
+  const requiresBadge = `<span class="config-requires requires-${requires}">requires: ${requires}</span>`;
+  const info = `<div class="config-info">
+      <span class="config-name">${label}</span>
+      ${desc ? `<span class="config-desc">${desc}</span>` : ""}
+      ${requiresBadge}
+    </div>`;
+
+  if (!field.mutable) {
+    const shown = field.secret
+      ? (field.value ? "configured ✓" : "not set")
+      : (field.value == null ? "—" : String(field.value));
+    const guidance = GUIDANCE[name] || DEFAULT_GUIDANCE;
+    return `<div class="config-row readonly" data-field="${esc(name)}">
+      <div class="config-row-main">
+        ${info}
+        <span class="config-reprovision-note">${esc(shown)} — ${esc(guidance)}</span>
+      </div>
+    </div>`;
+  }
+
+  const err = fieldErrors[name]
+    ? `<div class="field-error">${esc(fieldErrors[name])}</div>` : "";
+  return `<div class="config-row" data-field="${esc(name)}">
+    <div class="config-row-main">
+      ${info}
+      <div class="config-ctl">${fieldControl(name, field)}</div>
+    </div>
+    ${err}
+  </div>`;
+}
+
+function serviceStatusRow(label, desc, value, guidance) {
+  const shown = value == null ? "—" : String(value);
+  return `<div class="config-row readonly">
+    <div class="config-row-main">
+      <div class="config-info">
+        <span class="config-name">${esc(label)}</span>
+        <span class="config-desc">${esc(desc)}</span>
+      </div>
+      <span class="config-reprovision-note">${esc(shown)} — ${esc(guidance)}</span>
+    </div>
+  </div>`;
+}
+
+function groupHtml(g) {
+  if (!currentConfig || !currentConfig.fields) return "";
+  const rows = g.fields
+    .map(f => currentConfig.fields[f] ? fieldRow(f, currentConfig.fields[f]) : "")
+    .join("");
+  const dirty = hasPendingInGroup(g.id);
+  const testBtn = g.test
+    ? `<button type="button" class="btn-action" data-action="test" data-test="${esc(g.test)}">Test connection</button>
+       <span class="test-result" id="test-result-${esc(g.test)}"></span>`
+    : "";
+  const groupErr = groupErrors[g.id]
+    ? `<div class="error-state">⚠ ${esc(groupErrors[g.id])}</div>` : "";
+  const reindexNotice = g.id === "embeddings" && groupErrors.__reindex
+    ? `<div class="reindex-notice">${esc(groupErrors.__reindex)}</div>` : "";
+  return `<div class="section panel config-section" data-group="${esc(g.id)}">
+    <div class="config-group-header">
+      <span class="config-group-label">${esc(g.title)}</span>
+      <div class="config-group-actions">
+        ${testBtn}
+        <button type="button" class="btn-action apply" id="save-${esc(g.id)}"
+          data-action="save" data-group="${esc(g.id)}"${dirty ? "" : " disabled"}>Save</button>
+      </div>
+    </div>
+    ${groupErr}
+    ${reindexNotice}
+    ${rows}
+  </div>`;
+}
+
+function serviceGroupHtml() {
+  const rows = [];
+  if (currentConfig && currentConfig.fields) {
+    Object.entries(currentConfig.fields).forEach(([name, field]) => {
+      if (GROUPED_FIELD_SET.has(name)) return;
+      rows.push(fieldRow(name, field));
+    });
+  }
+  rows.push(serviceStatusRow("Version", "Deployed local-brain version.",
+    statusData ? statusData.version : null, "set at build time; bumped by the release process"));
+  if (statusData && typeof statusData.brain_home === "string") {
+    rows.push(serviceStatusRow("Brain home", "Root path of the knowledge store.",
+      statusData.brain_home, DEFAULT_GUIDANCE));
+  }
+  return `<div class="section panel config-section" data-group="service">
+    <div class="config-group-header"><span class="config-group-label">Service (read-only)</span></div>
+    ${rows.join("")}
+  </div>`;
+}
+
+function renderConfig() {
+  bindConfigListeners();
+  const el = document.getElementById("config-groups");
+  if (!currentConfig || !currentConfig.fields) {
+    renderError("config-groups", "Could not load configuration.");
     return;
   }
-  const runtime = [];
-  const rebuild = [];
-  Object.entries(cfg.fields).forEach(([name, field]) => {
-    if (field.mutable) {
-      runtime.push(`<div class="config-row">
-        <span class="config-name">${configLabel(name)}</span>
-        <span class="config-ctl">${configControl(name, field)}</span>
-      </div>`);
+  el.innerHTML = GROUPS.map(groupHtml).join("") + serviceGroupHtml();
+}
+
+// ---- delegated listeners -----------------------------------------------------
+// Bound ONCE on the persistent #config-groups container (its innerHTML is
+// replaced on every render, but the container element itself survives). No
+// inline handlers, no interpolated data in handler attributes.
+
+let _configBound = false;
+function bindConfigListeners() {
+  if (_configBound) return;
+  const el = document.getElementById("config-groups");
+  if (!el) return;
+  _configBound = true;
+  el.addEventListener("click", onConfigClick);
+  el.addEventListener("input", onConfigInput);
+  el.addEventListener("change", onConfigInput);
+}
+
+function onConfigClick(e) {
+  const btn = e.target.closest("button[data-action]");
+  if (!btn || !document.getElementById("config-groups").contains(btn)) return;
+  const { action, field, group, test } = btn.dataset;
+  if (action === "replace") revealSecretInput(field);
+  else if (action === "clear") clearSecret(field);
+  else if (action === "cancel-secret") hideSecretInput(field);
+  else if (action === "save") saveGroup(group);
+  else if (action === "test") testConnection(test);
+}
+
+function onConfigInput(e) {
+  const el = e.target;
+  const name = el.dataset && el.dataset.field;
+  if (!name) return;
+  const kind = el.dataset.kind;
+  if (kind === "secret") onSecretInput(name);
+  else if (kind === "checkbox") onFieldChange(name, el.checked);
+  else onFieldChange(name, el.value); // text / number / select
+}
+
+// ---- edit handlers ------------------------------------------------------------
+// Edits update `pending` + the group's Save button only — NO full re-render, so
+// the field the user is typing into keeps its cursor/focus (fixes the poll- and
+// keystroke-clobber). A render happens only on explicit actions (Replace/Clear/
+// Save) and on a non-busy auto-refresh.
+
+function updateSaveButton(groupId) {
+  const btn = document.getElementById("save-" + groupId);
+  if (btn) btn.disabled = !hasPendingInGroup(groupId);
+}
+
+function onFieldChange(name, value) {
+  const field = currentConfig && currentConfig.fields[name];
+  if (!field) return;
+  const changed = typeof field.value === "boolean" ? value !== field.value : String(value) !== String(field.value);
+  if (changed) pending[name] = value; else delete pending[name];
+  updateSaveButton(groupForField(name));
+}
+
+function onSecretInput(name) {
+  // SECURITY: never read/store the key here. Only flip a Symbol marker based on
+  // whether the live input is non-empty; the key text stays in the element.
+  const inp = document.getElementById("secret-input-" + name);
+  if (inp && inp.value) pending[name] = SECRET_PENDING; else delete pending[name];
+  updateSaveButton(groupForField(name));
+}
+
+function revealSecretInput(name) {
+  revealedSecrets.add(name);
+  renderConfig();
+  const input = document.getElementById("secret-input-" + name);
+  if (input) input.focus();
+}
+
+function hideSecretInput(name) {
+  revealedSecrets.delete(name);
+  delete pending[name];
+  renderConfig();
+}
+
+function clearSecret(name) {
+  pending[name] = null;
+  revealedSecrets.delete(name);
+  renderConfig();
+}
+
+// ---- save (PATCH /v1/config) --------------------------------------------------
+
+async function saveGroup(groupId) {
+  const group = GROUPS.find(g => g.id === groupId);
+  if (!group) return;
+  const body = {};
+  group.fields.forEach(f => {
+    if (!Object.prototype.hasOwnProperty.call(pending, f)) return;
+    const field = currentConfig.fields[f];
+    if (field && field.secret) {
+      if (pending[f] === null) { body[f] = null; return; }   // CLEAR
+      // SET: read the new key from the live input element (never a stored copy).
+      const inp = document.getElementById("secret-input-" + f);
+      const val = inp ? inp.value : "";
+      if (val) body[f] = val;
+      return;
+    }
+    body[f] = pending[f];
+  });
+  if (Object.keys(body).length === 0) return;
+
+  delete groupErrors[groupId];
+  delete groupErrors.__reindex;  // FIX 4: never carry a stale reindex notice into a new save
+  group.fields.forEach(f => delete fieldErrors[f]);
+
+  const result = await postAction("/v1/config", body, "PATCH");
+  if (!result) return; // 401 handled by postAction
+
+  if (result.status === 200 && result.json) {
+    const json = result.json;
+    currentConfig = { fields: json.config };
+    (json.rejected || []).forEach(entry => {
+      const idx = entry.indexOf(": ");
+      const fname = idx === -1 ? entry : entry.slice(0, idx);
+      const reason = idx === -1 ? entry : entry.slice(idx + 2);
+      fieldErrors[fname] = reason;
+    });
+    group.fields.forEach(f => delete pending[f]);
+    revealedSecrets.forEach(n => { if (group.fields.includes(n)) revealedSecrets.delete(n); });
+    if (json.reindex_scheduled === true) {
+      groupErrors.__reindex = "Embedding provider changed — vector index rebuild scheduled.";
+    }
+    const appliedCount = (json.applied || []).length;
+    const rejectedNote = (json.rejected || []).length ? ` (${json.rejected.length} field(s) rejected)` : "";
+    showToast(`Saved ${esc(group.title)}: ${appliedCount} field(s) applied.${esc(rejectedNote)}`, false);
+    renderConfig();
+  } else {
+    const detail = result.json && result.json.detail ? result.json.detail : `HTTP ${result.status}`;
+    groupErrors[groupId] = String(detail);
+    renderConfig();
+  }
+}
+
+// ---- connection tests (POST /v1/config/test-llm | test-embedding) ------------
+
+// Non-secret test-body fields (api_key is handled separately from the live input).
+const TEST_BODY_FIELDS = ["protocol", "base_url", "model", "timeout_seconds"];
+
+function setTestResult(prefix, res) {
+  const el = document.getElementById(`test-result-${prefix}`);
+  if (!el) return;
+  if (res == null) { el.className = "test-result"; el.textContent = "Testing…"; return; }
+  el.className = "test-result " + (res.ok ? "test-ok" : "test-fail");
+  el.textContent = res.ok ? `ok · ${res.latency_ms} ms` : res.error;
+}
+
+async function testConnection(prefix) {
+  const body = {};
+  TEST_BODY_FIELDS.forEach(bodyKey => {
+    const fieldName = `${prefix}_${bodyKey}`;
+    if (!Object.prototype.hasOwnProperty.call(pending, fieldName)) return;
+    const v = pending[fieldName];
+    if (bodyKey === "timeout_seconds") {
+      const n = Number(v);
+      if (!Number.isNaN(n)) body[bodyKey] = n;
     } else {
-      const shown = name === "llm_api_key"
-        ? (field.value ? "•••• set" : "not set")
-        : (field.value == null ? "—" : String(field.value));
-      rebuild.push(`<div class="config-row readonly">
-        <span class="config-name">${configLabel(name)}</span>
-        <span class="config-reprovision-note">${esc(shown)}</span>
-      </div>`);
+      body[bodyKey] = v;
     }
   });
-  runtimeEl.innerHTML = runtime.join("") || '<div class="empty-state">No runtime settings.</div>';
-  rebuildEl.innerHTML = rebuild.join("") || '<div class="empty-state">No rebuild-required settings.</div>';
+  // SECURITY: the candidate key is read from the live Replace input (never a
+  // stored copy). Omit it when blank so the endpoint falls back to the saved key.
+  const secretInp = document.getElementById(`secret-input-${prefix}_api_key`);
+  if (secretInp && secretInp.value) body.api_key = secretInp.value;
+
+  setTestResult(prefix, null);
+  const result = await postAction(`/v1/config/test-${prefix}`, body, "POST");
+  if (!result) return; // 401
+  const json = result.json;
+  if (result.status === 200 && json) {
+    setTestResult(prefix, { ok: json.ok, latency_ms: json.latency_ms, error: json.error || "Test failed." });
+  } else {
+    const detail = json && json.detail ? json.detail : `HTTP ${result.status}`;
+    setTestResult(prefix, { ok: false, error: String(detail) });
+  }
+}
+
+// ---- load ----------------------------------------------------------------
+
+// True when the user is mid-edit and an auto-refresh render would clobber their
+// work: a focused control inside the panel, an open secret Replace input, or any
+// unsaved pending change. (Fixes both the secret-input serialization risk and the
+// in-progress-edit wipe.)
+function isConfigBusy() {
+  const el = document.getElementById("config-groups");
+  if (el && el.contains(document.activeElement)) return true;
+  if (revealedSecrets.size > 0) return true;
+  if (Object.keys(pending).length > 0) return true;
+  return false;
 }
 
 async function loadConfig() {
-  const cfg = await apiFetch("/v1/config");
+  const [cfg, status] = await Promise.all([apiFetch("/v1/config"), apiFetch("/v1/status")]);
   if (!getToken()) return;
-  renderConfig(cfg);
-}
-
-async function onConfigChange(name, value) {
-  if (!confirm(`Apply new value for ${CONFIG_LABELS[name] || name}?`)) {
-    loadConfig();  // revert the control to the server's current value
-    return;
-  }
-  const result = await postAction("/v1/config", { [name]: value }, "PATCH");
-  if (!result) return;  // 401 handled by postAction
-  if (result.status === 200) {
-    showToast(`Updated ${esc(CONFIG_LABELS[name] || name)}.`, false);
-    renderConfig(result.json);
-  } else {
-    const detail = result.json && result.json.detail ? result.json.detail : `HTTP ${result.status}`;
-    showToast(`Config update failed: ${esc(String(detail))}`, true);
-    loadConfig();  // resync controls with the unchanged server state
-  }
+  // Never clobber an in-progress edit with a background poll. The first load
+  // (nothing rendered yet) always proceeds; later busy polls are skipped.
+  if (currentConfig && isConfigBusy()) return;
+  currentConfig = cfg;
+  statusData = status;
+  renderConfig();
 }
 
 async function loadAll() {

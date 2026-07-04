@@ -376,17 +376,20 @@ tr[data-run-id] { cursor: pointer; }
 }
 #action-toast .toast-close:hover { opacity: 1; }
 
-/* configuration (#208) */
+/* configuration (#208, grouped + editable per #227) */
 .config-group { margin-top: .85rem; }
 .config-group-label {
   font-size: .72rem; text-transform: uppercase; letter-spacing: .05em;
   color: var(--muted); margin-bottom: .4rem;
 }
+.config-group-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: .5rem; }
+.config-group-actions { display: flex; align-items: center; gap: .5rem; }
 .config-row {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 1rem; padding: .4rem .55rem; border-radius: 6px;
+  display: flex; flex-wrap: wrap;
+  padding: .4rem .55rem; border-radius: 6px;
   border: 1px solid var(--border); background: var(--surface); margin-bottom: .35rem;
 }
+.config-row-main { display: flex; align-items: center; justify-content: space-between; gap: 1rem; width: 100%; }
 .config-row .config-name { font-size: .8rem; font-family: var(--font-mono, monospace); }
 .config-row.readonly { opacity: .8; }
 .config-row .config-ctl input,
@@ -396,6 +399,21 @@ tr[data-run-id] { cursor: pointer; }
   border: 1px solid var(--border); background: var(--bg); color: var(--text);
 }
 .config-reprovision-note { font-size: .72rem; color: var(--muted); }
+.config-info { display: flex; flex-direction: column; gap: .15rem; }
+.config-desc { font-size: .72rem; color: var(--muted); }
+.config-requires { font-size: .65rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.config-requires.requires-rebuild { color: var(--yellow); }
+.field-error { flex-basis: 100%; color: var(--red); font-size: .72rem; margin-top: .3rem; }
+.secret-status { font-size: .8rem; }
+.pending-note { font-size: .72rem; color: var(--yellow); margin-left: .3rem; }
+.test-result { font-size: .75rem; margin-left: .5rem; }
+.test-result.test-ok { color: var(--green); }
+.test-result.test-fail { color: var(--red); }
+.reindex-notice {
+  font-size: .78rem; color: var(--yellow); border: 1px solid var(--yellow);
+  border-radius: 6px; padding: .45rem .7rem; margin-bottom: .6rem;
+  background: rgba(251,191,36,.08);
+}
 
 /* approval gate */
 #approval-gate {
