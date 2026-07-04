@@ -33,6 +33,7 @@ PLUGIN_MANIFEST = PLUGIN / ".claude-plugin" / "plugin.json"
 MARKETPLACE = PLUGIN / ".claude-plugin" / "marketplace.json"
 ROOT_MARKETPLACE = REPO_ROOT / ".claude-plugin" / "marketplace.json"
 HOOKS_JSON = PLUGIN / "hooks" / "hooks.json"
+PLUGIN_MCP = PLUGIN / ".mcp.json"
 PLUGIN_SKILLS = PLUGIN / "skills"
 SYNC_SCRIPT = REPO_ROOT / "scripts" / "sync_claude_plugin.py"
 
@@ -144,6 +145,44 @@ def test_repo_root_marketplace_points_at_claude_binding():
     fritz = next((p for p in plugins if p.get("name") == "fritz-brain"), None)
     assert fritz is not None, "repo-root marketplace must list the fritz-brain plugin"
     assert fritz.get("source") == "bindings/claude"
+
+
+# --- MCP: brain server registration (#237) ----------------------------------
+
+
+def test_mcp_json_registers_fritz_brain_http_server():
+    """#237 — the plugin registers the brain MCP server via a plugin-root
+    ``.mcp.json`` (Claude Code's default discovery path for plugin-provided MCP
+    servers; see ``bindings/claude/README.md`` for the investigation notes).
+
+    Asserts: server name, ``type: http``, the streamable-HTTP endpoint (trailing
+    slash), and an Authorization header using the ``${LOCAL_BRAIN_API_TOKEN}``
+    placeholder — never a hardcoded secret. The default-value form
+    (``${LOCAL_BRAIN_API_TOKEN:-}``) is required so an unset token expands to an
+    empty string instead of Claude Code failing to parse the config (hard
+    graceful-degradation requirement).
+    """
+    assert PLUGIN_MCP.is_file(), ".mcp.json must exist at the plugin root"
+    data = json.loads(PLUGIN_MCP.read_text(encoding="utf-8"))
+    server = data.get("fritz-brain")
+    assert server is not None, "must register a server named 'fritz-brain'"
+    assert server.get("type") == "http"
+    assert server.get("url") == "http://127.0.0.1:8765/mcp/"
+    auth = server.get("headers", {}).get("Authorization", "")
+    assert auth == "Bearer ${LOCAL_BRAIN_API_TOKEN:-}", "Authorization must use env placeholder with safe default"
+
+
+def test_mcp_json_does_not_hardcode_a_secret():
+    """#237 — no literal bearer token / secret-looking value anywhere in .mcp.json."""
+    raw = PLUGIN_MCP.read_text(encoding="utf-8")
+    data = json.loads(raw)
+    for server in data.values():
+        for value in server.get("headers", {}).values():
+            # Every header value must be an env placeholder (contains "${").
+            assert "${" in value, f"Header value must use env expansion: {value}"
+            # If it's a Bearer token, it must be exactly the safe placeholder.
+            if value.startswith("Bearer "):
+                assert value == "Bearer ${LOCAL_BRAIN_API_TOKEN:-}", f"Bearer token must be the safe placeholder, not: {value}"
 
 
 # --- hooks.json: events, ordering, and resolvable commands ------------------
