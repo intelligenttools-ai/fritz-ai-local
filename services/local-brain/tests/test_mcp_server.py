@@ -43,6 +43,20 @@ def test_mcp_status_requires_configured_api_token(monkeypatch) -> None:
     assert mcp_server.brain_status(api_token="secret")["service"] == "local-brain"
 
 
+def test_brain_search_docstring_states_default_and_query_guidance() -> None:
+    doc = mcp_server.brain_search.__doc__ or ""
+    assert "DEFAULT" in doc
+    assert "2-6 terms" in doc
+    assert "proxmox cloudinit template debian" in doc
+
+
+def test_brain_query_docstring_states_exact_only_not_default() -> None:
+    doc = mcp_server.brain_query.__doc__ or ""
+    assert "EXACT" in doc
+    assert "NOT the default brain check" in doc
+    assert "brain_search" in doc
+
+
 def test_mcp_search_does_not_refresh_index_inline(monkeypatch) -> None:
     calls = []
 

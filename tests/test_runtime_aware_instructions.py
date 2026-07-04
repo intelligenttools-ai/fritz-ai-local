@@ -148,6 +148,29 @@ def test_service_instructions_claude_leads_with_mcp_tools(monkeypatch):
     assert "/fritz:brain-" not in instructions
 
 
+def test_service_instructions_claude_contains_query_guidance(monkeypatch):
+    _set_claude(monkeypatch)
+    monkeypatch.setattr(brain_common, "get_local_brain_base_url", lambda: "http://127.0.0.1:8765")
+    monkeypatch.setattr(brain_common, "get_local_brain_api_token", lambda: None)
+
+    instructions = brain_common.local_brain_service_instructions()
+
+    assert "SHORT and CONCEPTUAL (2-6 terms)" in instructions
+    assert "Good: `proxmox cloudinit template debian`" in instructions
+    assert "192.168.1.53" in instructions  # bad-example IP dump
+
+
+def test_service_instructions_non_claude_contains_query_guidance(monkeypatch):
+    _clear_claude_markers(monkeypatch)
+    monkeypatch.setattr(brain_common, "get_local_brain_base_url", lambda: "http://127.0.0.1:8765")
+    monkeypatch.setattr(brain_common, "get_local_brain_api_token", lambda: None)
+
+    instructions = brain_common.local_brain_service_instructions()
+
+    assert "SHORT and CONCEPTUAL (2-6 terms)" in instructions
+    assert "Good: `proxmox cloudinit template debian`" in instructions
+
+
 def test_service_instructions_claude_contains_only_registered_skill_names(monkeypatch):
     _set_claude(monkeypatch)
     monkeypatch.setattr(brain_common, "get_local_brain_base_url", lambda: "http://127.0.0.1:8765")
