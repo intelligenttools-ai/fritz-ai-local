@@ -11,6 +11,7 @@ from fastapi import FastAPI
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import mcp_server
 from .api.routes import router
 from .config import get_settings
 from .scheduler import scheduler_loop
@@ -30,12 +31,16 @@ async def lifespan(app: FastAPI):
     task = asyncio.create_task(scheduler_loop(settings, stop=stop))
     app.state.scheduler_task = task
     app.state.scheduler_stop = stop
-    try:
-        yield
-    finally:
-        app.state.scheduler_task = None
-        stop.set()
-        task.cancel()
+    # #236: the MCP streamable-HTTP transport mounted at /mcp needs its session
+    # manager running. A mounted sub-app's lifespan does NOT run under FastAPI, so
+    # start it here (once) alongside the scheduler.
+    async with mcp_server.mcp.session_manager.run():
+        try:
+            yield
+        finally:
+            app.state.scheduler_task = None
+            stop.set()
+            task.cancel()
 
 
 _UI_DIR = Path(__file__).parent / "static" / "ui"
@@ -82,6 +87,12 @@ def create_app() -> FastAPI:
     # index.html and /ui/activity.html resolve directly. Each page supplies the
     # Bearer token to the /v1/* data endpoints via sessionStorage.
     app.mount("/ui", StaticFiles(directory=str(_UI_DIR), html=True), name="ui")
+
+    # #236: expose the existing MCP toolset over streamable HTTP on the same 8765
+    # port (no Dockerfile/compose change). The mount also lazily creates the
+    # session manager that `lifespan` starts. Bearer-auth is enforced by the
+    # wrapper in mcp_server.streamable_http_app.
+    app.mount("/mcp", mcp_server.streamable_http_app())
 
     return app
 

@@ -346,8 +346,22 @@ Three knobs control telemetry (set in `.env`, or via the provisioning flags):
 
 ## MCP
 
-MCP is the preferred agent-native integration. Run the stdio MCP server from the
-same image when an MCP host needs direct tool access instead of REST:
+MCP is the preferred agent-native integration. The running service also exposes
+the same toolset over **streamable HTTP at `/mcp` on the existing 8765 port** (no
+extra port or compose change), so an MCP host can connect to the 24/7 container
+without a host-side install:
+
+```
+http://127.0.0.1:8765/mcp
+```
+
+The `/mcp` endpoint requires the **same Bearer token as `/v1/*`** (send it via the
+`Authorization: Bearer <token>` header); unauthenticated requests are rejected
+with 401. When the header is present the per-call `api_token` tool argument is not
+required. The transport is stateless with JSON responses.
+
+Alternatively, run the stdio MCP server from the same image when an MCP host
+needs a direct stdio pipe instead of HTTP:
 
 ```bash
 docker compose --env-file .env -f services/local-brain/docker-compose.example.yml run --rm local-brain fritz-local-brain-mcp
@@ -366,8 +380,9 @@ Available tools mirror the safe service workflows:
 - `brain_embeddings_probe`
 - `brain_embeddings_index`
 
-MCP tools require the same API token as `/v1/*` endpoints. Pass the token via
-the `api_token` tool argument using the secret configured by your MCP host.
+MCP tools require the same API token as `/v1/*` endpoints. Over HTTP (`/mcp`) pass
+it in the `Authorization: Bearer <token>` header. Over stdio pass it via the
+`api_token` tool argument using the secret configured by your MCP host.
 
 ## CLI
 
