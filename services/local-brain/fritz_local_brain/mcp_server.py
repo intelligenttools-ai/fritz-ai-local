@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import contextvars
+import json
 import os
 from time import perf_counter
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
+from .api.auth import token_matches
 from .compile_workflow import run_compile
 from .config import get_settings
 from .embeddings import embedding_status, probe_embedding_dimensions, refresh_embedding_index, schedule_embedding_refresh_after_compile_result
@@ -21,7 +25,27 @@ from .sync_workflow import run_sync
 from .telemetry import record_query_event
 
 
-mcp = FastMCP("fritz-local-brain")
+# #236: the same instance serves stdio (`mcp.run()` in main()) and, when mounted
+# by the FastAPI service at /mcp, streamable HTTP. The extra kwargs only affect
+# the HTTP transport (stdio ignores them): `stateless_http`/`json_response` give
+# a single JSON body per POST (no long-lived SSE session to manage or hang on),
+# `streamable_http_path="/"` so the endpoint is exactly /mcp once mounted, and
+# DNS-rebinding protection is disabled because the container is reached over the
+# LAN by arbitrary Host — the Bearer token is the security boundary (as for /v1/*).
+mcp = FastMCP(
+    "fritz-local-brain",
+    stateless_http=True,
+    json_response=True,
+    streamable_http_path="/",
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+)
+
+# Set true by the HTTP auth wrapper (streamable_http_app) once the Bearer header
+# has been verified, so tools skip the per-call `api_token` requirement over HTTP
+# without weakening the stdio path (no wrapper there -> stays False -> arg required).
+_http_authenticated: contextvars.ContextVar[bool] = contextvars.ContextVar(
+    "fritz_mcp_http_authenticated", default=False
+)
 
 
 def _resolve_mcp_agent(agent: str | None) -> str:
@@ -178,9 +202,85 @@ async def brain_embeddings_index(force: bool = False, api_token: str | None = No
 
 
 def _require_mcp_token(settings: Any, provided: str | None) -> None:
+    # Over HTTP the Bearer header is already verified by the mount wrapper, so the
+    # per-call arg is not required (#236). Stdio never sets this flag, so it keeps
+    # requiring the `api_token` argument exactly as before.
+    if _http_authenticated.get():
+        return
     expected = getattr(settings, "api_token", None)
     if not expected or provided != expected:
         raise PermissionError("Invalid Local Brain MCP token")
+
+
+def _asgi_authorization(scope: dict[str, Any]) -> str | None:
+    for key, value in scope.get("headers", []):
+        if key == b"authorization":
+            return value.decode("latin-1")
+    return None
+
+
+async def _send_unauthorized(send: Any) -> None:
+    body = json.dumps({"detail": "Invalid Local Brain API token"}).encode()
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 401,
+            "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())],
+        }
+    )
+    await send({"type": "http.response.body", "body": body})
+
+
+async def _send_unconfigured(send: Any) -> None:
+    body = json.dumps({"detail": "Local Brain API token is not configured"}).encode()
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 503,
+            "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())],
+        }
+    )
+    await send({"type": "http.response.body", "body": body})
+
+
+def streamable_http_app() -> Any:
+    """Return the Bearer-authenticated MCP streamable-HTTP ASGI app for mounting at /mcp.
+
+    The mounted sub-app bypasses FastAPI's ``Depends(require_token)``, so this
+    wrapper enforces the SAME Bearer token (via ``auth.token_matches``) BEFORE the
+    request reaches the MCP app, then flags the request as HTTP-authenticated so
+    tools skip the per-call ``api_token`` requirement. The session manager's own
+    lifespan is swallowed here because the service lifespan (app.py) owns it — see
+    ``mcp.session_manager.run()`` there.
+    """
+
+    inner = mcp.streamable_http_app()
+
+    async def app(scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope["type"] == "lifespan":
+            while True:
+                message = await receive()
+                if message["type"] == "lifespan.startup":
+                    await send({"type": "lifespan.startup.complete"})
+                elif message["type"] == "lifespan.shutdown":
+                    await send({"type": "lifespan.shutdown.complete"})
+                    return
+        if scope["type"] != "http":
+            await inner(scope, receive, send)
+            return
+        if not get_settings().api_token:
+            await _send_unconfigured(send)
+            return
+        if not token_matches(_asgi_authorization(scope)):
+            await _send_unauthorized(send)
+            return
+        reset = _http_authenticated.set(True)
+        try:
+            await inner(scope, receive, send)
+        finally:
+            _http_authenticated.reset(reset)
+
+    return app
 
 
 def main() -> None:
