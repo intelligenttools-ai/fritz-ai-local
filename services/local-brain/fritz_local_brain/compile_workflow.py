@@ -271,6 +271,18 @@ async def run_compile(settings: Settings, request: CompileRunRequest, trusted: b
     errors: list[str] = []
     applied: list[AppliedArticleWrite] = []
     reconciliations: list[ReconciliationOutcome] = []
+    # Freeze the LLM wiring for the WHOLE run (#256): ``settings`` is a live
+    # mutable singleton (PATCH /v1/config sets attrs in place), and the agents
+    # are built LATER (per-capture + reconciliation) via build_model(settings),
+    # which re-reads settings.llm_* at build time. Snapshotting only the recorded
+    # strings wouldn't stop a mid-run PATCH from making the run USE model B while
+    # RECORDING model A. So we copy Settings once here and pass THAT frozen copy
+    # to every agent build below, and derive the recorded values from it — so the
+    # recorded model always equals the model actually used.
+    run_llm_settings = settings.model_copy()
+    llm_model = run_llm_settings.llm_model
+    llm_base_url = run_llm_settings.normalized_llm_base_url()
+    llm_protocol = run_llm_settings.llm_protocol
 
     mapper = PathMapper(settings.path_map)
     try:
@@ -379,7 +391,7 @@ async def run_compile(settings: Settings, request: CompileRunRequest, trusted: b
         else:
             related = []
 
-        agent = build_compile_agent(settings, COMPILE_POLICY)
+        agent = build_compile_agent(run_llm_settings, COMPILE_POLICY)
         deps = CompileDeps(
             capture_paths=[capture_path],
             vault_names=vault_names,
@@ -507,7 +519,7 @@ async def run_compile(settings: Settings, request: CompileRunRequest, trusted: b
     ):
         assert brain_store_root is not None
         reconciliations.extend(
-            await _reconcile_applied_articles(settings, brain_store_root, applied_store_targets, request)
+            await _reconcile_applied_articles(settings, brain_store_root, applied_store_targets, request, run_llm_settings)
         )
         if reconciliations:
             applied_count = sum(1 for o in reconciliations if o.applied)
@@ -573,6 +585,9 @@ async def run_compile(settings: Settings, request: CompileRunRequest, trusted: b
         skipped=all_skipped,
         errors=errors,
         reconciliations=reconciliations,
+        llm_model=llm_model,
+        llm_base_url=llm_base_url,
+        llm_protocol=llm_protocol,
     )
 
 
@@ -581,6 +596,7 @@ async def _reconcile_applied_articles(
     store_root: Path,
     applied_targets: list[Path],
     request: CompileRunRequest,
+    llm_settings: Settings | None = None,
 ) -> list[ReconciliationOutcome]:
     """Run the reconciliation agent for each (new article, related-old article) pair.
 
@@ -608,7 +624,10 @@ async def _reconcile_applied_articles(
 
     pending: list[tuple] = []
 
-    agent = build_reconciliation_agent(settings)
+    # #256: build the reconciliation agent from the run-frozen LLM settings so it
+    # uses (and matches the recorded) model even if a PATCH landed mid-run. The
+    # standalone re-reconciliation sweep passes none and uses the live settings.
+    agent = build_reconciliation_agent(llm_settings or settings)
 
     for new_target in applied_targets:
         try:

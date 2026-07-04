@@ -244,6 +244,30 @@ def test_record_compile_persists_rich_detail(tmp_path) -> None:
     assert row["detail"]["errors"] == ["provider timeout"]
 
 
+def test_record_compile_persists_effective_llm_model(tmp_path) -> None:
+    """#256: the effective llm_model/base_url/protocol snapshotted onto the
+    CompileRunResult must flow into the persisted run detail."""
+    settings = _settings(tmp_path)
+    run_history.clear_recent_runs_for_tests()
+    result = CompileRunResult(
+        run_id="compile-model",
+        started_at=datetime(2026, 6, 1, 12, 0, 0, tzinfo=timezone.utc),
+        finished_at=datetime(2026, 6, 1, 12, 0, 3, tzinfo=timezone.utc),
+        dry_run=False,
+        captures_considered=1,
+        llm_model="gpt-oss-120b",
+        llm_base_url="http://llm.internal:11434/v1",
+        llm_protocol="openai-compatible",
+    )
+    run_history.record_compile(result, settings, source="api")
+
+    row = telemetry.get_run(settings, "compile-model")
+    assert row is not None
+    assert row["detail"]["llm_model"] == "gpt-oss-120b"
+    assert row["detail"]["llm_base_url"] == "http://llm.internal:11434/v1"
+    assert row["detail"]["llm_protocol"] == "openai-compatible"
+
+
 def test_record_compile_without_settings_does_not_persist(tmp_path) -> None:
     """Backward compat: legacy callers omit settings -> no db, deque still works."""
     settings = _settings(tmp_path)

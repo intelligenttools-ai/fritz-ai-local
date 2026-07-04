@@ -2105,3 +2105,127 @@ def test_run_compile_builds_agent_with_compile_policy(
             assert marker not in skill_text, (
                 f"skill_text passed to build_compile_agent must not contain {marker!r}"
             )
+
+
+def test_compile_records_effective_llm_model_in_result(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#256: run_compile must snapshot the effective LLM wiring (model/base_url/
+    protocol) into the CompileRunResult so it can be recorded + displayed in run
+    detail."""
+    brain_home = tmp_path / "brain"
+    capture_path = brain_home / "capture" / "inbox" / "fact.md"
+    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
+
+    capture_path.parent.mkdir(parents=True)
+    capture_path.write_text("# Capture\n\nDurable fact.\n", encoding="utf-8")
+    brain_home.mkdir(exist_ok=True)
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Compile Skill\n", encoding="utf-8")
+
+    proposal = ArticleWriteProposal(
+        vault="brain",
+        relative_path="common/decisions/fact.md",
+        operation="create",
+        title="Fact",
+        summary="s",
+        sources=[str(capture_path)],
+        body="body",
+    )
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: FakeCompileAgent(proposal))
+
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills", LOCAL_BRAIN_LLM_MODEL="gpt-oss-120b")
+
+    result = asyncio.run(
+        compile_workflow.run_compile(settings, CompileRunRequest(dry_run=True, max_captures=1))
+    )
+
+    assert result.llm_model == "gpt-oss-120b"
+    assert result.llm_base_url == settings.normalized_llm_base_url()
+    assert result.llm_protocol == settings.llm_protocol
+
+
+def test_compile_freezes_llm_wiring_so_recorded_equals_used_after_mid_run_patch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A PATCH /v1/config that mutates ALL THREE LLM fields WHILE a compile run is
+    in flight must not affect that run: the wiring is frozen at run START (#256).
+    ``settings`` is a live mutable singleton in production (api/routes.py
+    ``config_patch`` calls setattr in place), and agents are built LATER
+    (per-capture), so we prove EVERY agent build in the run saw the run-start
+    wiring — i.e. recorded model == used model — across multiple captures."""
+    brain_home = tmp_path / "brain"
+    older_capture = brain_home / "capture" / "daily" / "older.md"
+    newer_capture = brain_home / "capture" / "inbox" / "newer.md"
+    skill_path = tmp_path / "skills" / "brain-compile" / "SKILL.md"
+
+    older_capture.parent.mkdir(parents=True)
+    newer_capture.parent.mkdir(parents=True)
+    older_capture.write_text("# Capture\n\nFirst durable fact.\n", encoding="utf-8")
+    newer_capture.write_text("# Capture\n\nSecond durable fact.\n", encoding="utf-8")
+    os.utime(older_capture, (100, 100))
+    os.utime(newer_capture, (200, 200))
+    brain_home.mkdir(exist_ok=True)
+    skill_path.parent.mkdir(parents=True)
+    skill_path.write_text("# Compile Skill\n", encoding="utf-8")
+
+    def _proposal(capture: Path) -> ArticleWriteProposal:
+        return ArticleWriteProposal(
+            vault="brain",
+            relative_path=f"common/decisions/{capture.stem}.md",
+            operation="create",
+            title="Fact",
+            summary="s",
+            sources=[str(capture)],
+            body="body",
+        )
+
+    settings = Settings(
+        LOCAL_BRAIN_HOME=brain_home,
+        LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills",
+        LOCAL_BRAIN_LLM_MODEL="model-at-start",
+        LLM_BASE_URL="http://start:11434/v1",
+        LOCAL_BRAIN_LLM_PROTOCOL="openai-compatible",
+    )
+    start_base_url = settings.normalized_llm_base_url()
+
+    # Spy on the settings each agent build sees; the agent, when run, mutates ALL
+    # THREE live LLM fields to simulate a concurrent PATCH /v1/config mid-run.
+    seen_wiring: list[tuple[str, str, str]] = []
+
+    class MutatingSpyAgent:
+        def __init__(self, build_settings: Settings, capture: Path) -> None:
+            seen_wiring.append(
+                (build_settings.llm_model, build_settings.normalized_llm_base_url(), build_settings.llm_protocol)
+            )
+            self.proposal = _proposal(capture)
+
+        async def run(self, prompt: str, *, deps: object, usage_limits: object) -> SimpleNamespace:
+            settings.llm_model = "model-changed-mid-run"
+            settings.llm_base_url = "http://changed:9999/v1"
+            settings.llm_protocol = "anthropic-compatible"
+            return SimpleNamespace(output=CompileAgentOutput(proposals=[self.proposal]))
+
+    def spy_build(build_settings: Settings, skill_text: str) -> object:
+        # One capture per agent.run (#153); pick the capture from build order.
+        capture = older_capture if len(seen_wiring) == 0 else newer_capture
+        return MutatingSpyAgent(build_settings, capture)
+
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", spy_build)
+
+    result = asyncio.run(
+        compile_workflow.run_compile(settings, CompileRunRequest(dry_run=True))
+    )
+
+    # Two captures -> two agent builds; EVERY build saw the run-start wiring even
+    # though the first agent.run already mutated the live singleton.
+    assert len(seen_wiring) == 2
+    for model, base_url, protocol in seen_wiring:
+        assert model == "model-at-start"
+        assert base_url == start_base_url
+        assert protocol == "openai-compatible"
+
+    # And the recorded wiring equals what was used (run-start), not the mutation.
+    assert result.llm_model == "model-at-start"
+    assert result.llm_base_url == start_base_url
+    assert result.llm_protocol == "openai-compatible"

@@ -234,6 +234,24 @@ def test_operations_run_detail_escapes_untrusted_fields() -> None:
         assert token in fn, f"run detail must escape via {token}"
 
 
+def test_operations_run_detail_shows_llm_model() -> None:
+    """#256: the run-detail view must display the effective LLM model (+
+    base_url/protocol if present) recorded on a compile run's ``detail``,
+    esc()'d like every other untrusted field."""
+    body = _ops()
+    start = body.index("function renderRunDetail(")
+    end = body.index("\n}", start)
+    fn = body[start:end]
+    # All three LLM fields are rendered, each esc()'d.
+    assert "esc(detail.llm_model" in fn
+    assert "esc(detail.llm_base_url" in fn
+    assert "esc(detail.llm_protocol" in fn
+    # And they're excluded from the generic detail loop (via the llmFields Set)
+    # so they aren't double-rendered — which would risk an unescaped path.
+    assert "llmFields" in fn
+    assert "!llmFields.has(k)" in fn
+
+
 def test_operations_runs_table_kind_filter() -> None:
     """The runs table is backed by GET /v1/runs with an optional kind filter."""
     body = _ops()
