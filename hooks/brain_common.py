@@ -452,8 +452,20 @@ def _is_compile_already_running(exc: Exception) -> bool:
 
 
 def _resolve_client_agent() -> str:
-    """Client-side agent attribution for X-Brain-Agent (#179): FRITZ_AGENT, else 'unknown'."""
-    return (os.environ.get("FRITZ_AGENT") or "").strip() or "unknown"
+    """Client-side agent attribution for X-Brain-Agent (#179, #238):
+
+    FRITZ_AGENT always wins (pi/codex/hermes set this explicitly). Otherwise,
+    detect the hosting runtime from its own process env: Claude Code always
+    sets CLAUDECODE and/or CLAUDE_CODE_ENTRYPOINT, so their presence resolves
+    to 'claude'. No other runtime has an equally trivial marker, so this
+    otherwise falls back to 'unknown'.
+    """
+    fritz_agent = (os.environ.get("FRITZ_AGENT") or "").strip()
+    if fritz_agent:
+        return fritz_agent
+    if "CLAUDECODE" in os.environ or "CLAUDE_CODE_ENTRYPOINT" in os.environ:
+        return "claude"
+    return "unknown"
 
 
 def _try_service_compile(timeout: float = 30.0) -> tuple[str, int | None] | None:
