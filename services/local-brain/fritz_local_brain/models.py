@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime
 from typing import Any, Literal
 
@@ -536,6 +537,7 @@ class ConfigField(BaseModel):
     value: Any
     mutable: bool
     requires: Literal["runtime", "rebuild"]
+    secret: bool = False
 
 
 class ConfigResult(BaseModel):
@@ -550,6 +552,41 @@ class ConfigPatchResult(BaseModel):
     applied: list[str] = Field(default_factory=list)
     rejected: list[str] = Field(default_factory=list)
     config: dict[str, ConfigField]
+    # #226: True when an embedding-provider field changed and a vector-index
+    # rebuild was scheduled as a consequence (the old index is now stale).
+    reindex_scheduled: bool = False
+
+
+class ConfigTestRequest(BaseModel):
+    """Optional overrides for a connection test (#226).
+
+    When a field is omitted the current live config value is used, so the UI can
+    test the saved config; when supplied, the probe uses the value WITHOUT saving
+    it, so the UI can test candidate values BEFORE saving.
+    """
+
+    protocol: str | None = None
+    base_url: str | None = None
+    model: str | None = None
+    api_key: str | None = None
+    timeout_seconds: float | None = None
+
+    @field_validator("timeout_seconds")
+    @classmethod
+    def _finite_positive_timeout(cls, value: float | None) -> float | None:
+        # Field(gt=0) does NOT reject inf/nan; enforce a finite positive timeout so
+        # a probe cannot hang forever on inf (#226 security).
+        if value is not None and (not math.isfinite(value) or value <= 0):
+            raise ValueError("timeout_seconds must be a finite number > 0")
+        return value
+
+
+class ConfigTestResult(BaseModel):
+    """Result of a cheap real connection probe (#226). Never persists anything."""
+
+    ok: bool
+    latency_ms: float | None = None
+    error: str | None = None
 
 
 # ---------------------------------------------------------------------------

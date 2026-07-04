@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from time import perf_counter
+
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
 from pydantic_ai import NativeOutput
@@ -10,7 +12,8 @@ from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.anthropic import AnthropicProvider
 from pydantic_ai.providers.openai import OpenAIProvider
 
-from .config import Settings
+from .config import Settings, redact_secrets
+from .models import ConfigTestResult
 
 #: Output-validation retry budget for structured-output agents. Lets the model
 #: self-repair from output-validation errors (the error is fed back) before the
@@ -72,3 +75,42 @@ def build_model(settings: Settings):
         return AnthropicModel(settings.llm_model, provider=provider)
 
     raise ValueError("Unsupported LOCAL_BRAIN_LLM_PROTOCOL; use openai-compatible or anthropic-compatible")
+
+
+async def probe_llm(settings: Settings) -> ConfigTestResult:
+    """Cheap real reachability probe for the configured LLM endpoint (#226).
+
+    Lists models (a no-cost, no-token call) using a throwaway client built from
+    *settings*. ``max_retries=0`` so an unreachable endpoint fails fast instead of
+    burning the retry budget. Never persists anything, and any upstream error text
+    is redacted of the API key before being returned so a probe cannot leak the
+    key (SDK exceptions can echo the Authorization header from the response body).
+    """
+
+    # The key actually sent to the endpoint (post FIX-1 exfiltration guard). This
+    # is exactly the value an upstream error could echo, so redact THIS.
+    sent_key = settings.normalized_api_key()
+    start = perf_counter()
+    try:
+        if settings.llm_protocol == "openai-compatible":
+            client = AsyncOpenAI(
+                base_url=settings.normalized_llm_base_url(),
+                api_key=settings.normalized_api_key() or "local-brain-no-key",
+                timeout=settings.llm_timeout_seconds,
+                max_retries=0,
+            )
+            await client.models.list()
+        elif settings.llm_protocol == "anthropic-compatible":
+            client = AsyncAnthropic(
+                base_url=settings.normalized_llm_base_url(),
+                api_key=settings.normalized_api_key() or "local-brain-no-key",
+                timeout=settings.llm_timeout_seconds,
+                max_retries=0,
+            )
+            await client.models.list()
+        else:
+            return ConfigTestResult(ok=False, error="Unsupported llm_protocol; use openai-compatible or anthropic-compatible")
+    except Exception as exc:  # noqa: BLE001 - external clients raise provider-specific errors.
+        message = redact_secrets(str(exc), [sent_key])
+        return ConfigTestResult(ok=False, latency_ms=round((perf_counter() - start) * 1000, 1), error=message)
+    return ConfigTestResult(ok=True, latency_ms=round((perf_counter() - start) * 1000, 1))
