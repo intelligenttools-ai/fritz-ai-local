@@ -383,9 +383,19 @@ function renderRunDetail(r) {
     </div>`;
 
   const detail = (r && r.detail) || {};
+  const llmFields = new Set(["llm_model", "llm_base_url", "llm_protocol"]);
   const detailCards = Object.entries(detail)
-    .filter(([k, v]) => k !== "errors" && typeof v !== "object")
+    .filter(([k, v]) => k !== "errors" && !llmFields.has(k) && typeof v !== "object")
     .map(([k, v]) => ({ label: esc(k.replace(/_/g, " ")), value: esc(String(v)) }));
+
+  // #256: only compile runs carry an LLM model; render it (+ base_url/protocol
+  // if present) as its own row rather than "Model: —" on non-LLM run kinds.
+  const modelCards = [];
+  if (detail.llm_model) {
+    modelCards.push({ label: "Model", value: esc(detail.llm_model) });
+    if (detail.llm_base_url) modelCards.push({ label: "LLM Base URL", value: esc(detail.llm_base_url) });
+    if (detail.llm_protocol) modelCards.push({ label: "LLM Protocol", value: esc(detail.llm_protocol) });
+  }
 
   renderCards("run-detail-cards", [
     { label: "Status", value: esc(r.status || ""), cls: r.status === "ok" ? "green" : "red" },
@@ -395,6 +405,7 @@ function renderRunDetail(r) {
     { label: "Started", value: esc(r.started_at || "—") },
     { label: "Finished", value: esc(r.finished_at || "—") },
     { label: "Summary", value: esc(r.summary || "—") },
+    ...modelCards,
     ...detailCards,
   ]);
 

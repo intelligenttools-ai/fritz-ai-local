@@ -106,6 +106,9 @@ def record_compile(
             "skipped": len(result.skipped),
             "reconciliations": len(result.reconciliations),
             "errors": list(result.errors),
+            "llm_model": result.llm_model,
+            "llm_base_url": result.llm_base_url,
+            "llm_protocol": result.llm_protocol,
         },
     )
 

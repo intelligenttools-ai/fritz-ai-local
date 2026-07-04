@@ -127,6 +127,11 @@ class CompileRunResult(BaseModel):
     skipped: list[str] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
     reconciliations: list[ReconciliationOutcome] = Field(default_factory=list)
+    # Effective LLM wiring snapshotted at run START (#256), so a mid-run config
+    # change can't skew what's recorded for this run.
+    llm_model: str | None = None
+    llm_base_url: str | None = None
+    llm_protocol: str | None = None
 
 
 class SyncRunRequest(BaseModel):
