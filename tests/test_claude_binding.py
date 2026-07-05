@@ -563,8 +563,10 @@ def test_install_agent_claude_installs_plain_plugin_skills(tmp_path, monkeypatch
 
     brain = tmp_path / "home" / ".brain"
     brain.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("BRAIN_HOME", str(brain))
     monkeypatch.setenv("FRITZ_REPO_PATH", str(REPO_ROOT))
+    monkeypatch.delenv("CLAUDE_SETTINGS_PATH", raising=False)
     monkeypatch.delenv("FRITZ_SKILLS_DIR", raising=False)
 
     skills = tmp_path / "claude-skills"

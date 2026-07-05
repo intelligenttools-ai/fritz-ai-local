@@ -38,6 +38,11 @@ FRITZ_HOOKS: list[tuple[str, list[tuple[str, int]]]] = [
 # Stable marker recorded on every fritz-installed hook group so re-runs can find
 # and replace them without depending on the (machine-specific) command string.
 FRITZ_MARKER = "fritz-ai-local"
+CLAUDE_PLUGIN_ID = "fritz-brain@fritz-local"
+PLUGIN_MANAGED_SKIP_MESSAGE = (
+    "Claude: plugin-managed — skills/hooks owned by fritz-brain plugin; "
+    "legacy registration skipped"
+)
 
 PYTHON_BIN_DIRS = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin"]
 
@@ -70,6 +75,14 @@ def resolve_hooks_dir() -> Path:
     if installed.is_dir():
         return installed
     return Path(__file__).resolve().parent
+
+
+def claude_settings_path() -> Path:
+    """Resolve Claude settings, honoring the same test override as migration 003."""
+    env = os.environ.get("CLAUDE_SETTINGS_PATH")
+    if env and env.strip():
+        return Path(env.strip()).expanduser().resolve()
+    return Path.home() / ".claude" / "settings.json"
 
 
 def ensure_hook_scripts_present(hooks_dir: Path, repo_hooks_dir: Path) -> list[str]:
@@ -142,10 +155,49 @@ def _is_fritz_group(group: object) -> bool:
     return False
 
 
-def install_claude_hooks(settings_path: Path, *, hooks_dir: Path, python_bin: str) -> None:
+def _claude_plugin_enabled(settings: dict) -> bool:
+    """Return True when Claude settings enable the Fritz Brain plugin.
+
+    Mirrors migrations/003-claude-plugin-owns-hooks.py so legacy registration
+    and legacy cleanup agree on the plugin-managed host detection rule.
+    """
+    enabled = settings.get("enabledPlugins")
+    if isinstance(enabled, list):
+        return CLAUDE_PLUGIN_ID in enabled
+    if isinstance(enabled, dict):
+        return (
+            CLAUDE_PLUGIN_ID in enabled
+            and enabled.get(CLAUDE_PLUGIN_ID) is not False
+        )
+    return False
+
+
+def claude_plugin_enabled(settings_path: Path | None = None) -> bool:
+    """Read ``settings_path`` and detect whether the Fritz Brain plugin is enabled."""
+    settings_path = claude_settings_path() if settings_path is None else Path(settings_path)
+    if not settings_path.exists():
+        return False
+    try:
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise RuntimeError(
+            f"{settings_path} exists but could not be read as JSON "
+            f"({exc}); refusing to overwrite; fix or remove the file"
+        ) from exc
+    if not isinstance(settings, dict):
+        raise RuntimeError(
+            f"{settings_path} exists but its top level is not a JSON object; "
+            f"refusing to overwrite; fix or remove the file"
+        )
+    return _claude_plugin_enabled(settings)
+
+
+def install_claude_hooks(settings_path: Path, *, hooks_dir: Path, python_bin: str) -> bool:
     """Merge the four fritz hooks into ``settings_path`` idempotently.
 
     - Reads the existing settings JSON (missing file → start from ``{}``).
+    - Skips without writing when ``fritz-brain@fritz-local`` is enabled; the
+      Claude plugin owns skills and hooks on plugin-managed hosts.
     - Preserves all other top-level keys and any hook groups for other plugins.
     - Replaces existing fritz hook groups (never appends duplicates).
     - Writes atomically (tmp + os.replace), backing up a pre-existing file to
@@ -173,6 +225,10 @@ def install_claude_hooks(settings_path: Path, *, hooks_dir: Path, python_bin: st
             )
     else:
         settings = {}
+
+    if _claude_plugin_enabled(settings):
+        print(PLUGIN_MANAGED_SKIP_MESSAGE)
+        return False
 
     hooks = settings.get("hooks")
     if not isinstance(hooks, dict):
@@ -202,21 +258,27 @@ def install_claude_hooks(settings_path: Path, *, hooks_dir: Path, python_bin: st
     finally:
         if os.path.exists(tmp_name):
             os.unlink(tmp_name)
+    return True
 
 
 def main(argv: list[str] | None = None) -> int:
     repo_hooks_dir = Path(__file__).resolve().parent
+    settings_path = claude_settings_path()
+    if claude_plugin_enabled(settings_path):
+        print(PLUGIN_MANAGED_SKIP_MESSAGE)
+        return 0
+
     hooks_dir = resolve_hooks_dir()
     linked = ensure_hook_scripts_present(hooks_dir, repo_hooks_dir)
     if linked:
         print(f"Linked {len(linked)} hook script(s) into {hooks_dir}: {', '.join(linked)}")
-    settings_path = Path.home() / ".claude" / "settings.json"
-    install_claude_hooks(
+    installed = install_claude_hooks(
         settings_path,
         hooks_dir=hooks_dir,
         python_bin=resolve_python(),
     )
-    print(f"Registered {len(FRITZ_HOOKS)} Fritz Local hooks in {settings_path}")
+    if installed:
+        print(f"Registered {len(FRITZ_HOOKS)} Fritz Local hooks in {settings_path}")
     return 0
 
 
