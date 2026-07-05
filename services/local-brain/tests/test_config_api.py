@@ -710,3 +710,158 @@ def test_embedding_base_url_change_schedules_reindex(monkeypatch, tmp_path) -> N
     assert resp.status_code == 200
     assert resp.json()["reindex_scheduled"] is True
     assert calls == ["config change"]
+
+
+# ---------------------------------------------------------------------------
+# #254 — clear the stored API key on an effective endpoint change.
+#
+# A key is bound to the endpoint/provider it was issued for. Repointing
+# base_url/protocol without supplying a new key is both semantically wrong and
+# an exfiltration channel (the old key would be sent to the new host), so the
+# stored key must be cleared unless the same PATCH also supplies a new one.
+# ---------------------------------------------------------------------------
+
+
+def test_patch_llm_base_url_only_clears_api_key(monkeypatch, tmp_path) -> None:
+    env_file = tmp_path / ".env"
+    settings = _settings(tmp_path, LOCAL_BRAIN_LLM_API_KEY="preset-llm-key")
+    client = _client(monkeypatch, settings, env_file=env_file)
+
+    resp = client.patch("/v1/config", headers=_AUTH, json={"llm_base_url": "http://new-llm:9/v1"})
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert settings.llm_base_url == "http://new-llm:9/v1"
+    assert settings.llm_api_key is None
+    assert body["config"]["llm_api_key"]["value"] is False
+
+    lines = [line.strip() for line in env_file.read_text(encoding="utf-8").splitlines()]
+    assert "LLM_API_KEY=" in lines  # cleared: empty assignment, no value
+
+    got = client.get("/v1/config", headers=_AUTH).json()["fields"]["llm_api_key"]
+    assert got["value"] is False
+
+
+def test_patch_llm_protocol_only_clears_api_key(monkeypatch, tmp_path) -> None:
+    env_file = tmp_path / ".env"
+    settings = _settings(tmp_path, LOCAL_BRAIN_LLM_API_KEY="preset-llm-key")
+    client = _client(monkeypatch, settings, env_file=env_file)
+
+    resp = client.patch("/v1/config", headers=_AUTH, json={"llm_protocol": "anthropic-compatible"})
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert settings.llm_api_key is None
+    assert body["config"]["llm_api_key"]["value"] is False
+
+    lines = [line.strip() for line in env_file.read_text(encoding="utf-8").splitlines()]
+    assert "LLM_API_KEY=" in lines  # cleared: empty assignment, no value
+
+    got = client.get("/v1/config", headers=_AUTH).json()["fields"]["llm_api_key"]
+    assert got["value"] is False
+
+
+def test_patch_llm_base_url_and_api_key_both_applied(monkeypatch, tmp_path) -> None:
+    settings = _settings(tmp_path, LOCAL_BRAIN_LLM_API_KEY="preset-llm-key")
+    client = _client(monkeypatch, settings, env_file=tmp_path / ".env")
+
+    resp = client.patch(
+        "/v1/config",
+        headers=_AUTH,
+        json={"llm_base_url": "http://new-llm:9/v1", "llm_api_key": "brand-new-key"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert settings.llm_base_url == "http://new-llm:9/v1"
+    assert settings.llm_api_key == "brand-new-key"
+    assert body["config"]["llm_api_key"]["value"] is True
+
+
+def test_patch_embedding_base_url_only_clears_api_key(monkeypatch, tmp_path) -> None:
+    env_file = tmp_path / ".env"
+    settings = _settings(tmp_path, LOCAL_BRAIN_EMBEDDING_API_KEY="preset-embed-key")
+    client = _client(monkeypatch, settings, env_file=env_file)
+
+    resp = client.patch("/v1/config", headers=_AUTH, json={"embedding_base_url": "http://new-embed:9/v1"})
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert settings.embedding_api_key is None
+    assert body["config"]["embedding_api_key"]["value"] is False
+
+    lines = [line.strip() for line in env_file.read_text(encoding="utf-8").splitlines()]
+    assert "EMBEDDING_API_KEY=" in lines  # cleared: empty assignment, no value
+
+    got = client.get("/v1/config", headers=_AUTH).json()["fields"]["embedding_api_key"]
+    assert got["value"] is False
+
+
+def test_patch_embedding_protocol_only_clears_api_key(monkeypatch, tmp_path) -> None:
+    env_file = tmp_path / ".env"
+    settings = _settings(tmp_path, LOCAL_BRAIN_EMBEDDING_API_KEY="preset-embed-key")
+    client = _client(monkeypatch, settings, env_file=env_file)
+
+    resp = client.patch("/v1/config", headers=_AUTH, json={"embedding_protocol": "anthropic-compatible"})
+    assert resp.status_code == 200
+    body = resp.json()
+
+    assert settings.embedding_api_key is None
+    assert body["config"]["embedding_api_key"]["value"] is False
+
+    lines = [line.strip() for line in env_file.read_text(encoding="utf-8").splitlines()]
+    assert "EMBEDDING_API_KEY=" in lines  # cleared: empty assignment, no value
+
+    got = client.get("/v1/config", headers=_AUTH).json()["fields"]["embedding_api_key"]
+    assert got["value"] is False
+
+
+def test_patch_embedding_base_url_and_api_key_both_applied(monkeypatch, tmp_path) -> None:
+    settings = _settings(tmp_path, LOCAL_BRAIN_EMBEDDING_API_KEY="preset-embed-key")
+    client = _client(monkeypatch, settings, env_file=tmp_path / ".env")
+
+    resp = client.patch(
+        "/v1/config",
+        headers=_AUTH,
+        json={"embedding_base_url": "http://new-embed:9/v1", "embedding_api_key": "brand-new-embed-key"},
+    )
+    assert resp.status_code == 200
+    assert settings.embedding_base_url == "http://new-embed:9/v1"
+    assert settings.embedding_api_key == "brand-new-embed-key"
+
+
+def test_patch_llm_model_only_does_not_clear_api_key(monkeypatch, tmp_path) -> None:
+    settings = _settings(tmp_path, LOCAL_BRAIN_LLM_API_KEY="preset-llm-key", LOCAL_BRAIN_LLM_MODEL="old-model")
+    client = _client(monkeypatch, settings, env_file=tmp_path / ".env")
+
+    resp = client.patch("/v1/config", headers=_AUTH, json={"llm_model": "new-model"})
+    assert resp.status_code == 200
+    assert settings.llm_model == "new-model"
+    assert settings.llm_api_key == "preset-llm-key"
+
+
+def test_patch_same_value_llm_base_url_does_not_clear_api_key(monkeypatch, tmp_path) -> None:
+    settings = _settings(
+        tmp_path,
+        LOCAL_BRAIN_LLM_API_KEY="preset-llm-key",
+        LOCAL_BRAIN_LLM_BASE_URL="http://same-llm:11434/v1",
+    )
+    client = _client(monkeypatch, settings, env_file=tmp_path / ".env")
+
+    resp = client.patch("/v1/config", headers=_AUTH, json={"llm_base_url": "http://same-llm:11434/v1"})
+    assert resp.status_code == 200
+    assert settings.llm_api_key == "preset-llm-key"
+
+
+def test_patch_same_value_embedding_base_url_does_not_clear_api_key(monkeypatch, tmp_path) -> None:
+    settings = _settings(
+        tmp_path,
+        LOCAL_BRAIN_EMBEDDING_API_KEY="preset-embed-key",
+        LOCAL_BRAIN_EMBEDDING_BASE_URL="http://same-embed:11434/v1",
+    )
+    client = _client(monkeypatch, settings, env_file=tmp_path / ".env")
+
+    resp = client.patch(
+        "/v1/config", headers=_AUTH, json={"embedding_base_url": "http://same-embed:11434/v1"}
+    )
+    assert resp.status_code == 200
+    assert settings.embedding_api_key == "preset-embed-key"

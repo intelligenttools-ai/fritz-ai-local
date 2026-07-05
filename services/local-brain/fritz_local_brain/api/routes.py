@@ -18,6 +18,7 @@ from ..compile_workflow import run_compile
 from ..config import (
     CONFIG_FIELD_META,
     EMBEDDING_PROVIDER_FIELDS,
+    KEY_CLEAR_ENDPOINT_FIELDS,
     REPROVISION_GUIDANCE,
     ConfigCoercionError,
     coerce_config_value,
@@ -526,6 +527,23 @@ async def config_patch(body: dict[str, object]) -> ConfigPatchResult:
     # Snapshot embedding-provider values BEFORE applying so we can tell whether a
     # provider field EFFECTIVELY changed (a same-value PATCH must not reindex).
     provider_before = {field: getattr(settings, field) for field in EMBEDDING_PROVIDER_FIELDS}
+
+    # #254: snapshot the endpoint fields that gate key-clearing, for the same
+    # effective-change reason (a same-value PATCH must not clear the key).
+    endpoint_before = {
+        field: getattr(settings, field)
+        for endpoint_fields in KEY_CLEAR_ENDPOINT_FIELDS.values()
+        for field in endpoint_fields
+    }
+
+    # #254: an endpoint change invalidates the section's stored key unless the
+    # same PATCH also supplies a new one — clear it (still pass-1 validated, so
+    # this stays inside the atomic all-or-nothing apply).
+    for key_field, endpoint_fields in KEY_CLEAR_ENDPOINT_FIELDS.items():
+        if key_field in coerced:
+            continue  # caller supplied a new key explicitly — never auto-clear
+        if any(field in coerced and coerced[field] != endpoint_before[field] for field in endpoint_fields):
+            coerced[key_field] = None
 
     # Pass 2 — only now that validation fully passed, apply to the live singleton
     # and persist the changed env keys.
