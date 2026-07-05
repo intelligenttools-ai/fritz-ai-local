@@ -58,8 +58,27 @@ when the old value was unavailable.
 
 ### 3. Symlink new skills and managed hooks
 
+First detect whether Claude Code is plugin-managed:
+
+```
+python3 -c 'import json,os,pathlib; env=os.environ.get("CLAUDE_SETTINGS_PATH"); p=pathlib.Path(env.strip()).expanduser().resolve() if env and env.strip() else pathlib.Path.home()/".claude/settings.json"; s=json.loads(p.read_text()) if p.exists() else {}; e=s.get("enabledPlugins"); plugin="fritz-brain@fritz-local"; print((isinstance(e,list) and plugin in e) or (isinstance(e,dict) and plugin in e and e.get(plugin) is not False))'
+```
+
+If this prints `True`, the Claude binding is plugin-managed. For Claude Code,
+skip the whole legacy Claude wiring path: do not symlink repo skills into
+`~/.claude/skills/`, do not refresh `~/.brain/hooks/` solely for Claude hook
+execution, and do not run `python3 <REPO>/hooks/install_claude_hooks.py`.
+Report exactly:
+
+```
+Claude: plugin-managed — skills/hooks owned by fritz-brain plugin; legacy registration skipped
+```
+
+Codex CLI, Gemini CLI, and non-Claude managed hook symlinks are unaffected by
+this Claude-only condition.
+
 List all directories in `<REPO>/skills/`. For each skill directory (any subdir containing a `SKILL.md`), check if a symlink exists in the agent's skill directory:
-- Claude Code: `~/.claude/skills/`
+- Claude Code: `~/.claude/skills/` (skip when plugin-managed)
 - Codex CLI: `~/.codex/skills/`
 - Gemini CLI: `~/.gemini/skills/`
 
@@ -69,6 +88,8 @@ If a skill directory was removed from the repo but a symlink still exists, **war
 
 Then refresh managed hook symlinks from `<REPO>/hooks/` into
 `~/.brain/hooks/` for all Python hook files required by the current agent.
+When Claude is plugin-managed and the current update is for Claude only, skip
+this hook refresh; the Claude plugin owns its hook scripts.
 At minimum keep these common hooks current:
 - `brain_capture.py`
 - `brain_session_start.py`
@@ -80,11 +101,11 @@ For Hermes Agent, also symlink:
 - `hermes_brain_context.py`
 - `hermes_brain_capture.py`
 
-Then register the Claude Code hooks. The binding is a directory-source
-marketplace, so its skills load but its hooks do NOT auto-register — without
-this step the four fritz hooks never fire and Claude records 0 captures. Run the
-installer (idempotent; merges into `~/.claude/settings.json`, preserving other
-plugins' hooks):
+Then register the Claude Code hooks only when Claude is not plugin-managed. The
+legacy directory-source marketplace path needs this because its skills load but
+its hooks do NOT auto-register — without this step the four fritz hooks never
+fire and Claude records 0 captures. Run the installer (idempotent; merges into
+`~/.claude/settings.json`, preserving other plugins' hooks):
 
 ```
 python3 <REPO>/hooks/install_claude_hooks.py
@@ -187,6 +208,8 @@ Show the user:
 - Plugin version transition (e.g., `1.0.0 → 1.1.0`)
 - New skills added
 - Hook symlinks refreshed or missing
+- `Claude: plugin-managed — skills/hooks owned by fritz-brain plugin; legacy registration skipped`
+  when the Claude plugin-managed branch was detected
 - Removed skills (warnings only)
 - Migrations run and their summaries
 - Token wiring status: `wired`, `partial`, or `missing`; include whether the

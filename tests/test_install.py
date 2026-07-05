@@ -61,7 +61,9 @@ def synthetic_brain(tmp_path, monkeypatch):
     (brain / "log.md").write_text("# Brain Operations Log\nseed line\n", encoding="utf-8")
 
     monkeypatch.setenv("BRAIN_HOME", str(brain))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("FRITZ_REPO_PATH", str(REPO_ROOT))
+    monkeypatch.delenv("CLAUDE_SETTINGS_PATH", raising=False)
     monkeypatch.delenv("FRITZ_SKILLS_DIR", raising=False)
     return brain
 
@@ -151,6 +153,62 @@ def test_install_claude_uses_plain_plugin_skill_names(
     assert (skills / "brain-query" / "SKILL.md").exists()
     assert not (skills / "fritz:brain-query").exists()
     assert not (skills / "fritz-brain-query").exists()
+
+
+def test_install_claude_skips_legacy_writes_when_plugin_managed(
+    install_mod, synthetic_brain, tmp_path, monkeypatch, capsys
+):
+    claude_dir = synthetic_brain.parent / ".claude"
+    claude_dir.mkdir()
+    (claude_dir / "settings.json").write_text(
+        '{"enabledPlugins": ["fritz-brain@fritz-local"], "hooks": {}}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("CLAUDE_SETTINGS_PATH", str(claude_dir / "settings.json"))
+    skills = tmp_path / "claude-skills"
+
+    rc = _run(install_mod, ["install", "--agent", "claude", "--skills-dir", str(skills)])
+
+    assert rc == 0
+    assert install_mod.PLUGIN_MANAGED_SKIP_MESSAGE in capsys.readouterr().out
+    assert not (synthetic_brain / "hooks").exists()
+    assert not (synthetic_brain / "capture" / "daily").exists()
+    assert not (synthetic_brain / "capture" / "auto").exists()
+    assert not skills.exists()
+
+
+def test_install_claude_continues_legacy_install_when_settings_malformed(
+    install_mod, synthetic_brain, tmp_path, capsys
+):
+    claude_dir = synthetic_brain.parent / ".claude"
+    claude_dir.mkdir()
+    settings = claude_dir / "settings.json"
+    settings.write_text('{"enabledPlugins": ["fritz-brain@fritz-local"],', encoding="utf-8")
+    skills = tmp_path / "claude-skills"
+
+    rc = _run(install_mod, ["install", "--agent", "claude", "--skills-dir", str(skills)])
+
+    assert rc == 0
+    assert "continuing legacy install" in capsys.readouterr().err
+    assert (synthetic_brain / "hooks").is_dir()
+    assert (skills / "brain-query" / "SKILL.md").exists()
+
+
+def test_install_claude_warns_and_continues_when_settings_not_object(
+    install_mod, synthetic_brain, tmp_path, capsys
+):
+    claude_dir = synthetic_brain.parent / ".claude"
+    claude_dir.mkdir()
+    settings = claude_dir / "settings.json"
+    settings.write_text("[]\n", encoding="utf-8")
+    skills = tmp_path / "claude-skills"
+
+    rc = _run(install_mod, ["install", "--agent", "claude", "--skills-dir", str(skills)])
+
+    assert rc == 0
+    assert "not a JSON object" in capsys.readouterr().err
+    assert (synthetic_brain / "hooks").is_dir()
+    assert (skills / "brain-query" / "SKILL.md").exists()
 
 
 def test_install_codex_uses_colon_prefix(install_mod, synthetic_brain, tmp_path):

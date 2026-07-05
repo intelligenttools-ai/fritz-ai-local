@@ -92,6 +92,94 @@ def test_installer_no_backup_when_file_absent(tmp_path):
     assert not settings.with_name("settings.json.bak").exists()
 
 
+# --- installer: plugin-managed Claude host skips legacy settings writes ------
+
+
+def test_installer_skips_without_writing_when_claude_plugin_enabled(tmp_path, capsys):
+    settings = tmp_path / "settings.json"
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    original = json.dumps(
+        {
+            "enabledPlugins": ["other-plugin", "fritz-brain@fritz-local"],
+            "hooks": {},
+        },
+        indent=2,
+    )
+    settings.write_text(original, encoding="utf-8")
+
+    result = mod.install_claude_hooks(settings, hooks_dir=hooks_dir, python_bin="python3")
+
+    assert result is False
+    assert settings.read_text(encoding="utf-8") == original
+    assert not settings.with_name("settings.json.bak").exists()
+    assert "plugin-managed" in capsys.readouterr().out
+
+
+def test_main_exits_zero_without_legacy_writes_when_claude_plugin_enabled(
+    tmp_path, monkeypatch, capsys
+):
+    home = tmp_path / "home"
+    claude_dir = home / ".claude"
+    claude_dir.mkdir(parents=True)
+    settings = claude_dir / "settings.json"
+    original = json.dumps(
+        {
+            "enabledPlugins": {"fritz-brain@fritz-local": True},
+            "hooks": {},
+        },
+        indent=2,
+    )
+    settings.write_text(original, encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("CLAUDE_SETTINGS_PATH", str(settings))
+
+    assert mod.main([]) == 0
+
+    assert settings.read_text(encoding="utf-8") == original
+    assert not settings.with_name("settings.json.bak").exists()
+    assert not (home / ".brain" / "hooks").exists()
+    assert mod.PLUGIN_MANAGED_SKIP_MESSAGE in capsys.readouterr().out
+
+
+def test_main_uses_claude_settings_path_for_plugin_managed_detection(
+    tmp_path, monkeypatch, capsys
+):
+    home = tmp_path / "home"
+    custom = tmp_path / "custom" / "settings.json"
+    custom.parent.mkdir()
+    custom.write_text(
+        '{"enabledPlugins": ["fritz-brain@fritz-local"], "hooks": {}}\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("CLAUDE_SETTINGS_PATH", str(custom))
+
+    assert mod.main([]) == 0
+
+    assert not (home / ".claude" / "settings.json").exists()
+    assert not (home / ".brain" / "hooks").exists()
+    assert mod.PLUGIN_MANAGED_SKIP_MESSAGE in capsys.readouterr().out
+
+
+def test_installer_legacy_branch_still_writes_when_plugin_not_enabled(tmp_path):
+    settings = tmp_path / "settings.json"
+    hooks_dir = tmp_path / "hooks"
+    hooks_dir.mkdir()
+    settings.write_text(
+        json.dumps({"enabledPlugins": ["other-plugin"], "hooks": {}}),
+        encoding="utf-8",
+    )
+
+    result = mod.install_claude_hooks(settings, hooks_dir=hooks_dir, python_bin="python3")
+
+    assert result is True
+    data = json.loads(settings.read_text(encoding="utf-8"))
+    assert set(data["hooks"]) == set(EXPECTED)
+    assert data["enabledPlugins"] == ["other-plugin"]
+    assert settings.with_name("settings.json.bak").exists()
+
+
 # --- installer: idempotent (run twice → no duplicates) ----------------------
 
 
