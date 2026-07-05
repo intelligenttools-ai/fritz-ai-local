@@ -109,7 +109,7 @@ def append_log(vault_path: Path, operation: str, agent: str, summary: str):
 
 
 def read_hook_input() -> dict:
-    """Read JSON input from stdin (Claude Code / Codex / Gemini hook protocol)."""
+    """Read JSON input from stdin (Claude Code / Codex hook protocol)."""
     try:
         return json.load(sys.stdin)
     except (json.JSONDecodeError, EOFError):

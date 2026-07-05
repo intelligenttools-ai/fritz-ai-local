@@ -8,7 +8,6 @@ Works with:
 - Claude Code: PreCompact and Stop events
 - pi: session end (JSONL tree format)
 - Codex: Stop event
-- Gemini CLI: PreCompress and SessionEnd events
 - Hermes Agent: on_session_finalize shell hook via hermes_brain_capture.py
 """
 

@@ -6,7 +6,6 @@ Loads vault context, checks for updates, injects project awareness.
 Works with:
 - Claude Code (SessionStart event, outputs additionalContext JSON)
 - Codex (SessionStart event, outputs additionalContext JSON)
-- Gemini CLI (SessionStart event, outputs additionalContext JSON)
 """
 
 from __future__ import annotations
