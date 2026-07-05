@@ -71,8 +71,9 @@ def test_contract_documents_config_precedence(contract_text: str) -> None:
 def test_contract_documents_skill_naming_rule(contract_text: str) -> None:
     lower = contract_text.lower()
     assert "skill" in lower and "naming" in lower
-    # plain source -> per-platform prefixes.
-    assert "fritz:" in contract_text  # claude / codex
+    # plain source -> per-platform names/references.
+    assert "fritz-brain:brain-query" in contract_text  # claude plugin namespace
+    assert "fritz:" in contract_text  # codex
     assert "fritz-" in contract_text  # pi
 
 

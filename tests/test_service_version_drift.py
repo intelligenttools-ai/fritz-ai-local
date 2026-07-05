@@ -78,7 +78,7 @@ def test_behind_emits_nudge_claude_uses_sanitized_skill_name(monkeypatch, tmp_pa
     /fritz:brain-service-setup skill-tree name."""
     out = _run(monkeypatch, tmp_path, running="1.3.55", repo="1.3.57", claude=True)
     assert "Local Brain service is behind" in out
-    assert "/fritz-brain:fritz-brain-service-setup" in out
+    assert "/fritz-brain:brain-service-setup" in out
     assert "/fritz:brain-service-setup" not in out
 
 

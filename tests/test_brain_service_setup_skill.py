@@ -3,7 +3,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 CANONICAL = ROOT / "skills" / "brain-service-setup" / "SKILL.md"
-CLAUDE = ROOT / "bindings" / "claude" / "skills" / "fritz:brain-service-setup" / "SKILL.md"
+CLAUDE = ROOT / "bindings" / "claude" / "skills" / "brain-service-setup" / "SKILL.md"
 CODEX = ROOT / "bindings" / "codex" / "skills" / "fritz:brain-service-setup" / "SKILL.md"
 
 
@@ -11,6 +11,7 @@ def _canonicalized_binding_text(path: Path) -> str:
     return (
         path.read_text(encoding="utf-8")
         .replace("name: fritz:brain-service-setup", "name: brain-service-setup")
+        .replace("/fritz-brain:brain-service-setup", "/brain-service-setup")
         .replace("/fritz:brain-service-setup", "/brain-service-setup")
     )
 

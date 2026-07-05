@@ -318,7 +318,7 @@ def test_forcing_instruction_claude_uses_sanitized_skill_name(monkeypatch, tmp_p
     _clear_claude_markers(monkeypatch)
     monkeypatch.setenv("CLAUDECODE", "1")
     text = brain_common.local_brain_service_setup_forcing_instruction()
-    assert "/fritz-brain:fritz-brain-service-setup" in text
+    assert "/fritz-brain:brain-service-setup" in text
     assert "/fritz:brain-service-setup" not in text
     assert "REQUIRED" in text
 
@@ -327,7 +327,7 @@ def test_session_start_forcing_instruction_claude_sanitized(monkeypatch, capsys,
     """#239 — session-start injects the sanitized forcing skill name for Claude."""
     settings = {"local_brain_service": {"enabled": True, "desired": "docker"}}
     context = _run_session_start(monkeypatch, capsys, tmp_path, settings, operational=False, claude=True)
-    assert "/fritz-brain:fritz-brain-service-setup" in context
+    assert "/fritz-brain:brain-service-setup" in context
     assert "/fritz:brain-service-setup" not in context
     assert "REQUIRED ACTION" in context
 

@@ -312,20 +312,21 @@ accepts a different name shape, so the generator
 [`hooks/setup_hyphenated_skills.py`](../hooks/setup_hyphenated_skills.py) emits a
 per-platform variant by **prefixing** the plain base name:
 
-| Platform | Prefix | Example |
-|----------|--------|---------|
-| claude | `fritz:` | `brain-query` → `fritz:brain-query` |
-| codex | `fritz:` | `brain-query` → `fritz:brain-query` |
-| pi | `fritz-` | `brain-query` → `fritz-brain-query` |
+| Platform | Skill directory/name | Slash-command reference example |
+|----------|----------------------|---------------------------------|
+| claude | `brain-query` | `/fritz-brain:brain-query` |
+| codex | `fritz:brain-query` | `/fritz:brain-query` |
+| pi | `fritz-brain-query` | `/fritz-brain-query` |
 
-claude and codex share the colon namespace; pi uses the hyphen form because its
-runtime rejects colons. Each generated `SKILL.md` rewrites **three** things
+Claude plugin skills stay plain because the plugin namespace supplies
+`fritz-brain`; Codex uses the colon form, and pi uses the hyphen form because
+its runtime rejects colons. Each generated `SKILL.md` rewrites **three** things
 consistently: (a) the directory name, (b) the `name:` frontmatter field, and
-(c) intra-skill slash references (`/<plain>` → `/<prefix><plain>`). A consistency
+(c) intra-skill slash references into that runtime's command form. A consistency
 validator (`validate_variant` / `validate_variants`) checks a generated tree and
 fails on stale wrong-platform references.
 
-**For a new binding:** add the runtime's prefix/shape to `PLATFORM_PREFIXES`
+**For a new binding:** add the runtime's naming shape to `PLATFORM_NAMING`
 (and the installer's `AGENT_PLATFORM` / `AGENT_SKILLS_DIR` maps), then install
 the generated variants into the runtime's skills location. The canonical source
 is always the repo `skills/`; each binding owns only the name mapping.

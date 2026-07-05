@@ -66,8 +66,8 @@ transcripts in a non-JSONL format.
   context message can be delivered to the model. If not, prepend to the first
   user turn.
 - **Transcript format (MEDIUM):** unknown; likely needs a new adapter for C4.
-- **Skill naming (LOW):** unknown name shape; add the correct prefix to
-  `PLATFORM_PREFIXES` once confirmed. **Assumption:** hyphen (`fritz-`), matching
+- **Skill naming (LOW):** unknown name shape; add the correct entry to
+  `PLATFORM_NAMING` once confirmed. **Assumption:** hyphen (`fritz-`), matching
   pi, since many IDE extension hosts reject colons in identifiers.
 - **Config store (MEDIUM):** confirm Antigravity does not force its own settings
   store; the binding must thread `cwd` into the hooks and reuse the shared

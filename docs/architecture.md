@@ -182,14 +182,16 @@ under the configured `merge_policy` (default `brain-first`).
 
 ## Skills: plain source → per-platform variants
 
-The canonical skills live under `skills/` with **plain `fritz:*` names** — that is
+The canonical skills live under `skills/` with **plain names** — that is
 the single source of truth. Per-platform variants are produced by the generator
 (`hooks/setup_hyphenated_skills.generate_variants`) and installed by
 `scripts/install.py install --agent <agent>`:
 
-- Claude and Codex keep the `fritz:` prefix.
-- pi rewrites `fritz:` → `fritz-` (its runtime rejects colons), and in-body
-  `/fritz:brain-*` references are rewritten to match.
+- Claude keeps plain skill directory/name values because the `fritz-brain`
+  plugin namespace supplies the prefix; in-body slash references become
+  `/fritz-brain:<plain>`.
+- Codex uses the `fritz:` prefix.
+- pi uses the `fritz-` prefix because its runtime rejects colons.
 
 The variants for the directory-source plugins (Claude, Codex) are committed so
 the plugin is self-contained, and tests assert they match fresh generator output
