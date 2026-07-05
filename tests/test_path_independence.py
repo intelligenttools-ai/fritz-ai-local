@@ -165,11 +165,11 @@ def test_setup_hyphenated_skills_env_override(monkeypatch, tmp_path):
     assert "name: fritz-demo" in content
     assert "/fritz-demo" in content
 
-    # claude variant: colon prefix.
+    # claude variant: plain plugin skill name with plugin-qualified slash ref.
     created = module.generate_variants(skills_out, "claude", dry_run=False)
     assert len(created) == 1
-    out_file = skills_out / "fritz:demo" / "SKILL.md"
+    out_file = skills_out / "demo" / "SKILL.md"
     assert out_file.exists()
     content = out_file.read_text(encoding="utf-8")
-    assert "name: fritz:demo" in content
-    assert "/fritz:demo" in content
+    assert "name: demo" in content
+    assert "/fritz-brain:demo" in content

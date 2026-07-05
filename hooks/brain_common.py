@@ -455,15 +455,20 @@ def _resolve_client_agent() -> str:
     """Client-side agent attribution for X-Brain-Agent (#179, #238):
 
     FRITZ_AGENT always wins (pi/codex/hermes set this explicitly). Otherwise,
-    detect the hosting runtime from its own process env: Claude Code always
-    sets CLAUDECODE and/or CLAUDE_CODE_ENTRYPOINT, so their presence resolves
-    to 'claude'. No other runtime has an equally trivial marker, so this
+    detect the hosting runtime from its own process env: Claude Code sets
+    CLAUDECODE/CLAUDE_CODE_ENTRYPOINT in sessions and CLAUDE_PLUGIN_ROOT for
+    plugin-launched hooks, so their presence resolves to 'claude'. No other
+    runtime has an equally trivial marker, so this
     otherwise falls back to 'unknown'.
     """
     fritz_agent = (os.environ.get("FRITZ_AGENT") or "").strip()
     if fritz_agent:
         return fritz_agent
-    if "CLAUDECODE" in os.environ or "CLAUDE_CODE_ENTRYPOINT" in os.environ:
+    if (
+        "CLAUDECODE" in os.environ
+        or "CLAUDE_CODE_ENTRYPOINT" in os.environ
+        or "CLAUDE_PLUGIN_ROOT" in os.environ
+    ):
         return "claude"
     return "unknown"
 
@@ -472,15 +477,17 @@ def claude_form(skill_ref: str) -> str:
     """Convert a canonical ``/fritz:*`` skill reference to the slash-command
     form Claude Code actually registers for it (#239).
 
-    The Claude plugin (name ``fritz-brain``) ships each skill as a directory
-    under ``bindings/claude/skills/`` named e.g. ``fritz:brain-query``. Claude
-    Code registers plugin skills as ``<plugin-name>:<dir-name-with-colons-as-
-    hyphens>``, so the live slash form is ``/fritz-brain:fritz-brain-query``,
-    not the raw ``/fritz:brain-query`` skill-tree name. Only the Claude
-    runtime resolves names this way; every other runtime (pi, Codex, Hermes)
-    uses ``/fritz:*`` unchanged.
+    The Claude plugin is named ``fritz-brain`` and ships plain skill
+    directories such as ``brain-query``. Claude Code registers plugin skills as
+    ``<plugin-name>:<skill-name>``, so the live slash form is
+    ``/fritz-brain:brain-query``, not the raw ``/fritz:brain-query`` skill-tree
+    name. Only the Claude runtime resolves names this way; every other runtime
+    (pi, Codex, Hermes) uses ``/fritz:*`` unchanged.
     """
-    ref = skill_ref.lstrip("/").replace(":", "-")
+    ref = skill_ref.lstrip("/")
+    if ref.startswith("fritz:"):
+        ref = ref.removeprefix("fritz:")
+    ref = ref.replace(":", "-")
     return f"/fritz-brain:{ref}"
 
 
@@ -802,6 +809,31 @@ def local_brain_service_instructions() -> str:
             f"- Lint: `curl -fsS -X POST {base_url}/v1/lint/run{auth} -H 'content-type: application/json' -d '{{}}'`\n"
             f"- Embeddings: `curl -fsS {base_url}/v1/embeddings/status{auth}` and `curl -fsS -X POST {base_url}/v1/embeddings/probe{auth} -H 'content-type: application/json' -d '{{\"dry_run\":true}}'`\n\n"
             f"Do not also run `{claude_form('/fritz:brain-query')}`, `{claude_form('/fritz:brain-compile')}`, `{claude_form('/fritz:brain-sync')}`, or `{claude_form('/fritz:brain-lint')}` "
+            "for the same work unless the service is unavailable or the human explicitly requests the non-service path. "
+            "Use the existing local skills only for workflows the service does not provide, such as setup, ingest, update, and writing the handover document itself."
+        )
+
+    if agent == "codex":
+        return (
+            "## Local Brain Service Active\n\n"
+            f"The Dockerized Local Brain service is reachable at `{base_url}`. "
+            "For supported workflows, use this service layer first instead of duplicating the old local slash-skill workflow.\n\n"
+            "Codex binding note: Brain MCP tools are not registered natively by this binding. "
+            "Use HTTP calls from the host as the default service integration path. "
+            "Do not look for `brain_search`, `brain_query`, `brain_compile`, `brain_sync`, or `brain_lint` native MCP tools unless the human explicitly configured them in this session. "
+            "The optional CLI is for installed local packages only; do not assume it is on the host PATH.\n\n"
+            "Query guidance: keep HTTP search/query bodies SHORT and CONCEPTUAL (2-6 terms), "
+            "never verbatim log/keyword dumps, IP addresses, or hostnames. "
+            "Good: `proxmox cloudinit template debian`. "
+            "Bad: `racktaq Proxmox Debian 13 cloudinit template gateway VM WireGuard macOS client 192.168.1.53`.\n\n"
+            "Supported service-backed workflows (curl):\n"
+            f"- Search/brain check, semantic when embeddings are enabled: `curl -fsS -X POST {base_url}/v1/search/run{auth} -H 'content-type: application/json' -H 'X-Brain-Agent: {agent}' -d '{{\"query\":\"<query>\"}}'`\n"
+            f"- Exact query compatibility only, not the default brain check: `curl -fsS -X POST {base_url}/v1/query/run{auth} -H 'content-type: application/json' -H 'X-Brain-Agent: {agent}' -d '{{\"query\":\"<query>\"}}'`\n"
+            f"- Compile: `curl -fsS -X POST {base_url}/v1/compile/run{auth} -H 'content-type: application/json' -H 'X-Brain-Agent: {agent}' -d '{{\"dry_run\":true}}'`\n"
+            f"- Sync: `curl -fsS -X POST {base_url}/v1/sync/run{auth} -H 'content-type: application/json' -H 'X-Brain-Agent: {agent}' -d '{{\"dry_run\":true}}'`\n"
+            f"- Lint: `curl -fsS -X POST {base_url}/v1/lint/run{auth} -H 'content-type: application/json' -d '{{}}'`\n"
+            f"- Embeddings: `curl -fsS {base_url}/v1/embeddings/status{auth}` and `curl -fsS -X POST {base_url}/v1/embeddings/probe{auth} -H 'content-type: application/json' -d '{{\"dry_run\":true}}'`\n\n"
+            "Do not also run `/fritz:brain-query`, `/fritz:brain-compile`, `/fritz:brain-sync`, or `/fritz:brain-lint` "
             "for the same work unless the service is unavailable or the human explicitly requests the non-service path. "
             "Use the existing local skills only for workflows the service does not provide, such as setup, ingest, update, and writing the handover document itself."
         )

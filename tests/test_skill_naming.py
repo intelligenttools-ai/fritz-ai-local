@@ -2,15 +2,16 @@
 
 The repo's `skills/` directory is the single source of truth and uses PLAIN
 names (e.g. `brain-query`, `handover`, `update`). The generator emits a
-per-platform name variant by prefixing the plain base:
+per-platform name and slash-command variant:
 
-  - claude / codex namespace -> `fritz:<plain>`  (colon)
+  - claude plugin            -> plain dir/name, `/fritz-brain:<plain>` refs
+  - codex namespace          -> `fritz:<plain>`  (colon)
   - pi (~/.agents/skills)    -> `fritz-<plain>`  (hyphen)
 
 A generated variant rewrites three things consistently:
   (a) the directory name
   (b) the SKILL.md `name:` frontmatter field
-  (c) intra-skill slash references (`/<plain>` -> `/<prefix><plain>`)
+  (c) intra-skill slash references
 
 A validator checks that consistency and fails on a deliberately-broken variant.
 """
@@ -18,6 +19,7 @@ A validator checks that consistency and fails on a deliberately-broken variant.
 from __future__ import annotations
 
 import importlib.util
+import re
 from pathlib import Path
 
 import pytest
@@ -40,10 +42,10 @@ def _load_module():
 
 
 @pytest.mark.parametrize(
-    "platform,prefix",
-    [("claude", "fritz:"), ("codex", "fritz:"), ("pi", "fritz-")],
+    "platform,name_prefix",
+    [("claude", ""), ("codex", "fritz:"), ("pi", "fritz-")],
 )
-def test_generate_brain_skills_get_platform_prefix(tmp_path, platform, prefix):
+def test_generate_brain_skills_get_platform_name_prefix(tmp_path, platform, name_prefix):
     module = _load_module()
     out = tmp_path / "out"
     out.mkdir()
@@ -51,18 +53,22 @@ def test_generate_brain_skills_get_platform_prefix(tmp_path, platform, prefix):
     created = module.generate_variants(out, platform, dry_run=False)
     assert created, "expected generated skills"
 
-    # brain-* dirs should appear with the platform prefix.
+    # brain-* dirs should appear with the platform name prefix.
     for base in ("brain-compile", "brain-query", "handover", "update"):
-        variant_dir = out / f"{prefix}{base}"
+        variant_dir = out / f"{name_prefix}{base}"
         assert variant_dir.is_dir(), f"missing {variant_dir}"
         assert (variant_dir / "SKILL.md").exists()
 
 
 @pytest.mark.parametrize(
-    "platform,prefix",
-    [("claude", "fritz:"), ("codex", "fritz:"), ("pi", "fritz-")],
+    "platform,name_prefix,slash_prefix",
+    [
+        ("claude", "", "fritz-brain:"),
+        ("codex", "fritz:", "fritz:"),
+        ("pi", "fritz-", "fritz-"),
+    ],
 )
-def test_name_dir_slash_consistency(tmp_path, platform, prefix):
+def test_name_dir_slash_consistency(tmp_path, platform, name_prefix, slash_prefix):
     module = _load_module()
     out = tmp_path / "out"
     out.mkdir()
@@ -75,17 +81,20 @@ def test_name_dir_slash_consistency(tmp_path, platform, prefix):
         dir_name = variant_dir.name
         # name: frontmatter must equal the dir name.
         assert f"name: {dir_name}" in content, f"name mismatch in {dir_name}"
-        # dir name must carry the platform prefix.
-        assert dir_name.startswith(prefix), f"{dir_name} missing prefix {prefix}"
+        # dir name must carry the platform name prefix, when the platform uses one.
+        if name_prefix:
+            assert dir_name.startswith(name_prefix), f"{dir_name} missing prefix {name_prefix}"
 
         # No stale wrong-platform slash refs to a known skill base. (Scoped to
         # real skill slash commands so unrelated tokens like a `fritz-ai/`
         # example folder are not false positives.)
-        base = dir_name[len(prefix):]
-        if prefix == "fritz:":
-            assert f"/fritz-{base}" not in content, f"stale /fritz-{base} in {dir_name}"
-        else:
-            assert f"/fritz:{base}" not in content, f"stale /fritz:{base} in {dir_name}"
+        base = dir_name[len(name_prefix):] if name_prefix else dir_name
+        expected_ref = f"/{slash_prefix}{base}"
+        assert expected_ref in content
+        for stale_prefix in {"", "fritz:", "fritz-", "fritz-brain:"} - {slash_prefix}:
+            stale_ref = f"/{stale_prefix}{base}"
+            pattern = rf"(?<![\w/]){re.escape(stale_ref)}(?![A-Za-z0-9-])"
+            assert not re.search(pattern, content), f"stale {stale_ref} in {dir_name}"
 
 
 def test_pi_uses_hyphen_not_colon(tmp_path):
@@ -97,12 +106,13 @@ def test_pi_uses_hyphen_not_colon(tmp_path):
     assert not (out / "fritz:brain-query").exists()
 
 
-def test_claude_uses_colon_not_hyphen(tmp_path):
+def test_claude_uses_plain_plugin_skill_names(tmp_path):
     module = _load_module()
     out = tmp_path / "out"
     out.mkdir()
     module.generate_variants(out, "claude", dry_run=False)
-    assert (out / "fritz:brain-query").is_dir()
+    assert (out / "brain-query").is_dir()
+    assert not (out / "fritz:brain-query").exists()
     assert not (out / "fritz-brain-query").exists()
 
 
@@ -118,31 +128,74 @@ def test_unknown_platform_rejected(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "platform,prefix",
-    [("claude", "fritz:"), ("codex", "fritz:"), ("pi", "fritz-")],
+    "platform,name_prefix,slash_prefix",
+    [
+        ("claude", "", "fritz-brain:"),
+        ("codex", "fritz:", "fritz:"),
+        ("pi", "fritz-", "fritz-"),
+    ],
 )
-def test_round_trip_brain_query(tmp_path, platform, prefix):
+def test_round_trip_brain_query(tmp_path, platform, name_prefix, slash_prefix):
     module = _load_module()
     out = tmp_path / "out"
     out.mkdir()
     module.generate_variants(out, platform, dry_run=False)
 
-    variant_dir = out / f"{prefix}brain-query"
+    variant_dir = out / f"{name_prefix}brain-query"
     content = (variant_dir / "SKILL.md").read_text(encoding="utf-8")
 
-    assert f"name: {prefix}brain-query" in content
+    assert f"name: {name_prefix}brain-query" in content
     # brain-query references brain-query and brain-compile slash commands.
-    assert f"/{prefix}brain-query" in content
-    assert f"/{prefix}brain-compile" in content
+    assert f"/{slash_prefix}brain-query" in content
+    assert f"/{slash_prefix}brain-compile" in content
     # The plain (unprefixed) slash forms must be gone.
-    assert "/brain-query" not in content.replace(f"/{prefix}brain-query", "")
+    assert "/brain-query" not in content.replace(f"/{slash_prefix}brain-query", "")
+
+
+def test_codex_generated_skills_use_http_service_not_native_brain_mcp(tmp_path):
+    module = _load_module()
+    out = tmp_path / "out"
+    out.mkdir()
+    module.generate_variants(out, "codex", dry_run=False)
+
+    query = (out / "fritz:brain-query" / "SKILL.md").read_text(encoding="utf-8")
+    compile_ = (out / "fritz:brain-compile" / "SKILL.md").read_text(encoding="utf-8")
+    sync = (out / "fritz:brain-sync" / "SKILL.md").read_text(encoding="utf-8")
+    lint = (out / "fritz:brain-lint" / "SKILL.md").read_text(encoding="utf-8")
+    handover = (out / "fritz:handover" / "SKILL.md").read_text(encoding="utf-8")
+
+    for content in (query, compile_, sync, lint, handover):
+        assert "Codex bindings do not register the Brain MCP tools natively" in content
+        assert "prefer the registered MCP" not in content
+
+    assert "call `POST <base_url>/v1/search/run` from the host" in query
+    assert "call `POST <base_url>/v1/compile/run` from the host" in compile_
+    assert "call `POST <base_url>/v1/sync/run` from the host" in sync
+    assert "call `POST <base_url>/v1/lint/run` from the host" in lint
+    assert "call `POST <base_url>/v1/compile/run` and `POST <base_url>/v1/sync/run` from the host" in handover
+
+
+def test_claude_generated_skills_keep_native_brain_mcp_guidance(tmp_path):
+    module = _load_module()
+    out = tmp_path / "out"
+    out.mkdir()
+    module.generate_variants(out, "claude", dry_run=False)
+
+    query = (out / "brain-query" / "SKILL.md").read_text(encoding="utf-8")
+
+    assert "prefer the registered MCP tool `brain_search`" in query
+    assert "Codex bindings do not register the Brain MCP tools natively" not in query
 
 
 @pytest.mark.parametrize(
-    "platform,prefix",
-    [("claude", "fritz:"), ("codex", "fritz:"), ("pi", "fritz-")],
+    "platform,name_prefix,slash_prefix",
+    [
+        ("claude", "", "fritz-brain:"),
+        ("codex", "fritz:", "fritz:"),
+        ("pi", "fritz-", "fritz-"),
+    ],
 )
-def test_update_skill_filesystem_path_not_rewritten(tmp_path, platform, prefix):
+def test_update_skill_filesystem_path_not_rewritten(tmp_path, platform, name_prefix, slash_prefix):
     """Regression: the slash-rewrite must not touch filesystem path refs.
 
     `skills/update/SKILL.md` contains a real path
@@ -156,16 +209,18 @@ def test_update_skill_filesystem_path_not_rewritten(tmp_path, platform, prefix):
     out.mkdir()
     module.generate_variants(out, platform, dry_run=False)
 
-    content = (out / f"{prefix}update" / "SKILL.md").read_text(encoding="utf-8")
+    content = (out / f"{name_prefix}update" / "SKILL.md").read_text(encoding="utf-8")
 
     # Filesystem path stays plain; the over-rewrite would have produced
-    # `skills/fritz:brain-setup/` or `skills/fritz-brain-setup/`.
+    # `skills/fritz:brain-setup/`, `skills/fritz-brain:brain-setup/`, or
+    # `skills/fritz-brain-setup/`.
     assert "skills/brain-setup/SKILL.md" in content
-    assert f"skills/{prefix}brain-setup/SKILL.md" not in content
+    if name_prefix:
+        assert f"skills/{name_prefix}brain-setup/SKILL.md" not in content
 
     # A genuine slash-command ref (e.g. a backtick-wrapped `/brain-setup`) is
     # still rewritten to the platform variant.
-    assert f"`/{prefix}brain-setup`" in content
+    assert f"`/{slash_prefix}brain-setup`" in content
     assert "`/brain-setup`" not in content
 
 
@@ -219,5 +274,5 @@ def test_validate_single_variant(tmp_path):
     out.mkdir()
     module.generate_variants(out, "claude", dry_run=False)
 
-    good = out / "fritz:brain-query"
+    good = out / "brain-query"
     assert module.validate_variant(good, "claude") == []

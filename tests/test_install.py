@@ -139,15 +139,23 @@ def test_install_is_idempotent_reports_already_current(
     assert before == after, "re-run must change nothing"
 
 
-# --- install --agent claude / codex (colon prefix) --------------------------
+# --- install --agent claude / codex skill naming ----------------------------
 
 
-@pytest.mark.parametrize("agent", ["claude", "codex"])
-def test_install_claude_codex_use_colon_prefix(
-    install_mod, synthetic_brain, tmp_path, agent
+def test_install_claude_uses_plain_plugin_skill_names(
+    install_mod, synthetic_brain, tmp_path
 ):
-    skills = tmp_path / f"{agent}-skills"
-    rc = _run(install_mod, ["install", "--agent", agent, "--skills-dir", str(skills)])
+    skills = tmp_path / "claude-skills"
+    rc = _run(install_mod, ["install", "--agent", "claude", "--skills-dir", str(skills)])
+    assert rc == 0
+    assert (skills / "brain-query" / "SKILL.md").exists()
+    assert not (skills / "fritz:brain-query").exists()
+    assert not (skills / "fritz-brain-query").exists()
+
+
+def test_install_codex_uses_colon_prefix(install_mod, synthetic_brain, tmp_path):
+    skills = tmp_path / "codex-skills"
+    rc = _run(install_mod, ["install", "--agent", "codex", "--skills-dir", str(skills)])
     assert rc == 0
     assert (skills / "fritz:brain-query" / "SKILL.md").exists()
     assert not (skills / "fritz-brain-query").exists()

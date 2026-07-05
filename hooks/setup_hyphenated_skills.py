@@ -6,15 +6,16 @@ names: every subdir that contains a `SKILL.md` is a portable skill, e.g.
 `brain-compile`, `brain-query`, `handover`, `update`, `brain-save`.
 
 Different agents accept different name shapes, so the generator emits a
-per-platform variant by PREFIXING the plain base name:
+per-platform variant by rewriting the plain base name and slash references:
 
-  - claude / codex namespace -> `fritz:<plain>`  (colon prefix)
+  - claude plugin -> directory/name `<plain>`, slash refs `/fritz-brain:<plain>`
+  - codex namespace -> `fritz:<plain>`  (colon prefix)
   - pi (installs to ~/.agents/skills) -> `fritz-<plain>`  (hyphen prefix)
 
 Each emitted SKILL.md rewrites THREE things consistently:
-  (a) the directory name        -> `<prefix><plain>`
-  (b) the `name:` frontmatter    -> `<prefix><plain>`
-  (c) intra-skill slash refs     -> `/<plain>` becomes `/<prefix><plain>`
+  (a) the directory name
+  (b) the `name:` frontmatter
+  (c) intra-skill slash refs
 
 A consistency validator (`validate_variant` / `validate_variants`) verifies
 that a generated tree is internally consistent and carries no stale
@@ -35,12 +36,13 @@ import re
 import sys
 from pathlib import Path
 
-# Platform -> prefix applied to the plain base name. claude and codex share the
-# colon namespace; pi uses the hyphen form because its runtime rejects colons.
-PLATFORM_PREFIXES = {
-    "claude": "fritz:",
-    "codex": "fritz:",
-    "pi": "fritz-",
+# Platform -> directory/name prefix and slash-command prefix. Claude plugin
+# skills are already namespaced by the plugin name (`fritz-brain`), so their
+# on-disk skill names stay plain while emitted slash refs are plugin-qualified.
+PLATFORM_NAMING = {
+    "claude": {"name_prefix": "", "slash_prefix": "fritz-brain:"},
+    "codex": {"name_prefix": "fritz:", "slash_prefix": "fritz:"},
+    "pi": {"name_prefix": "fritz-", "slash_prefix": "fritz-"},
 }
 
 
@@ -58,15 +60,20 @@ def _resolve_repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
 
-def _platform_prefix(platform: str) -> str:
-    """Return the name prefix for a platform, raising on an unknown one."""
+def _platform_naming(platform: str) -> dict[str, str]:
+    """Return naming settings for a platform, raising on an unknown one."""
     try:
-        return PLATFORM_PREFIXES[platform]
+        return PLATFORM_NAMING[platform]
     except KeyError:
         raise ValueError(
             f"unknown platform {platform!r}; expected one of "
-            f"{sorted(PLATFORM_PREFIXES)}"
+            f"{sorted(PLATFORM_NAMING)}"
         )
+
+
+def _platform_prefix(platform: str) -> str:
+    """Return the directory/name prefix for a platform."""
+    return _platform_naming(platform)["name_prefix"]
 
 
 def _iter_source_skills(repo_skills: Path):
@@ -80,11 +87,18 @@ def _iter_source_skills(repo_skills: Path):
         yield skill_path.name, skill_file
 
 
-def _transform_content(content: str, plain_names: list[str], prefix: str) -> str:
+def _transform_content(
+    content: str,
+    plain_names: list[str],
+    *,
+    name_prefix: str,
+    slash_prefix: str,
+) -> str:
     """Rewrite the `name:` field and intra-skill slash refs for one variant.
 
-    - `name: <plain>` (first frontmatter occurrence) becomes `name: <prefix><plain>`.
-    - Each `/<plain>` slash reference becomes `/<prefix><plain>`.
+    - `name: <plain>` (first frontmatter occurrence) becomes
+      `name: <name_prefix><plain>`.
+    - Each `/<plain>` slash reference becomes `/<slash_prefix><plain>`.
 
     Only the known plain skill names are rewritten so unrelated tokens (e.g.
     project folder names like `fritz-ai/`) are left untouched.
@@ -95,7 +109,7 @@ def _transform_content(content: str, plain_names: list[str], prefix: str) -> str
     def _name_repl(match: re.Match) -> str:
         lead, value = match.group(1), match.group(2)
         if value in plain_names:
-            return f"{lead}{prefix}{value}"
+            return f"{lead}{name_prefix}{value}"
         return match.group(0)
 
     transformed = re.sub(
@@ -116,10 +130,75 @@ def _transform_content(content: str, plain_names: list[str], prefix: str) -> str
     for plain in sorted(plain_names, key=len, reverse=True):
         transformed = re.sub(
             rf"(?<![\w/])/{re.escape(plain)}(?![A-Za-z0-9-])",
-            f"/{prefix}{plain}",
+            f"/{slash_prefix}{plain}",
             transformed,
         )
 
+    return transformed
+
+
+def _apply_platform_guidance(content: str, platform: str) -> str:
+    """Apply platform-specific instruction wording after name rewrites."""
+
+    if platform != "codex":
+        return content
+
+    replacements = {
+        (
+            "use the service-backed semantic search path first: prefer the registered MCP tool "
+            "`brain_search` when available and authorized, otherwise use `POST <base_url>/v1/search/run` "
+            "from the host. This is the default brain-check path and uses the container-managed vector index "
+            "when embeddings are enabled. Use `brain_query` or `POST <base_url>/v1/query/run` only for "
+            "exact/read-only compatibility lookup when semantic search is unavailable, returns insufficient "
+            "results, or the human explicitly asks for exact/raw lookup."
+        ): (
+            "use the service-backed semantic search path first: call `POST <base_url>/v1/search/run` "
+            "from the host. Codex bindings do not register the Brain MCP tools natively; use `brain_search` "
+            "only if the human explicitly configured that MCP tool in this session. This is the default "
+            "brain-check path and uses the container-managed vector index when embeddings are enabled. "
+            "Use `POST <base_url>/v1/query/run` only for exact/read-only compatibility lookup when semantic "
+            "search is unavailable, returns insufficient results, or the human explicitly asks for exact/raw "
+            "lookup; use `brain_query` only if it was explicitly configured in this session."
+        ),
+        (
+            "use the service-backed compile path first: prefer the registered MCP tool `brain_compile` "
+            "when available and authorized, otherwise use `POST <base_url>/v1/compile/run` from the host."
+        ): (
+            "use the service-backed compile path first: call `POST <base_url>/v1/compile/run` from the host. "
+            "Codex bindings do not register the Brain MCP tools natively; use `brain_compile` only if the "
+            "human explicitly configured that MCP tool in this session."
+        ),
+        (
+            "use the service-backed lint path first: prefer the registered MCP tool `brain_lint` when "
+            "available and authorized, otherwise use `POST <base_url>/v1/lint/run` from the host."
+        ): (
+            "use the service-backed lint path first: call `POST <base_url>/v1/lint/run` from the host. "
+            "Codex bindings do not register the Brain MCP tools natively; use `brain_lint` only if the "
+            "human explicitly configured that MCP tool in this session."
+        ),
+        (
+            "use the service-backed sync path first: prefer the registered MCP tool `brain_sync` when "
+            "available and authorized, otherwise use `POST <base_url>/v1/sync/run` from the host."
+        ): (
+            "use the service-backed sync path first: call `POST <base_url>/v1/sync/run` from the host. "
+            "Codex bindings do not register the Brain MCP tools natively; use `brain_sync` only if the "
+            "human explicitly configured that MCP tool in this session."
+        ),
+        (
+            "use it for supported preservation steps: prefer the registered MCP tools `brain_compile` and "
+            "`brain_sync` when available and authorized, otherwise use `POST <base_url>/v1/compile/run` and "
+            "`POST <base_url>/v1/sync/run` from the host."
+        ): (
+            "use it for supported preservation steps: call `POST <base_url>/v1/compile/run` and "
+            "`POST <base_url>/v1/sync/run` from the host. Codex bindings do not register the Brain MCP "
+            "tools natively; use `brain_compile` or `brain_sync` only if the human explicitly configured "
+            "those MCP tools in this session."
+        ),
+    }
+
+    transformed = content
+    for source, replacement in replacements.items():
+        transformed = transformed.replace(source, replacement)
     return transformed
 
 
@@ -138,7 +217,9 @@ def generate_variants(out_dir: Path, platform: str, dry_run: bool = False) -> li
 
     Returns a list of created file paths (or dry-run descriptions).
     """
-    prefix = _platform_prefix(platform)
+    naming = _platform_naming(platform)
+    name_prefix = naming["name_prefix"]
+    slash_prefix = naming["slash_prefix"]
 
     repo_skills = _resolve_repo_root() / "skills"
     if not repo_skills.is_dir():
@@ -150,11 +231,17 @@ def generate_variants(out_dir: Path, platform: str, dry_run: bool = False) -> li
 
     created: list[str] = []
     for plain, skill_file in sources:
-        variant_name = f"{prefix}{plain}"
+        variant_name = f"{name_prefix}{plain}"
         target_dir = out_dir / variant_name
 
         content = skill_file.read_text(encoding="utf-8")
-        transformed = _transform_content(content, plain_names, prefix)
+        transformed = _transform_content(
+            content,
+            plain_names,
+            name_prefix=name_prefix,
+            slash_prefix=slash_prefix,
+        )
+        transformed = _apply_platform_guidance(transformed, platform)
 
         if dry_run:
             created.append(f"  Would create: {target_dir}/SKILL.md")
@@ -203,7 +290,7 @@ def validate_variant(
     if not skill_file.exists():
         return [f"{dir_name}: missing SKILL.md"]
 
-    if not dir_name.startswith(prefix):
+    if prefix and not dir_name.startswith(prefix):
         errors.append(f"{dir_name}: directory name missing prefix {prefix!r}")
 
     content = skill_file.read_text(encoding="utf-8")
@@ -220,18 +307,22 @@ def validate_variant(
 
     if known_bases is None:
         known_bases = _bases_in_tree(variant_dir.parent, prefix)
-        if dir_name.startswith(prefix):
+        if prefix:
             known_bases.append(dir_name[len(prefix):])
+        else:
+            known_bases.append(dir_name)
 
-    # No stale wrong-platform slash reference to a known skill. The wrong prefix
-    # is the one this platform does NOT use.
-    wrong_prefix = "fritz-" if prefix == "fritz:" else "fritz:"
+    # No stale wrong-platform slash reference to a known skill command.
+    slash_prefix = _platform_naming(platform)["slash_prefix"]
+    candidate_slash_prefixes = {"", "fritz:", "fritz-", "fritz-brain:"}
     for base in set(known_bases):
-        stale_ref = f"/{wrong_prefix}{base}"
-        if stale_ref in content:
-            errors.append(
-                f"{dir_name}: stale wrong-platform slash reference {stale_ref!r}"
-            )
+        for candidate in candidate_slash_prefixes - {slash_prefix}:
+            stale_ref = f"/{candidate}{base}"
+            pattern = rf"(?<![\w/]){re.escape(stale_ref)}(?![A-Za-z0-9-])"
+            if re.search(pattern, content):
+                errors.append(
+                    f"{dir_name}: stale wrong-platform slash reference {stale_ref!r}"
+                )
 
     return errors
 
@@ -285,10 +376,10 @@ def main() -> None:
     args = _parse_args(sys.argv[1:])
 
     platform = args["platform"]
-    if platform is not None and platform not in PLATFORM_PREFIXES:
+    if platform is not None and platform not in PLATFORM_NAMING:
         print(
             f"Error: unknown platform {platform!r}; expected one of "
-            f"{sorted(PLATFORM_PREFIXES)}",
+            f"{sorted(PLATFORM_NAMING)}",
             file=sys.stderr,
         )
         sys.exit(1)

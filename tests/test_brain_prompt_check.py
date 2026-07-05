@@ -283,8 +283,10 @@ def test_service_instructions_prefer_semantic_search_for_brain_check(monkeypatch
 
 
 def _clear_claude_markers(monkeypatch):
+    monkeypatch.delenv("FRITZ_AGENT", raising=False)
     monkeypatch.delenv("CLAUDECODE", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
+    monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
 
 
 def test_resolve_client_agent_uses_fritz_agent_env(monkeypatch):
@@ -318,6 +320,14 @@ def test_resolve_client_agent_detects_claude_from_entrypoint_env(monkeypatch):
     assert brain_common._resolve_client_agent() == "claude"
 
 
+def test_resolve_client_agent_detects_claude_from_plugin_root_env(monkeypatch, tmp_path):
+    monkeypatch.delenv("FRITZ_AGENT", raising=False)
+    monkeypatch.delenv("CLAUDECODE", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(tmp_path))
+    assert brain_common._resolve_client_agent() == "claude"
+
+
 def test_resolve_client_agent_detects_claude_from_empty_claudecode_env(monkeypatch):
     monkeypatch.delenv("FRITZ_AGENT", raising=False)
     monkeypatch.setenv("CLAUDECODE", "")
@@ -344,6 +354,23 @@ def test_service_instructions_include_x_brain_agent_in_search_and_query(monkeypa
     query_line = next(line for line in instructions.splitlines() if "/v1/query/run" in line)
     assert "X-Brain-Agent" in search_line
     assert "X-Brain-Agent" in query_line
+
+
+def test_service_instructions_codex_use_http_not_native_mcp(monkeypatch):
+    _clear_claude_markers(monkeypatch)
+    monkeypatch.setenv("FRITZ_AGENT", "codex")
+    monkeypatch.setattr(brain_common, "get_local_brain_base_url", lambda: "http://127.0.0.1:8765")
+    monkeypatch.setattr(brain_common, "get_local_brain_api_token", lambda: None)
+
+    instructions = brain_common.local_brain_service_instructions()
+
+    assert "Brain MCP tools are not registered natively by this binding" in instructions
+    assert "Agent integration order: use registered MCP tools first" not in instructions
+    assert "Query guidance: keep HTTP search/query bodies SHORT and CONCEPTUAL" in instructions
+    assert "/v1/search/run" in instructions
+    assert "/v1/query/run" in instructions
+    assert "X-Brain-Agent: codex" in instructions
+    assert "Do not also run `/fritz:brain-query`" in instructions
 
 
 _NON_CLAUDE_INSTRUCTIONS_SNAPSHOT = (
@@ -746,13 +773,14 @@ def test_google_prompt_produces_save_policy_output(monkeypatch, capsys, tmp_path
     NOT an ack — it must reach the save-policy injection path.
     Before the fix, startswith("go") suppressed it.
     """
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(ROOT / "bindings" / "claude"))
     context = _run_prompt_hook(
         monkeypatch, capsys, tmp_path,
         "google the postgres connection string location",
     )
-    # Runs in-process with the ambient (Claude Code) env, so the save-policy
-    # skill reference is the sanitized plugin-qualified name (#239).
-    assert "/fritz-brain:fritz-brain-save" in context, (
+    # Runs in-process with the Claude plugin marker, so the save-policy skill
+    # reference is the sanitized plugin-qualified name (#239).
+    assert "/fritz-brain:brain-save" in context, (
         "'google…' was wrongly suppressed as trivial; save policy not injected"
     )
 
@@ -762,13 +790,14 @@ def test_going_prompt_produces_save_policy_output(monkeypatch, capsys, tmp_path)
     an ack — it must reach the save-policy injection path.
     Before the fix, startswith("go") suppressed it.
     """
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(ROOT / "bindings" / "claude"))
     context = _run_prompt_hook(
         monkeypatch, capsys, tmp_path,
         "going to store the API token in 1Password",
     )
-    # Runs in-process with the ambient (Claude Code) env, so the save-policy
-    # skill reference is the sanitized plugin-qualified name (#239).
-    assert "/fritz-brain:fritz-brain-save" in context, (
+    # Runs in-process with the Claude plugin marker, so the save-policy skill
+    # reference is the sanitized plugin-qualified name (#239).
+    assert "/fritz-brain:brain-save" in context, (
         "'going…' was wrongly suppressed as trivial; save policy not injected"
     )
 

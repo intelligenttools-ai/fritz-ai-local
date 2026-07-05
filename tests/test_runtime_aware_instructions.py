@@ -1,12 +1,11 @@
 """Tests for issue #239 (epic #235): runtime-aware Local Brain service
 instructions + correct Claude Code skill references.
 
-Claude Code registers each ``bindings/claude/skills/fritz:X`` directory under
-the fixed plugin name ``fritz-brain`` as ``fritz-brain:<dir-name-with-colons-
-as-hyphens>``, so the live Claude slash-command form of a canonical
-``/fritz:X`` skill-tree reference is ``/fritz-brain:fritz-X``, not the raw
-``/fritz:X`` name. Every other runtime (pi, Codex, Hermes, unknown) must keep
-today's ``/fritz:X`` text byte-identical.
+Claude Code registers each plain ``bindings/claude/skills/<name>`` directory
+under the fixed plugin name ``fritz-brain`` as ``fritz-brain:<name>``, so the
+live Claude slash-command form of a canonical ``/fritz:X`` skill-tree reference
+is ``/fritz-brain:X``, not the raw ``/fritz:X`` name. Every other runtime (pi,
+Codex, Hermes, unknown) must keep today's ``/fritz:X`` text byte-identical.
 
 CRITICAL: pytest itself runs inside a Claude Code session, so CLAUDECODE /
 CLAUDE_CODE_ENTRYPOINT are set in the ambient env and
@@ -38,6 +37,7 @@ CLAUDE_SKILLS_DIR = ROOT / "bindings" / "claude" / "skills"
 def _clear_claude_markers(monkeypatch):
     monkeypatch.delenv("CLAUDECODE", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
+    monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
     monkeypatch.delenv("FRITZ_AGENT", raising=False)
 
 
@@ -53,16 +53,16 @@ def _set_claude(monkeypatch):
 @pytest.mark.parametrize(
     "ref,expected",
     [
-        ("/fritz:brain-query", "/fritz-brain:fritz-brain-query"),
-        ("/fritz:brain-compile", "/fritz-brain:fritz-brain-compile"),
-        ("/fritz:brain-sync", "/fritz-brain:fritz-brain-sync"),
-        ("/fritz:brain-lint", "/fritz-brain:fritz-brain-lint"),
-        ("/fritz:brain-save", "/fritz-brain:fritz-brain-save"),
-        ("/fritz:brain-ingest", "/fritz-brain:fritz-brain-ingest"),
-        ("/fritz:brain-setup", "/fritz-brain:fritz-brain-setup"),
-        ("/fritz:brain-service-setup", "/fritz-brain:fritz-brain-service-setup"),
-        ("/fritz:handover", "/fritz-brain:fritz-handover"),
-        ("/fritz:update", "/fritz-brain:fritz-update"),
+        ("/fritz:brain-query", "/fritz-brain:brain-query"),
+        ("/fritz:brain-compile", "/fritz-brain:brain-compile"),
+        ("/fritz:brain-sync", "/fritz-brain:brain-sync"),
+        ("/fritz:brain-lint", "/fritz-brain:brain-lint"),
+        ("/fritz:brain-save", "/fritz-brain:brain-save"),
+        ("/fritz:brain-ingest", "/fritz-brain:brain-ingest"),
+        ("/fritz:brain-setup", "/fritz-brain:brain-setup"),
+        ("/fritz:brain-service-setup", "/fritz-brain:brain-service-setup"),
+        ("/fritz:handover", "/fritz-brain:handover"),
+        ("/fritz:update", "/fritz-brain:update"),
     ],
 )
 def test_claude_form_matches_ground_truth(ref, expected):
@@ -86,16 +86,16 @@ def _registered_claude_skill_names() -> set[str]:
 def test_registered_skill_names_walk_matches_ground_truth():
     names = _registered_claude_skill_names()
     for expected in (
-        "/fritz-brain:fritz-brain-query",
-        "/fritz-brain:fritz-brain-compile",
-        "/fritz-brain:fritz-brain-sync",
-        "/fritz-brain:fritz-brain-lint",
-        "/fritz-brain:fritz-brain-save",
-        "/fritz-brain:fritz-brain-ingest",
-        "/fritz-brain:fritz-brain-setup",
-        "/fritz-brain:fritz-brain-service-setup",
-        "/fritz-brain:fritz-handover",
-        "/fritz-brain:fritz-update",
+        "/fritz-brain:brain-query",
+        "/fritz-brain:brain-compile",
+        "/fritz-brain:brain-sync",
+        "/fritz-brain:brain-lint",
+        "/fritz-brain:brain-save",
+        "/fritz-brain:brain-ingest",
+        "/fritz-brain:brain-setup",
+        "/fritz-brain:brain-service-setup",
+        "/fritz-brain:handover",
+        "/fritz-brain:update",
     ):
         assert expected in names
 
@@ -189,7 +189,7 @@ def test_service_instructions_claude_contains_only_registered_skill_names(monkey
 def test_save_policy_claude_uses_sanitized_name(monkeypatch):
     _set_claude(monkeypatch)
     policy = brain_prompt_check._save_policy()
-    assert "/fritz-brain:fritz-brain-save" in policy
+    assert "/fritz-brain:brain-save" in policy
     assert "/fritz:brain-save" not in policy
 
 
@@ -238,7 +238,7 @@ def _run_session_start_main(monkeypatch, capsys, tmp_path, *, service_available:
 def test_session_start_service_available_claude_sanitizes_ingest_ref(monkeypatch, capsys, tmp_path):
     _set_claude(monkeypatch)
     ctx = _run_session_start_main(monkeypatch, capsys, tmp_path, service_available=True)
-    assert "/fritz-brain:fritz-brain-ingest" in ctx
+    assert "/fritz-brain:brain-ingest" in ctx
     assert "/fritz:brain-ingest" not in ctx
 
 
@@ -251,9 +251,9 @@ def test_session_start_service_available_non_claude_unchanged(monkeypatch, capsy
 def test_session_start_service_unavailable_claude_sanitizes_refs(monkeypatch, capsys, tmp_path):
     _set_claude(monkeypatch)
     ctx = _run_session_start_main(monkeypatch, capsys, tmp_path, service_available=False)
-    assert "/fritz-brain:fritz-brain-query" in ctx
-    assert "/fritz-brain:fritz-brain-compile" in ctx
-    assert "/fritz-brain:fritz-brain-ingest" in ctx
+    assert "/fritz-brain:brain-query" in ctx
+    assert "/fritz-brain:brain-compile" in ctx
+    assert "/fritz-brain:brain-ingest" in ctx
     assert "/fritz:brain-query" not in ctx
     assert "/fritz:brain-compile" not in ctx
     assert "/fritz:brain-ingest" not in ctx
@@ -276,7 +276,7 @@ def test_session_start_compile_pending_claude_sanitizes_compile_ref(monkeypatch,
     )
     ctx = _run_session_start_main(monkeypatch, capsys, tmp_path, service_available=False)
     assert "processing not active" in ctx
-    assert "/fritz-brain:fritz-brain-compile" in ctx
+    assert "/fritz-brain:brain-compile" in ctx
     assert "run `/fritz:brain-compile` manually" not in ctx
 
 
@@ -298,7 +298,7 @@ def test_session_start_compile_pending_non_claude_unchanged(monkeypatch, capsys,
 def test_forcing_instruction_claude_sanitized(monkeypatch):
     _set_claude(monkeypatch)
     text = brain_common.local_brain_service_setup_forcing_instruction()
-    assert "/fritz-brain:fritz-brain-service-setup" in text
+    assert "/fritz-brain:brain-service-setup" in text
     assert "/fritz:brain-service-setup" not in text
 
 
@@ -350,7 +350,7 @@ def test_brain_check_reminder_claude_sanitized(monkeypatch, capsys, tmp_path):
     _set_claude(monkeypatch)
     ctx = _render_brain_check_reminder(monkeypatch, capsys, tmp_path, "how did we decide to do auth?")
     assert "BRAIN CHECK: Before answering, search the knowledge base." in ctx
-    assert "/fritz-brain:fritz-brain-query" in ctx
+    assert "/fritz-brain:brain-query" in ctx
     assert "/fritz:brain-query" not in ctx
 
 

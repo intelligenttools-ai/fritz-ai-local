@@ -1,10 +1,13 @@
 # Skills
 
 Fritz Local ships eight skills. The **canonical source** is `skills/` with plain
-`fritz:*` names — this is the single source of truth. Per-platform variants are
-produced by the generator (`hooks/setup_hyphenated_skills.generate_variants`) and
-installed by `scripts/install.py install --agent <agent>`: Claude and Codex keep
-the `fritz:` prefix, pi rewrites it to `fritz-` (its runtime rejects colons).
+names such as `brain-query` — this is the single source of truth. Per-platform
+variants are produced by the generator
+(`hooks/setup_hyphenated_skills.generate_variants`) and installed by
+`scripts/install.py install --agent <agent>`: Claude keeps plain skill names
+under the `fritz-brain` plugin namespace (for example
+`/fritz-brain:brain-query`), Codex uses the `fritz:` prefix, and pi uses
+`fritz-` (its runtime rejects colons).
 Variants are never hand-edited — change the source and regenerate. Hermes is a
 non-coding gateway with no skills mechanism, so it installs none (its explicit
 save is the `brain_save_fact` CLI instead).

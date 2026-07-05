@@ -495,15 +495,15 @@ def test_save_fact_writes_inbox(tmp_path):
 
 
 def test_brain_save_skill_is_bundled():
-    """C5/C8 — the fritz:brain-save skill is committed in the plugin."""
-    assert (PLUGIN_SKILLS / "fritz:brain-save" / "SKILL.md").exists()
+    """C5/C8 — the brain-save skill is committed in the Claude plugin."""
+    assert (PLUGIN_SKILLS / "brain-save" / "SKILL.md").exists()
 
 
 # --- C8: committed skills match fresh generator output (no drift) -----------
 
 
 def test_committed_skills_match_generator_output(tmp_path):
-    """C8 — committed fritz:brain-* skills equal fresh generate_variants output."""
+    """C8 — committed Claude plugin skills equal fresh generate_variants output."""
     spec = importlib.util.spec_from_file_location(
         "_setup_hyphenated_skills_claude", HOOKS / "setup_hyphenated_skills.py"
     )
@@ -540,8 +540,8 @@ def test_committed_skills_validate(tmp_path):
 # --- C6/C7/C9: installer wiring for the claude agent ------------------------
 
 
-def test_install_agent_claude_installs_colon_skills(tmp_path, monkeypatch):
-    """C6/C7 — install --agent claude installs fritz:brain-* skills to a tmp dir."""
+def test_install_agent_claude_installs_plain_plugin_skills(tmp_path, monkeypatch):
+    """C6/C7 — install --agent claude installs plain plugin skills to a tmp dir."""
     spec = importlib.util.spec_from_file_location(
         "_install_claude_binding", REPO_ROOT / "scripts" / "install.py"
     )
@@ -557,8 +557,9 @@ def test_install_agent_claude_installs_colon_skills(tmp_path, monkeypatch):
     skills = tmp_path / "claude-skills"
     rc = install.main(["install", "--agent", "claude", "--skills-dir", str(skills)])
     assert rc == 0
-    assert (skills / "fritz:brain-query" / "SKILL.md").exists()
-    assert (skills / "fritz:brain-save" / "SKILL.md").exists()
+    assert (skills / "brain-query" / "SKILL.md").exists()
+    assert (skills / "brain-save" / "SKILL.md").exists()
+    assert not (skills / "fritz:brain-query").exists()
     assert not (skills / "fritz-brain-query").exists()
 
 
@@ -663,7 +664,7 @@ def test_a2_prompt_check_injects_save_policy(tmp_path):
     # Existing search nudge still present.
     assert "BRAIN CHECK" in ctx
     # New save policy present, sanitized for the Claude runtime.
-    assert "/fritz-brain:fritz-brain-save" in ctx
+    assert "/fritz-brain:brain-save" in ctx
     assert "SAVE" in ctx
 
 
@@ -837,7 +838,7 @@ def test_a2_save_policy_on_substantive_non_query_prompt(tmp_path):
     ctx = out["hookSpecificOutput"]["additionalContext"]
     # Sanitized Claude plugin-qualified skill name (#239) — this subprocess
     # inherits the ambient CLAUDECODE env.
-    assert "/fritz-brain:fritz-brain-save" in ctx, "save policy must be injected for substantive non-query prompts"
+    assert "/fritz-brain:brain-save" in ctx, "save policy must be injected for substantive non-query prompts"
     assert "SAVE" in ctx
 
 
@@ -861,7 +862,7 @@ def test_a2_save_policy_and_brain_check_both_on_query_prompt(tmp_path):
     assert proc.returncode == 0, proc.stderr
     ctx = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
     assert "BRAIN CHECK" in ctx
-    assert "/fritz-brain:fritz-brain-save" in ctx
+    assert "/fritz-brain:brain-save" in ctx
     assert "SAVE" in ctx
 
 
@@ -939,7 +940,7 @@ def test_fix_a_empty_brain_still_emits_save_policy(tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip(), "must produce output even with empty brain"
     ctx = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
-    assert "/fritz-brain:fritz-brain-save" in ctx, "save policy must fire even for empty brain"
+    assert "/fritz-brain:brain-save" in ctx, "save policy must fire even for empty brain"
     assert "SAVE" in ctx
 
 
@@ -970,5 +971,5 @@ def test_fix_b_short_substantive_prompt_emits_save_policy(tmp_path):
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip(), "short substantive prompt must produce output"
     ctx = json.loads(proc.stdout)["hookSpecificOutput"]["additionalContext"]
-    assert "/fritz-brain:fritz-brain-save" in ctx, "save policy must fire for short substantive prompts"
+    assert "/fritz-brain:brain-save" in ctx, "save policy must fire for short substantive prompts"
     assert "SAVE" in ctx

@@ -66,7 +66,7 @@ recognize it.
   prepending context to the first user turn.
 - **Transcript format (MEDIUM):** unknown; a new adapter may be required for C4.
 - **Skill naming (LOW):** unknown whether OpenClaw accepts colon (`fritz:`) or
-  hyphen (`fritz-`) names. Add the correct prefix to `PLATFORM_PREFIXES` once
+  hyphen (`fritz-`) names. Add the correct entry to `PLATFORM_NAMING` once
   confirmed. **Assumption:** colon, if Claude-Code-lineage.
 - **Tool registration (MEDIUM):** unknown API for registering the model-callable
   `brain_save_fact` tool; if OpenClaw lacks tool registration, expose save via a
