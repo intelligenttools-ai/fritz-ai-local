@@ -5,6 +5,8 @@ agent by default (``ProvisionConfig.drift_watcher_enabled`` defaults True). The
 real ``DriftWatcherGateway`` would write to ``~/Library/LaunchAgents`` and shell
 out to ``launchctl``. This autouse fixture neutralizes the gateway's DEFAULT
 install/uninstall/check callables so no test ever touches the live system.
+It also neutralizes provisioning's default token-env wiring, which would
+otherwise write ``~/.zshenv`` and call ``launchctl`` on macOS.
 Tests that inject their own gateway are unaffected (they pass explicit
 callables, so these defaults are never used).
 """
@@ -46,3 +48,9 @@ def _neutralize_real_drift_watcher(monkeypatch):
     monkeypatch.setattr(gw, "_default_check", classmethod(lambda cls: False))
     monkeypatch.setattr(gw, "_default_install", classmethod(lambda cls: None))
     monkeypatch.setattr(gw, "_default_uninstall", classmethod(lambda cls: None))
+    if hasattr(mod, "_default_wire_token_env"):
+        monkeypatch.setattr(
+            mod,
+            "_default_wire_token_env",
+            lambda *args, **kwargs: ["token env wiring skipped in tests"],
+        )

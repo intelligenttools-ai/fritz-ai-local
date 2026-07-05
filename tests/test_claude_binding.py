@@ -134,6 +134,19 @@ def test_plugin_json_valid_with_required_fields():
     assert data.get("skills") == "./skills"
 
 
+def test_update_skill_reports_token_wiring_and_plugin_version_transition():
+    """#259 — /fritz-brain:update must report host token wiring and plugin version drift."""
+    canonical = (REPO_ROOT / "skills" / "update" / "SKILL.md").read_text(encoding="utf-8")
+    generated = (PLUGIN_SKILLS / "update" / "SKILL.md").read_text(encoding="utf-8")
+
+    for content, slash in ((canonical, "/update"), (generated, "/fritz-brain:update")):
+        assert "Token wiring status" in content
+        assert "LaunchAgent" in content
+        assert "zshenv" in content
+        assert "Plugin version transition" in content
+        assert f"Run `{slash}`" in content
+
+
 def test_marketplace_json_lists_plugin_with_local_source():
     data = json.loads(MARKETPLACE.read_text(encoding="utf-8"))
     assert isinstance(data.get("name"), str) and data["name"]
