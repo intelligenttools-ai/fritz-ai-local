@@ -80,6 +80,18 @@ Collect from the current session:
 - **Key files**: Which files are central to the work? (paths + brief role)
 - **Branch state**: Current git branch, uncommitted changes, recent commits
 
+Every item in **Next Steps** must begin with an executor tag:
+
+- `[steering]` for read, verify, or design work the receiving session should
+  perform.
+- `[loop]` for implementation-loop work that belongs to a dedicated
+  implement-issues/watch session. The receiving session verifies outcome only.
+- `[human]` for decisions or actions only the human should perform. The
+  receiving session surfaces these, never performs them.
+
+Default to `[steering]` only for read/verify/design work. Do not tag
+implementation pipeline work as `[steering]`.
+
 Create a timestamped file:
 
 ```
@@ -122,19 +134,25 @@ status: pending
 
 ## Next Steps
 
-{Ordered list of concrete actions}
+1. [steering] Verify the branch and file state still match this handover.
+2. [loop] Let the dedicated implementing loop process issue/work item X.
+3. [human] Confirm the deployment window or product decision Y.
 
 ## Receiving Agent Instructions
 
 1. Read this handover document completely
 2. Verify the branch and file state described above still matches reality
-3. Execute the next steps in order
-4. Knowledge from the previous session has already been compiled and synced.
+3. Follow `[steering]` next steps yourself.
+4. Do not execute `[loop]` next steps in this session. Leave them to, or queue
+   them for, the dedicated implementing loop session and only verify their
+   outcome.
+5. Surface `[human]` next steps to the human. Never perform them yourself.
+6. Knowledge from the previous session has already been compiled and synced.
    If you discover additional insights while executing next steps, compile
    them before ending your session.
-5. When all next steps are complete (or if the handover is no longer needed):
+7. When all next steps are complete (or if the handover is no longer needed):
    - Delete this handover file: `rm {path-to-this-file}`
-6. If work is still incomplete, create a new `/handover` before ending your session
+8. If work is still incomplete, create a new `/handover` before ending your session
 ```
 
 ### Phase 3: Provide the Kickoff Prompt
