@@ -128,8 +128,9 @@ def test_plugin_json_valid_with_required_fields():
     assert data["name"] == "fritz-brain"
     assert data.get("version") == (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip()
     assert data.get("description")
-    # Declares hooks + skills so enabling the plugin registers everything.
-    assert data.get("hooks") == "./hooks/hooks.json"
+    # Claude automatically loads the standard hooks/hooks.json file; referencing
+    # it here again is a duplicate-hooks load error in current Claude Code.
+    assert "hooks" not in data
     assert data.get("skills") == "./skills"
 
 
