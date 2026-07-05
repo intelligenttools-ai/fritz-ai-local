@@ -232,7 +232,7 @@ def test_installed_commands_match_source_hooks_json(tmp_path):
     commands; the other events match their single-command declarations."""
     source = json.loads(
         (REPO_ROOT / "bindings" / "claude" / "hooks" / "hooks.json").read_text()
-    )
+    )["hooks"]
     settings = tmp_path / "settings.json"
     hooks_dir = tmp_path / "hooks"
     hooks_dir.mkdir()
