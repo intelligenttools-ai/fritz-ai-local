@@ -113,6 +113,13 @@ def _resolve_plugin_command(command: str, plugin_root: Path = PLUGIN) -> Path:
     return Path(expanded.split()[-1])
 
 
+def _plugin_hooks(path: Path = HOOKS_JSON) -> dict:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    hooks = data.get("hooks")
+    assert isinstance(hooks, dict), "plugin hooks.json must expose a top-level hooks object"
+    return hooks
+
+
 # --- Manifests: plugin.json + marketplace.json ------------------------------
 
 
@@ -189,13 +196,13 @@ def test_mcp_json_does_not_hardcode_a_secret():
 
 
 def test_hooks_json_registers_all_canonical_events():
-    data = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))
+    data = _plugin_hooks()
     for event in ("SessionStart", "UserPromptSubmit", "PreCompact", "Stop"):
         assert event in data, f"hooks.json must register {event}"
 
 
 def test_stop_runs_capture_then_autocapture_in_order():
-    data = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))
+    data = _plugin_hooks()
     stop_cmds = [h["command"] for group in data["Stop"] for h in group["hooks"]]
     assert len(stop_cmds) == 2, "Stop must run two commands"
     assert "brain_capture.py" in stop_cmds[0], "capture must run first"
@@ -203,7 +210,7 @@ def test_stop_runs_capture_then_autocapture_in_order():
 
 
 def test_all_hook_commands_use_plugin_root_and_resolve():
-    data = json.loads(HOOKS_JSON.read_text(encoding="utf-8"))
+    data = _plugin_hooks()
     for event, groups in data.items():
         for group in groups:
             for hook in group["hooks"]:
@@ -266,7 +273,7 @@ def test_copied_claude_plugin_runs_hooks_without_repo_checkout(tmp_path):
         "brain_capture.py": {"cwd": str(proj), "hook_event_name": "Stop", "transcript_path": str(transcript)},
         "brain_autocapture_hook.py": {"cwd": str(proj), "hook_event_name": "Stop", "transcript_path": str(transcript)},
     }
-    data = json.loads((standalone / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+    data = _plugin_hooks(standalone / "hooks" / "hooks.json")
     commands = [hook["command"] for groups in data.values() for group in groups for hook in group["hooks"]]
     for command in commands:
         script = _resolve_plugin_command(command, standalone)
