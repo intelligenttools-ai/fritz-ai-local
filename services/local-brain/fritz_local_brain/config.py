@@ -252,6 +252,15 @@ CONFIG_FIELD_META: dict[str, ConfigFieldMeta] = {
 # reindex so the store re-embeds under the new provider.
 EMBEDDING_PROVIDER_FIELDS = frozenset({"embedding_protocol", "embedding_base_url", "embedding_model"})
 
+# #254: endpoint fields that, when they EFFECTIVELY change without the same
+# PATCH also supplying a new key, invalidate that section's stored API key. A
+# key is bound to the endpoint/provider it was issued for — keeping it across
+# an endpoint change is semantically wrong and an exfiltration channel.
+KEY_CLEAR_ENDPOINT_FIELDS: dict[str, tuple[str, str]] = {
+    "llm_api_key": ("llm_base_url", "llm_protocol"),
+    "embedding_api_key": ("embedding_base_url", "embedding_protocol"),
+}
+
 REPROVISION_GUIDANCE = "requires re-provision via fritz:brain-service-setup"
 
 
