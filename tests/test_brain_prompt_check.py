@@ -94,6 +94,80 @@ def test_light_context_from_registry_injects_matching_article_path(monkeypatch, 
     assert str(article) in context
 
 
+def test_claude_code_prompt_field_light_context_injects_matching_article_path(monkeypatch, capsys, tmp_path):
+    vault = tmp_path / "vault"
+    knowledge = vault / "knowledge"
+    manifest_dir = vault / ".brain"
+    knowledge.mkdir(parents=True)
+    manifest_dir.mkdir()
+    article = knowledge / "frobnicator-routing.md"
+    article.write_text("# Frobnicator Routing\n\nUse the blue route.", encoding="utf-8")
+    (manifest_dir / "manifest.yaml").write_text("paths:\n  knowledge: knowledge\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        brain_common,
+        "load_registry",
+        lambda: {"settings": {"context_injection": "light", "max_injection_chars": 4000}},
+    )
+    monkeypatch.setattr(brain_prompt_check, "BRAIN_HOME", tmp_path)
+    monkeypatch.setattr(brain_prompt_check, "resolve_project_vault", lambda cwd: ("test", {"path": str(vault)}, vault, None))
+    monkeypatch.setattr(brain_prompt_check, "local_brain_service_configured", lambda: True)
+    monkeypatch.setattr(brain_prompt_check, "local_brain_setup_suggestions_enabled", lambda: False)
+
+    hook_input = {
+        "hook_event_name": "UserPromptSubmit",
+        "cwd": str(vault),
+        "prompt": "What is the frobnicator routing decision?",
+    }
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(hook_input)))
+
+    with pytest.raises(SystemExit):
+        brain_prompt_check.main()
+
+    context = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert str(article) in context
+    assert "BRAIN SAVE:" in context
+
+
+def test_claude_code_prompt_field_off_level_emits_save_policy(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(brain_prompt_check, "BRAIN_HOME", tmp_path)
+    monkeypatch.setattr(brain_prompt_check, "load_registry", lambda: {"settings": {"context_injection": "off"}, "vaults": {}})
+    monkeypatch.setattr(brain_prompt_check, "resolve_project_vault", lambda cwd: (None, None, None, None))
+    monkeypatch.setattr(brain_prompt_check, "get_context_injection_level", lambda fritz_local: "off")
+
+    hook_input = {
+        "hook_event_name": "UserPromptSubmit",
+        "cwd": str(tmp_path),
+        "prompt": "What is the frobnicator routing decision?",
+    }
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(hook_input)))
+
+    with pytest.raises(SystemExit):
+        brain_prompt_check.main()
+
+    context = json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+    assert context.startswith("BRAIN SAVE:")
+
+
+@pytest.mark.parametrize(
+    ("hook_input", "expected"),
+    [
+        ({"prompt": "claude prompt", "user_prompt": "legacy prompt"}, "claude prompt"),
+        ({"user_prompt": "legacy user_prompt fallback"}, "legacy user_prompt fallback"),
+        ({"message": {"content": "pi message fallback"}}, "pi message fallback"),
+    ],
+)
+def test_legacy_prompt_input_shapes_are_pinned(hook_input, expected):
+    assert brain_prompt_check._extract_prompt(hook_input) == expected
+
+
+def test_hermes_binding_has_no_prompt_check_payload_shape_to_support():
+    hermes_hooks = (ROOT / "bindings" / "hermes" / "hermes-hooks.yaml").read_text(encoding="utf-8")
+
+    assert "hermes_brain_context.py" in hermes_hooks
+    assert "brain_prompt_check.py" not in hermes_hooks
+
+
 def test_light_context_search_is_bounded_without_project_dirs(tmp_path):
     vault = tmp_path / "vault"
     knowledge = vault / "knowledge"

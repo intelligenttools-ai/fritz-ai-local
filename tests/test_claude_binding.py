@@ -315,6 +315,26 @@ def test_prompt_check_emits_brain_check(tmp_path):
     assert "BRAIN CHECK" in out["hookSpecificOutput"]["additionalContext"]
 
 
+def test_prompt_check_accepts_claude_code_prompt_field(tmp_path):
+    """C2 — Claude Code UserPromptSubmit sends `prompt`, not `user_prompt`."""
+    brain = tmp_path / "home" / ".brain"
+    daily = brain / "capture" / "daily"
+    daily.mkdir(parents=True)
+    (daily / "2026-06-14.md").write_text("# Daily Log\n", encoding="utf-8")
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    script = PLUGIN / "hooks" / "brain_prompt_check.py"
+    payload = {
+        "cwd": str(proj),
+        "hook_event_name": "UserPromptSubmit",
+        "prompt": "how did we decide to do auth in this project?",
+    }
+    proc = _run_hook(script, payload, brain, proj)
+    assert proc.returncode == 0, proc.stderr
+    out = json.loads(proc.stdout)
+    assert "BRAIN CHECK" in out["hookSpecificOutput"]["additionalContext"]
+
+
 def test_prompt_check_skips_trivial_prompt(tmp_path):
     """C2 — a trivial/short prompt is a no-op (no output)."""
     brain = tmp_path / "home" / ".brain"

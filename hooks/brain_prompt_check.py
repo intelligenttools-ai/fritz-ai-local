@@ -9,7 +9,6 @@ Fires on UserPromptSubmit. Three modes:
 Works with:
 - Claude Code: UserPromptSubmit event
 - Codex: UserPromptSubmit event
-- Gemini CLI: BeforeAgent event
 """
 
 from __future__ import annotations
@@ -291,20 +290,29 @@ def _is_trivial(prompt: str) -> bool:
     return False
 
 
+def _extract_prompt(hook_input: dict) -> str:
+    """Extract the user prompt from supported hook payload shapes."""
+    prompt = hook_input.get("prompt")
+    if isinstance(prompt, str):
+        return prompt
+
+    prompt = hook_input.get("user_prompt")
+    if isinstance(prompt, str):
+        return prompt
+
+    msg = hook_input.get("message")
+    if isinstance(msg, dict):
+        content = msg.get("content", "")
+        return content if isinstance(content, str) else ""
+    if isinstance(msg, str):
+        return msg
+    return ""
+
+
 def main():
     hook_input = read_hook_input()
 
-    # Extract user prompt
-    prompt = ""
-    if "user_prompt" in hook_input:
-        prompt = hook_input["user_prompt"]
-    elif "message" in hook_input:
-        msg = hook_input["message"]
-        if isinstance(msg, dict):
-            prompt = msg.get("content", "")
-        elif isinstance(msg, str):
-            prompt = msg
-
+    prompt = _extract_prompt(hook_input)
     if not prompt:
         sys.exit(0)
 
