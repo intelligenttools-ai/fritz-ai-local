@@ -33,6 +33,10 @@ This follows the `~/.brain/hooks/` symlinks back to the actual clone. If
 hooks were symlinked from, or ask the human for the clone path. On Windows,
 substitute `%USERPROFILE%` for `$HOME`.
 
+Before pulling, read `<REPO>/VERSION` and
+`<REPO>/bindings/claude/.claude-plugin/plugin.json` `version` if present. Keep
+those values for the final version transition report.
+
 ### 1. Pull latest
 
 Run:
@@ -44,7 +48,13 @@ If the pull fails (dirty tree, merge conflict), report the error and stop.
 
 ### 2. Read version change
 
-Read `<REPO>/VERSION` for the new version. Compare with the version shown in the update notification (if any). Report the version bump.
+Read `<REPO>/VERSION` for the new version. Compare with the version shown in the
+update notification (if any). Report the version bump.
+
+Read `<REPO>/bindings/claude/.claude-plugin/plugin.json` `version` after the
+pull. Report the **Plugin version transition** as `<old plugin version> → <new
+plugin version>` when both values are known, or `unknown → <new plugin version>`
+when the old value was unavailable.
 
 ### 3. Symlink new skills and managed hooks
 
@@ -91,14 +101,33 @@ Each migration script:
 - Prints a summary of what it did
 
 After running each pending migration, the runner must **ensure** that
-migration's number is recorded in `~/.brain/.migrations-run`. Do a line-exact
-membership check (so `002` does not match `0020`) and append the number on its
-own line **only if it is not already present**. Some migrations (e.g. 002) also
-self-record their own number; because the runner appends only when the number is
-absent, this is safe and never double-records. Migrations that do not self-record
-(e.g. 001) rely on the runner to record them.
+migration's number is recorded in `~/.brain/.migrations-run` only when the
+migration actually completed. Do a line-exact membership check (so `002` does
+not match `0020`) and append the number on its own line **only if it is not
+already present** and the migration output does not say it was skipped. Some
+migrations (e.g. 002 and 004) self-record their own number when complete;
+because the runner appends only when the number is absent, this is safe and
+never double-records. Migrations that do not self-record (e.g. 001) rely on the
+runner to record them after successful completion.
 
-### 5. Scan vaults for brain contract drift
+### 5. Check MCP token wiring status
+
+After migrations finish, report **Token wiring status** without printing the
+token value:
+
+- `wired` when `~/.zshenv` contains the Fritz-managed token export block and
+  `~/Library/LaunchAgents/ai.fritz.local-brain-token-env.plist` exists.
+- `partial` when only one of the managed zshenv block or LaunchAgent plist
+  exists.
+- `missing` when neither exists. In that case, report that running `/update`
+  again should apply pending migrations, and list migration output if it explains
+  why token wiring was skipped.
+
+Also note whether `settings.local_brain_service.api_token_env` is set in
+`~/.brain/registry.yaml` (default `LOCAL_BRAIN_API_TOKEN`). Do not echo
+`settings.local_brain_service.api_token`.
+
+### 6. Scan vaults for brain contract drift
 
 The brain contract declared in `brain-setup` carries a
 `brain_contract_version`. When the skill ships a new version, existing vaults
@@ -119,7 +148,7 @@ updates.
    flag the vault for the report as "outdated (vN → vM)".
 5. Do not touch any file. This is a detection step only.
 
-### 6. Resolve Local Brain service behavior if unconfigured
+### 7. Resolve Local Brain service behavior if unconfigured
 
 Read `~/.brain/registry.yaml`. If `settings.local_brain_service` is absent,
 pause and ask the human which behavior they want for the optional Dockerized
@@ -151,14 +180,18 @@ Local Brain service:
 Do not start Docker or set `enabled: true` without explicit human approval. If
 the registry setting already exists, do not ask and do not overwrite it.
 
-### 7. Report
+### 8. Report
 
 Show the user:
 - Version change (e.g., `1.0.0 → 1.1.0`)
+- Plugin version transition (e.g., `1.0.0 → 1.1.0`)
 - New skills added
 - Hook symlinks refreshed or missing
 - Removed skills (warnings only)
 - Migrations run and their summaries
+- Token wiring status: `wired`, `partial`, or `missing`; include whether the
+  managed zshenv export block and LaunchAgent plist are present, but never print
+  the token value.
 - Local Brain service setting state: report whether `settings.local_brain_service`
   exists, whether it is enabled, and whether a human decision was recorded during
   the update.

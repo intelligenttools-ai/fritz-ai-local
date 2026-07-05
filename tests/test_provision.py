@@ -440,6 +440,56 @@ class TestProvision:
         assert "build" in calls
         assert "up" in calls
 
+    def test_provision_wires_token_env_after_registry_write(self, tmp_path):
+        mod = load_engine()
+        cfg = mod.ProvisionConfig(
+            api_token="tok-wire-001",
+            base_url="http://127.0.0.1:8765",
+            api_token_env="LOCAL_BRAIN_API_TOKEN",
+        )
+        env_path = tmp_path / ".env"
+        reg_path = tmp_path / ".brain" / "registry.yaml"
+        home = tmp_path / "home"
+
+        docker_gw, calls = self._make_docker(mod)
+        http_gw = self._make_http_ok(mod)
+        wire_calls: list[tuple[str, str, Path]] = []
+
+        def _fake_wire(token, *, token_env, home, launchctl=None):
+            assert not calls
+            data = yaml.safe_load(reg_path.read_text(encoding="utf-8"))
+            svc = data["settings"]["local_brain_service"]
+            assert svc["api_token"] == token
+            assert svc["api_token_env"] == token_env
+            wire_calls.append((token, token_env, home))
+            return ["wired token env"]
+
+        import json
+        mock_response = MagicMock()
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_response.status = 200
+        mock_response.read.return_value = json.dumps({}).encode()
+
+        with patch("urllib.request.urlopen", return_value=mock_response):
+            with patch.object(mod, "_run_preflight", return_value=mod.StepResult("preflight", "ok", "all ok")):
+                result = mod.provision(
+                    cfg,
+                    env_path=env_path,
+                    registry_path=reg_path,
+                    docker=docker_gw,
+                    http=http_gw,
+                    token_env_wirer=_fake_wire,
+                    token_env_home=home,
+                )
+
+        assert wire_calls == [("tok-wire-001", "LOCAL_BRAIN_API_TOKEN", home)]
+        token_step = result._step("wire_token_env")
+        assert token_step is not None
+        assert token_step.status == "ok"
+        assert "wired token env" in token_step.detail
+        assert calls == ["build", "up"]
+
     def test_idempotent_second_run_reports_already_provisioned(self, tmp_path):
         """Calling provision twice with identical inputs → already_provisioned."""
         mod = load_engine()

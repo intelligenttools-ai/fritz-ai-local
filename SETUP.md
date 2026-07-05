@@ -89,6 +89,12 @@ hook edits**.
    (which references the hooks through `${CLAUDE_PLUGIN_ROOT}`). **Do not edit
    `~/.claude/settings.json` hooks by hand** — the plugin does it.
 
+   The Local Brain MCP token export is managed by `/fritz-brain:update` and
+   provisioning, not by `install.py install`. They run the migration that writes
+   a managed `~/.zshenv` block and a macOS LaunchAgent so new Claude Code
+   sessions inherit `LOCAL_BRAIN_API_TOKEN` from `~/.brain/registry.yaml`
+   without copying the token into the plugin config.
+
 3. Verify:
 
    ```bash
@@ -99,6 +105,12 @@ Legacy non-plugin installs: `python3 hooks/install_claude_hooks.py` can still
 write the four Claude hooks manually. For Claude Code, manual
 `~/.claude/settings.json` hook edits are not supported; the plugin above owns
 the hook registrations and avoids duplicate fires.
+
+Troubleshooting only: if Claude Code starts before the managed token export is
+available, run `/fritz-brain:update` and restart Claude Code. As a temporary
+diagnostic, you can export `LOCAL_BRAIN_API_TOKEN` in the launching shell from
+the token stored at `settings.local_brain_service.api_token` in
+`~/.brain/registry.yaml`; do not add literal tokens to plugin files.
 
 Full detail: [`bindings/claude/README.md`](bindings/claude/README.md). The
 plugin satisfies the full nine-capability bar.

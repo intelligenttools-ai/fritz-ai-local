@@ -16,6 +16,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from urllib import error, request
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -32,6 +33,7 @@ from brain_common import (
     local_brain_service_configured, local_brain_configuration_decision_prompt,
     get_local_brain_service_desired, local_brain_service_operational,
     local_brain_service_setup_forcing_instruction,
+    get_local_brain_base_url,
     version_is_behind,
     _resolve_client_agent, claude_form,
     BRAIN_HOME, FRITZ_REPO,
@@ -164,6 +166,54 @@ def check_service_version_drift(context_parts: list[str]):
             )
 
 
+CLAUDE_MCP_TOKEN_ENV = "LOCAL_BRAIN_API_TOKEN"
+
+
+def local_brain_service_reachable_for_mcp_token_warning(timeout: float = 0.4) -> bool:
+    """Reachability probe for MCP-token warnings that does not require auth.
+
+    The normal service-available helper is intentionally auth-gated because it
+    routes work. This warning is about a missing auth env var, so a 401 from
+    ``/v1/status`` still proves the service is reachable and should warn.
+    """
+    base_url = get_local_brain_base_url().rstrip("/")
+    for path in ("/health", "/v1/status"):
+        req = request.Request(f"{base_url}{path}", headers={"accept": "application/json"}, method="GET")
+        try:
+            with request.urlopen(req, timeout=timeout) as response:
+                if 200 <= response.status < 500:
+                    return True
+        except error.HTTPError as exc:
+            if exc.code in {401, 403}:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def check_mcp_token_wiring(context_parts: list[str]):
+    """Warn when the service is reachable but the MCP token env var is unset (#259).
+
+    Claude Code's ``fritz-brain`` plugin authenticates via a
+    ``Bearer ${LOCAL_BRAIN_API_TOKEN}`` header expanded from the shell
+    environment. If the service is up but that variable is missing from THIS
+    session's environment, every MCP call fails auth silently. Surface the
+    one-line fix instead of leaving a broken handshake invisible.
+    """
+    if not local_brain_service_reachable_for_mcp_token_warning():
+        return
+    token_env = CLAUDE_MCP_TOKEN_ENV
+    if os.environ.get(token_env, "").strip():
+        return
+    fix = claude_form("/fritz:update") if _resolve_client_agent() == "claude" else "/fritz:update"
+    context_parts.append(
+        f"\n## Brain MCP token not exported ({token_env} missing)\n"
+        f"The Local Brain service is reachable but `{token_env}` is not set in this "
+        f"session's environment, so the `fritz-brain` MCP tools cannot authenticate. "
+        f"Run `{fix}` to wire it, then restart the session.\n"
+    )
+
+
 def inject_project_context(context_parts: list[str], vault_path: Path, manifest: dict, fritz_local: dict | None):
     """Inject project-specific context when .fritz-local.json is present."""
     if not fritz_local or "project" not in fritz_local:
@@ -247,6 +297,9 @@ def main():
             context_parts.append(f"Knowledge base at `~/.brain/`. Use `{claude_form('/fritz:brain-query')}` to search, `{claude_form('/fritz:brain-compile')}` to promote captures, `{claude_form('/fritz:brain-ingest')}` to import sources.\n")
         else:
             context_parts.append("Knowledge base at `~/.brain/`. Use `/fritz:brain-query` to search, `/fritz:brain-compile` to promote captures, `/fritz:brain-ingest` to import sources.\n")
+
+    # Self-healing: warn if the service is up but the MCP token env is unset.
+    check_mcp_token_wiring(context_parts)
 
     # List available vaults
     registry = load_registry()
