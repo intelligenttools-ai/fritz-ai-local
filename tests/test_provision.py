@@ -490,6 +490,54 @@ class TestProvision:
         assert "wired token env" in token_step.detail
         assert calls == ["build", "up"]
 
+    def test_provision_registers_claude_mcp_after_registry_write(self, tmp_path):
+        mod = load_engine()
+        cfg = mod.ProvisionConfig(
+            api_token="tok-mcp-001",
+            base_url="http://127.0.0.1:8765",
+        )
+        env_path = tmp_path / ".env"
+        reg_path = tmp_path / ".brain" / "registry.yaml"
+
+        docker_gw, calls = self._make_docker(mod)
+        http_gw = self._make_http_ok(mod)
+        registration_calls: list[tuple[str, str, Path]] = []
+
+        def _fake_register(token, *, base_url, home, runner=None):
+            assert not calls
+            data = yaml.safe_load(reg_path.read_text(encoding="utf-8"))
+            svc = data["settings"]["local_brain_service"]
+            assert svc["api_token"] == token
+            assert svc["base_url"] == base_url
+            registration_calls.append((token, base_url, home))
+            return ["registered Claude MCP"]
+
+        import json
+        mock_response = MagicMock()
+        mock_response.__enter__ = lambda s: s
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_response.status = 200
+        mock_response.read.return_value = json.dumps({}).encode()
+
+        with patch("urllib.request.urlopen", return_value=mock_response):
+            with patch.object(mod, "_run_preflight", return_value=mod.StepResult("preflight", "ok", "all ok")):
+                result = mod.provision(
+                    cfg,
+                    env_path=env_path,
+                    registry_path=reg_path,
+                    docker=docker_gw,
+                    http=http_gw,
+                    token_env_wirer=lambda *args, **kwargs: ["wired token env"],
+                    claude_mcp_registrar=_fake_register,
+                )
+
+        assert registration_calls == [("tok-mcp-001", "http://127.0.0.1:8765", tmp_path)]
+        mcp_step = result._step("claude_mcp_registration")
+        assert mcp_step is not None
+        assert mcp_step.status == "ok"
+        assert "registered Claude MCP" in mcp_step.detail
+        assert calls == ["build", "up"]
+
     def test_default_token_env_wirer_uses_dependency_free_zshenv_block(self, tmp_path):
         import sys
 

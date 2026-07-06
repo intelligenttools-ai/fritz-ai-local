@@ -133,6 +133,23 @@ runner to record them after successful completion.
 
 ### 5. Check MCP token wiring status
 
+Run the Claude MCP registration refresh step every update, even when migration
+006 is already recorded:
+
+```bash
+python3 <REPO>/migrations/006-claude-user-scope-mcp-registration.py --refresh
+```
+
+Report **Claude MCP registration status** without printing the token value:
+
+- `current` when Claude's user-scope `mcpServers.fritz-brain` entry exists in
+  `~/.claude.json`, uses `type: http`, points at
+  `settings.local_brain_service.base_url` plus `/mcp/`, and its
+  `Authorization` header token matches `settings.local_brain_service.api_token`.
+- `refreshed` when the update command rewrote a missing, stale-token, or
+  stale-URL registration.
+- `skipped` when no registry token exists or the Claude CLI is unavailable.
+
 After migrations finish, report **Token wiring status** without printing the
 token value:
 
@@ -212,6 +229,9 @@ Show the user:
   when the Claude plugin-managed branch was detected
 - Removed skills (warnings only)
 - Migrations run and their summaries
+- Claude MCP registration status: `current`, `refreshed`, or `skipped`; include
+  whether the user-scope registration was missing or drifted, but never print
+  the token value.
 - Token wiring status: `wired`, `partial`, or `missing`; include whether the
   managed zshenv export block and LaunchAgent plist are present, but never print
   the token value.

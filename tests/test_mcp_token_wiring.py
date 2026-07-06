@@ -1,113 +1,128 @@
-"""Tests for the session-start MCP-token self-healing warning (#259, part C).
+"""Tests for the session-start Claude MCP registration self-healing warning (#278).
 
-When the Local Brain service is reachable but the token env var the plugin's
-MCP header expands (``LOCAL_BRAIN_API_TOKEN``) is missing from THIS session's
-environment, every brain MCP call fails auth silently. The session-start hook
-must surface a one-line fix pointing at the update skill.
+The session-start hook no longer checks whether ``LOCAL_BRAIN_API_TOKEN`` is in
+the process environment. Claude MCP auth is user-scope registration owned by the
+installer, so the hook compares ``~/.claude.json`` against the registry token.
 """
 
+from __future__ import annotations
+
+import json
 import sys
 from pathlib import Path
+
+import yaml
+
 
 ROOT = Path(__file__).resolve().parents[1]
 HOOKS = ROOT / "hooks"
 sys.path.insert(0, str(HOOKS))
 
 import brain_session_start  # noqa: E402
+import brain_common  # noqa: E402
 
 
-def _patch(monkeypatch, *, available: bool, token_env_set: bool):
-    monkeypatch.setattr(
-        brain_session_start,
-        "local_brain_service_reachable_for_mcp_token_warning",
-        lambda: available,
+def _write_registry(brain: Path, token: str = "registry-token") -> None:
+    brain.mkdir(parents=True, exist_ok=True)
+    (brain / "registry.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "settings": {
+                    "local_brain_service": {
+                        "enabled": True,
+                        "base_url": "http://127.0.0.1:8765",
+                        "api_token": token,
+                        "api_token_env": "LOCAL_BRAIN_API_TOKEN",
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
     )
-    if token_env_set:
-        monkeypatch.setenv("LOCAL_BRAIN_API_TOKEN", "some-token")
-    else:
-        monkeypatch.delenv("LOCAL_BRAIN_API_TOKEN", raising=False)
 
 
-def _run(monkeypatch, **kw) -> str:
-    _patch(monkeypatch, **kw)
+def _write_claude_config(home: Path, token: str) -> None:
+    home.mkdir(parents=True, exist_ok=True)
+    (home / ".claude.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "fritz-brain": {
+                        "type": "http",
+                        "url": "http://127.0.0.1:8765/mcp/",
+                        "headers": {"Authorization": f"Bearer {token}"},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _setup(monkeypatch, tmp_path: Path, *, registry_token: str = "registry-token") -> Path:
+    home = tmp_path / "home"
+    brain = home / ".brain"
+    _write_registry(brain, registry_token)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("BRAIN_HOME", str(brain))
+    monkeypatch.setenv("CLAUDE_PLUGIN_ROOT", str(ROOT / "bindings" / "claude"))
+    monkeypatch.delenv("CLAUDE_CONFIG_PATH", raising=False)
+    monkeypatch.delenv("FRITZ_AGENT", raising=False)
+    monkeypatch.setattr(brain_common, "BRAIN_HOME", brain)
+    monkeypatch.setattr(brain_common, "REGISTRY_PATH", brain / "registry.yaml")
+    monkeypatch.setattr(brain_session_start, "BRAIN_HOME", brain)
+    return home
+
+
+def _run() -> str:
     parts: list[str] = []
     brain_session_start.check_mcp_token_wiring(parts)
     return "\n".join(parts)
 
 
-def _clear_claude_markers(monkeypatch):
-    monkeypatch.delenv("CLAUDECODE", raising=False)
-    monkeypatch.delenv("CLAUDE_CODE_ENTRYPOINT", raising=False)
-    monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
-    monkeypatch.delenv("FRITZ_AGENT", raising=False)
+def test_missing_claude_user_registration_emits_update_warning(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
 
+    out = _run()
 
-def test_reachable_and_token_missing_emits_warning(monkeypatch):
-    _clear_claude_markers(monkeypatch)
-    out = _run(monkeypatch, available=True, token_env_set=False)
-    assert "Brain MCP token not exported" in out
-    assert "LOCAL_BRAIN_API_TOKEN" in out
-    assert "/fritz:update" in out  # non-Claude rendering names the fix
-    assert "quit and restart the agent application" in out
-    assert "Starting a new session in the same app can inherit the old environment" in out
-    assert "restart the session" not in out
-
-
-def test_reachable_and_token_missing_claude_uses_plugin_skill_name(monkeypatch):
-    _clear_claude_markers(monkeypatch)
-    monkeypatch.setenv("CLAUDECODE", "1")
-    out = _run(monkeypatch, available=True, token_env_set=False)
-    assert "Brain MCP token not exported" in out
+    assert "Brain MCP registration drift" in out
+    assert "registration is missing" in out
     assert "/fritz-brain:update" in out
-    assert "quit and restart the agent application" in out
-    assert "Starting a new session in the same app can inherit the old environment" in out
-    assert "restart the session" not in out
+    assert "already loaded MCP servers" in out
+    assert "LOCAL_BRAIN_API_TOKEN" not in out
 
 
-def test_reachable_and_token_present_no_warning(monkeypatch):
-    out = _run(monkeypatch, available=True, token_env_set=True)
-    assert out == ""
+def test_token_mismatch_emits_update_warning(monkeypatch, tmp_path):
+    home = _setup(monkeypatch, tmp_path)
+    _write_claude_config(home, "old-token")
+
+    out = _run()
+
+    assert "Brain MCP registration drift" in out
+    assert "registration is token mismatch" in out
+    assert "/fritz-brain:update" in out
 
 
-def test_custom_api_token_env_does_not_suppress_claude_mcp_warning(monkeypatch):
-    monkeypatch.setattr(
-        brain_session_start,
-        "local_brain_service_reachable_for_mcp_token_warning",
-        lambda: True,
-    )
-    monkeypatch.setenv("BRAIN_TOKEN", "configured-custom-env")
+def test_matching_registration_no_warning_even_without_env(monkeypatch, tmp_path):
+    home = _setup(monkeypatch, tmp_path)
+    _write_claude_config(home, "registry-token")
     monkeypatch.delenv("LOCAL_BRAIN_API_TOKEN", raising=False)
 
-    parts: list[str] = []
-    brain_session_start.check_mcp_token_wiring(parts)
-    out = "\n".join(parts)
-
-    assert "Brain MCP token not exported" in out
-    assert "LOCAL_BRAIN_API_TOKEN" in out
+    assert _run() == ""
 
 
-def test_unreachable_no_warning(monkeypatch):
-    out = _run(monkeypatch, available=False, token_env_set=False)
-    assert out == ""
+def test_non_claude_agent_does_not_check_claude_registration(monkeypatch, tmp_path):
+    _setup(monkeypatch, tmp_path)
+    monkeypatch.delenv("CLAUDE_PLUGIN_ROOT", raising=False)
+    monkeypatch.setenv("FRITZ_AGENT", "codex")
+
+    assert _run() == ""
 
 
-def test_status_401_still_counts_as_reachable_for_token_warning(monkeypatch):
-    calls: list[str] = []
+def test_malformed_claude_config_counts_as_missing(monkeypatch, tmp_path):
+    home = _setup(monkeypatch, tmp_path)
+    (home / ".claude.json").write_text("{not-json", encoding="utf-8")
 
-    def fake_urlopen(req, timeout):
-        calls.append(req.full_url)
-        if req.full_url.endswith("/health"):
-            raise brain_session_start.error.URLError("connection reset")
-        raise brain_session_start.error.HTTPError(
-            req.full_url,
-            401,
-            "Unauthorized",
-            hdrs=None,
-            fp=None,
-        )
+    out = _run()
 
-    monkeypatch.setattr(brain_session_start, "get_local_brain_base_url", lambda: "http://127.0.0.1:8765")
-    monkeypatch.setattr(brain_session_start.request, "urlopen", fake_urlopen)
-
-    assert brain_session_start.local_brain_service_reachable_for_mcp_token_warning() is True
-    assert calls == ["http://127.0.0.1:8765/health", "http://127.0.0.1:8765/v1/status"]
+    assert "registration is missing" in out
