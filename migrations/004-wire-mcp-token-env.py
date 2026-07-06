@@ -25,7 +25,6 @@ import argparse
 import os
 import platform
 import plistlib
-import re
 import subprocess
 import sys
 from pathlib import Path
@@ -34,14 +33,20 @@ import yaml
 
 
 MIGRATION_NUMBER = "004"
-# Reuse the hand-written markers already present on installed workstations so an
-# existing block converges instead of duplicating.
-BLOCK_START = "# >>> fritz-local brain token >>>"
-BLOCK_END = "# <<< fritz-local brain token <<<"
 LAUNCH_AGENT_LABEL = "ai.fritz.local-brain-token-env"
-CLAUDE_MCP_TOKEN_ENV = "LOCAL_BRAIN_API_TOKEN"
 
 _THIS_FILE = Path(__file__).resolve()
+sys.path.insert(0, str(_THIS_FILE.parent))
+
+from token_env_wiring import (  # noqa: E402
+    BLOCK_END,
+    BLOCK_START,
+    CLAUDE_MCP_TOKEN_ENV,
+    build_zshenv_block,
+    token_env_names,
+    upsert_zshenv_block,
+    valid_env_name as _valid_env_name,
+)
 
 
 def brain_home() -> Path:
@@ -58,10 +63,6 @@ def zshenv_path(home: Path) -> Path:
 
 def launch_agent_path(home: Path) -> Path:
     return Path(home) / "Library" / "LaunchAgents" / f"{LAUNCH_AGENT_LABEL}.plist"
-
-
-def _valid_env_name(name: str) -> bool:
-    return bool(isinstance(name, str) and re.fullmatch(r"[A-Z_][A-Z0-9_]*", name))
 
 
 def read_service_config(registry_path: Path | None = None) -> dict:
@@ -85,61 +86,6 @@ def read_service_config(registry_path: Path | None = None) -> dict:
 def resolve_token_env(config: dict) -> str:
     name = config.get("api_token_env", CLAUDE_MCP_TOKEN_ENV)
     return name if _valid_env_name(name) else CLAUDE_MCP_TOKEN_ENV
-
-
-def token_env_names(token_env: str) -> list[str]:
-    """Return env vars to wire.
-
-    ``api_token_env`` remains supported for generic service callers, but the
-    Claude plugin MCP header is fixed to ``LOCAL_BRAIN_API_TOKEN``. Mirror the
-    same registry-backed token into both when an install uses a custom env var.
-    """
-    primary = token_env if _valid_env_name(token_env) else CLAUDE_MCP_TOKEN_ENV
-    names = [primary]
-    if CLAUDE_MCP_TOKEN_ENV not in names:
-        names.append(CLAUDE_MCP_TOKEN_ENV)
-    return names
-
-
-def build_zshenv_block(token_env: str) -> str:
-    """Return the managed ``~/.zshenv`` block (no trailing newline, no secret)."""
-    reader = (
-        "$(python3 -c 'import pathlib,yaml; "
-        'r=yaml.safe_load(pathlib.Path.home().joinpath(".brain","registry.yaml").read_text()) or {}; '
-        'c=(r.get("settings") or {}).get("local_brain_service") or {}; '
-        "print((c.get(\"api_token\") or \"\").strip())' 2>/dev/null)"
-    )
-    lines = [
-        BLOCK_START,
-        "# Managed by fritz-local (migration 004). Exports the Local Brain MCP",
-        "# token from ~/.brain/registry.yaml so Claude Code's plugin MCP header",
-        "# can authenticate. Do not edit by hand; re-run /fritz-brain:update.",
-    ]
-    lines.extend(f'export {name}="{reader}"' for name in token_env_names(token_env))
-    lines.append(BLOCK_END)
-    return "\n".join(lines)
-
-
-def upsert_zshenv_block(text: str, token_env: str) -> tuple[str, bool]:
-    """Insert or replace the managed block, preserving all other user content."""
-    block = build_zshenv_block(token_env)
-    lines = text.splitlines()
-    kept: list[str] = []
-    i = 0
-    while i < len(lines):
-        if lines[i].strip() == BLOCK_START:
-            j = i + 1
-            while j < len(lines) and lines[j].strip() != BLOCK_END:
-                j += 1
-            i = j + 1  # skip the end marker too
-            continue
-        kept.append(lines[i])
-        i += 1
-    while kept and kept[-1].strip() == "":
-        kept.pop()
-    body = "\n".join(kept)
-    new_text = (body + "\n\n" + block + "\n") if body else (block + "\n")
-    return new_text, new_text != text
 
 
 def build_launch_agent_plist() -> dict:

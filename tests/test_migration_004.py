@@ -51,6 +51,9 @@ def test_build_block_has_markers_and_export_but_no_secret():
     assert migration.BLOCK_START in block
     assert migration.BLOCK_END in block
     assert "export LOCAL_BRAIN_API_TOKEN=" in block
+    assert "/usr/bin/sed -E -n" in block
+    assert "python3 -c" not in block
+    assert "import yaml" not in block
     # The block resolves the token at shell-init from registry.yaml — never the literal.
     assert "registry.yaml" in block
 

@@ -490,6 +490,37 @@ class TestProvision:
         assert "wired token env" in token_step.detail
         assert calls == ["build", "up"]
 
+    def test_default_token_env_wirer_uses_dependency_free_zshenv_block(self, tmp_path):
+        import sys
+
+        mod_name = "provision_engine_token_env_regression"
+        sys.modules.pop(mod_name, None)
+        path = Path(__file__).resolve().parents[1] / "scripts" / "provision_engine.py"
+        spec = importlib.util.spec_from_file_location(mod_name, path)
+        assert spec and spec.loader
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[mod_name] = mod
+        spec.loader.exec_module(mod)
+
+        home = tmp_path / "home"
+        home.mkdir()
+        launchctl_calls: list[list[str]] = []
+
+        mod._default_wire_token_env(
+            "tok-wire-002",
+            token_env="LOCAL_BRAIN_API_TOKEN",
+            home=home,
+            launchctl=lambda argv: launchctl_calls.append(list(argv)),
+        )
+
+        ztext = (home / ".zshenv").read_text(encoding="utf-8")
+        assert "/usr/bin/sed -E -n" in ztext
+        assert "/usr/bin/head -n 1" in ztext
+        assert "/usr/bin/tr -d" in ztext
+        assert "python3 -c" not in ztext
+        assert "import yaml" not in ztext
+        assert ["launchctl", "setenv", "LOCAL_BRAIN_API_TOKEN", "tok-wire-002"] in launchctl_calls
+
     def test_idempotent_second_run_reports_already_provisioned(self, tmp_path):
         """Calling provision twice with identical inputs → already_provisioned."""
         mod = load_engine()
