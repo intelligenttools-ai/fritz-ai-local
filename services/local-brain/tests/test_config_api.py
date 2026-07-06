@@ -58,6 +58,8 @@ def test_config_get_mutable_and_requires_flags(monkeypatch, tmp_path) -> None:
 
     assert fields["scheduler_enabled"]["mutable"] is True
     assert fields["scheduler_enabled"]["requires"] == "runtime"
+    assert fields["compile_context_budget_chars"]["mutable"] is True
+    assert fields["scheduler_compile_failure_alarm_threshold"]["mutable"] is True
     assert fields["reconciliation_autonomy"]["mutable"] is True
 
     # #226: LLM + embedding provider settings are now runtime-mutable.
@@ -142,6 +144,15 @@ def test_patch_runtime_mutable_applies_live_and_persists(monkeypatch, tmp_path) 
 
     # The returned effective config reflects the change.
     assert body["config"]["scheduler_enabled"]["value"] is True
+
+
+def test_patch_compile_context_budget_enforces_minimum(monkeypatch, tmp_path) -> None:
+    client = _client(monkeypatch, _settings(tmp_path))
+
+    resp = client.patch("/v1/config", headers=_AUTH, json={"compile_context_budget_chars": 999})
+
+    assert resp.status_code == 400
+    assert "compile_context_budget_chars must be >= 1000" in resp.text
 
 
 def test_patch_rebuild_required_is_rejected_and_not_persisted(monkeypatch, tmp_path) -> None:

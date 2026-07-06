@@ -216,6 +216,34 @@ def check_mcp_token_wiring(context_parts: list[str]):
     )
 
 
+def check_scheduler_compile_failure_alert(context_parts: list[str]):
+    """Surface the service scheduler's consecutive compile-failure marker."""
+
+    marker = BRAIN_HOME / ".scheduler-compile-failures.json"
+    if marker.is_symlink() or not marker.exists():
+        return
+    try:
+        data = json.loads(marker.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return
+    if not isinstance(data, dict):
+        return
+    try:
+        count = int(data.get("count", 0) or 0)
+        threshold = int(data.get("alert_threshold", 3) or 3)
+    except (TypeError, ValueError):
+        return
+    if count < threshold:
+        return
+    since = str(data.get("since") or "unknown")
+    summary = str(data.get("summary") or "").strip()
+    context_parts.append("\n## Brain scheduler alert\n")
+    message = f"scheduler compile failing since {since}, see log"
+    if summary:
+        message += f". Last failure: {summary}"
+    context_parts.append(message + "\n")
+
+
 def inject_project_context(context_parts: list[str], vault_path: Path, manifest: dict, fritz_local: dict | None):
     """Inject project-specific context when .fritz-local.json is present."""
     if not fritz_local or "project" not in fritz_local:
@@ -302,6 +330,7 @@ def main():
 
     # Self-healing: warn if the service is up but the MCP token env is unset.
     check_mcp_token_wiring(context_parts)
+    check_scheduler_compile_failure_alert(context_parts)
 
     # List available vaults
     registry = load_registry()

@@ -14,7 +14,20 @@ from .models import CompileRunRequest
 from .operation_locks import OperationAlreadyRunning, compile_lock
 from .rereconciliation import run_rereconciliation_sweep
 from .run_history import record_compile, record_failure
+from .scheduler_state import (
+    clear_scheduler_compile_failure_state,
+    maybe_alert_scheduler_compile_failure,
+    record_scheduler_compile_failure,
+)
 from .telemetry import prune_old_events_quietly, sync_log_to_telemetry_quietly
+
+
+def _record_compile_failure_alarm(settings: Settings, summary: str) -> None:
+    try:
+        state = record_scheduler_compile_failure(settings, summary)
+        maybe_alert_scheduler_compile_failure(settings, state, dry_run=settings.scheduler_dry_run)
+    except Exception:  # noqa: BLE001 - scheduler health tracking must not crash the scheduler.
+        pass
 
 
 async def scheduler_loop(settings: Settings, *, stop: asyncio.Event | None = None) -> None:
@@ -45,11 +58,21 @@ async def scheduler_loop(settings: Settings, *, stop: asyncio.Event | None = Non
                         trusted=True,
                     )
                     record_compile(result, settings, source="scheduler")
+                    if result.errors:
+                        detail = "; ".join(result.errors[:5])
+                        if len(result.errors) > 5:
+                            detail += f"; ... and {len(result.errors) - 5} more"
+                        summary = f"Scheduler compile completed with {len(result.errors)} errors: {detail}"
+                        append_global_log(settings.brain_home, "COMPILE", summary, settings.scheduler_dry_run)
+                        _record_compile_failure_alarm(settings, summary)
+                    else:
+                        clear_scheduler_compile_failure_state(settings)
                     schedule_embedding_refresh_after_compile_result(settings, result, reason="scheduler compile")
                 except Exception as exc:  # noqa: BLE001 - scheduler must surface provider/filesystem failures without exiting.
                     summary = f"Scheduler compile failed: {exc}"
                     record_failure("compile", started, datetime.now(), settings.scheduler_dry_run, summary, settings, source="scheduler")
                     append_global_log(settings.brain_home, "COMPILE", summary, settings.scheduler_dry_run)
+                    _record_compile_failure_alarm(settings, summary)
         except OperationAlreadyRunning:
             pass
         sync_log_to_telemetry_quietly(settings)

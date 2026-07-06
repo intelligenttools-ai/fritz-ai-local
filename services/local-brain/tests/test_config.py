@@ -72,3 +72,9 @@ def test_telemetry_retention_days_defaults_to_90(tmp_path) -> None:
 def test_telemetry_retention_days_env_override(tmp_path) -> None:
     settings = Settings(_env_file=None, LOCAL_BRAIN_HOME=tmp_path, TELEMETRY_RETENTION_DAYS="7")
     assert settings.telemetry_retention_days == 7
+
+
+def test_compile_safety_threshold_defaults(tmp_path) -> None:
+    settings = Settings(_env_file=None, LOCAL_BRAIN_HOME=tmp_path)
+    assert settings.compile_context_budget_chars == 48000
+    assert settings.scheduler_compile_failure_alarm_threshold == 3

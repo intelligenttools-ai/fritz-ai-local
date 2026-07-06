@@ -75,9 +75,11 @@ class Settings(BaseSettings):
     lint_skill_name: str = Field(default="brain-lint", validation_alias=AliasChoices("LOCAL_BRAIN_LINT_SKILL_NAME", "LINT_SKILL_NAME"))
     allow_first_external_sync: bool = Field(default=False, validation_alias=AliasChoices("LOCAL_BRAIN_ALLOW_FIRST_EXTERNAL_SYNC", "ALLOW_FIRST_EXTERNAL_SYNC"))
     capture_max_chars: int = Field(default=4000, ge=500, validation_alias=AliasChoices("LOCAL_BRAIN_CAPTURE_MAX_CHARS", "CAPTURE_MAX_CHARS"))
+    compile_context_budget_chars: int = Field(default=48000, ge=1000, validation_alias=AliasChoices("LOCAL_BRAIN_COMPILE_CONTEXT_BUDGET_CHARS", "COMPILE_CONTEXT_BUDGET_CHARS"))
     compile_max_captures: int | None = Field(default=DEFAULT_COMPILE_MAX_CAPTURES, ge=1, validation_alias=AliasChoices("LOCAL_BRAIN_COMPILE_MAX_CAPTURES", "COMPILE_MAX_CAPTURES"))
     correlation_top_k: int = Field(default=5, ge=0, validation_alias=AliasChoices("LOCAL_BRAIN_CORRELATION_TOP_K", "CORRELATION_TOP_K"))
     correlation_max_chars: int = Field(default=4000, ge=0, validation_alias=AliasChoices("LOCAL_BRAIN_CORRELATION_MAX_CHARS", "CORRELATION_MAX_CHARS"))
+    scheduler_compile_failure_alarm_threshold: int = Field(default=3, ge=1, validation_alias=AliasChoices("LOCAL_BRAIN_SCHEDULER_COMPILE_FAILURE_ALARM_THRESHOLD", "SCHEDULER_COMPILE_FAILURE_ALARM_THRESHOLD"))
     telemetry_enabled: bool = Field(default=True, validation_alias=AliasChoices("LOCAL_BRAIN_TELEMETRY_ENABLED", "TELEMETRY_ENABLED"))
     telemetry_store_query_text: bool = Field(default=True, validation_alias=AliasChoices("LOCAL_BRAIN_TELEMETRY_STORE_QUERY_TEXT", "TELEMETRY_STORE_QUERY_TEXT"))
     # Telemetry retention: events older than this many days are pruned. 0 keeps
@@ -224,6 +226,8 @@ CONFIG_FIELD_META: dict[str, ConfigFieldMeta] = {
     "scheduler_enabled": ConfigFieldMeta(mutable=True, env_key="SCHEDULER_ENABLED", type="bool"),
     "interval_minutes": ConfigFieldMeta(mutable=True, env_key="BRAIN_INTERVAL_MINUTES", type="int"),
     "scheduler_dry_run": ConfigFieldMeta(mutable=True, env_key="SCHEDULER_DRY_RUN", type="bool"),
+    "scheduler_compile_failure_alarm_threshold": ConfigFieldMeta(mutable=True, env_key="SCHEDULER_COMPILE_FAILURE_ALARM_THRESHOLD", type="int"),
+    "compile_context_budget_chars": ConfigFieldMeta(mutable=True, env_key="COMPILE_CONTEXT_BUDGET_CHARS", type="int"),
     "reconciliation_autonomy": ConfigFieldMeta(mutable=True, env_key="RECONCILIATION_AUTONOMY", type="autonomy"),
     "telemetry_enabled": ConfigFieldMeta(mutable=True, env_key="TELEMETRY_ENABLED", type="bool"),
     "telemetry_store_query_text": ConfigFieldMeta(mutable=True, env_key="TELEMETRY_STORE_QUERY_TEXT", type="bool"),
@@ -285,6 +289,9 @@ class ConfigCoercionError(ValueError):
 
 _TRUE = {"true", "1", "yes", "on"}
 _FALSE = {"false", "0", "no", "off"}
+_INT_MINIMUMS = {
+    "compile_context_budget_chars": 1000,
+}
 
 
 def coerce_config_value(field: str, raw: object) -> object:
@@ -319,8 +326,9 @@ def coerce_config_value(field: str, raw: object) -> object:
             value = int(str(raw).strip())
         except (TypeError, ValueError):
             raise ConfigCoercionError(f"{field} must be an integer, got: {raw!r}") from None
-        if value < 1:
-            raise ConfigCoercionError(f"{field} must be >= 1, got: {value}")
+        minimum = _INT_MINIMUMS.get(field, 1)
+        if value < minimum:
+            raise ConfigCoercionError(f"{field} must be >= {minimum}, got: {value}")
         return value
     if meta.type == "float":
         try:
