@@ -210,7 +210,9 @@ def check_mcp_token_wiring(context_parts: list[str]):
         f"\n## Brain MCP token not exported ({token_env} missing)\n"
         f"The Local Brain service is reachable but `{token_env}` is not set in this "
         f"session's environment, so the `fritz-brain` MCP tools cannot authenticate. "
-        f"Run `{fix}` to wire it, then restart the session.\n"
+        f"Run `{fix}` if token wiring has not been installed yet, then quit and restart "
+        f"the agent application. Starting a new session in the same app can inherit the "
+        f"old environment.\n"
     )
 
 

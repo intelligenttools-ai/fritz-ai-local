@@ -48,13 +48,20 @@ def test_reachable_and_token_missing_emits_warning(monkeypatch):
     assert "Brain MCP token not exported" in out
     assert "LOCAL_BRAIN_API_TOKEN" in out
     assert "/fritz:update" in out  # non-Claude rendering names the fix
+    assert "quit and restart the agent application" in out
+    assert "Starting a new session in the same app can inherit the old environment" in out
+    assert "restart the session" not in out
 
 
 def test_reachable_and_token_missing_claude_uses_plugin_skill_name(monkeypatch):
+    _clear_claude_markers(monkeypatch)
     monkeypatch.setenv("CLAUDECODE", "1")
     out = _run(monkeypatch, available=True, token_env_set=False)
     assert "Brain MCP token not exported" in out
     assert "/fritz-brain:update" in out
+    assert "quit and restart the agent application" in out
+    assert "Starting a new session in the same app can inherit the old environment" in out
+    assert "restart the session" not in out
 
 
 def test_reachable_and_token_present_no_warning(monkeypatch):
