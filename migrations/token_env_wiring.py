@@ -22,9 +22,9 @@ def valid_env_name(name: str) -> bool:
 def token_env_names(token_env: str) -> list[str]:
     """Return env vars to wire.
 
-    ``api_token_env`` remains supported for generic service callers, but the
-    Claude plugin MCP header is fixed to ``LOCAL_BRAIN_API_TOKEN``. Mirror the
-    same registry-backed token into both when an install uses a custom env var.
+    ``api_token_env`` remains supported for generic service callers. Keep
+    ``LOCAL_BRAIN_API_TOKEN`` mirrored for older shells and non-MCP consumers
+    even though Claude MCP auth is now installer-owned user-scope config.
     """
     primary = token_env if valid_env_name(token_env) else CLAUDE_MCP_TOKEN_ENV
     names = [primary]
@@ -56,7 +56,7 @@ def build_zshenv_block(token_env: str) -> str:
     lines = [
         BLOCK_START,
         "# Managed by fritz-local. Exports the Local Brain MCP token from",
-        "# ~/.brain/registry.yaml so plugin MCP headers can authenticate.",
+        "# ~/.brain/registry.yaml for local service consumers.",
         "# Do not edit by hand; re-run /fritz-brain:update.",
     ]
     for name in token_env_names(token_env):

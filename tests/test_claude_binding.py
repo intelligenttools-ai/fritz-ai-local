@@ -135,12 +135,14 @@ def test_plugin_json_valid_with_required_fields():
 
 
 def test_update_skill_reports_token_wiring_and_plugin_version_transition():
-    """#259 — /fritz-brain:update must report host token wiring and plugin version drift."""
+    """#259/#278 — update reports token env wiring and Claude MCP registration."""
     canonical = (REPO_ROOT / "skills" / "update" / "SKILL.md").read_text(encoding="utf-8")
     generated = (PLUGIN_SKILLS / "update" / "SKILL.md").read_text(encoding="utf-8")
 
     for content, slash in ((canonical, "/update"), (generated, "/fritz-brain:update")):
         assert "Token wiring status" in content
+        assert "Claude MCP registration status" in content
+        assert "006-claude-user-scope-mcp-registration.py --refresh" in content
         assert "LaunchAgent" in content
         assert "zshenv" in content
         assert "Plugin version transition" in content
@@ -168,42 +170,19 @@ def test_repo_root_marketplace_points_at_claude_binding():
     assert fritz.get("source") == "bindings/claude"
 
 
-# --- MCP: brain server registration (#237) ----------------------------------
+# --- MCP: installer-owned user-scope registration (#278) --------------------
 
 
-def test_mcp_json_registers_fritz_brain_http_server():
-    """#237 — the plugin registers the brain MCP server via a plugin-root
-    ``.mcp.json`` (Claude Code's default discovery path for plugin-provided MCP
-    servers; see ``bindings/claude/README.md`` for the investigation notes).
-
-    Asserts: server name, ``type: http``, the streamable-HTTP endpoint (trailing
-    slash), and an Authorization header using the ``${LOCAL_BRAIN_API_TOKEN}``
-    placeholder — never a hardcoded secret. The default-value form
-    (``${LOCAL_BRAIN_API_TOKEN:-}``) is required so an unset token expands to an
-    empty string instead of Claude Code failing to parse the config (hard
-    graceful-degradation requirement).
-    """
-    assert PLUGIN_MCP.is_file(), ".mcp.json must exist at the plugin root"
-    data = json.loads(PLUGIN_MCP.read_text(encoding="utf-8"))
-    server = data.get("fritz-brain")
-    assert server is not None, "must register a server named 'fritz-brain'"
-    assert server.get("type") == "http"
-    assert server.get("url") == "http://127.0.0.1:8765/mcp/"
-    auth = server.get("headers", {}).get("Authorization", "")
-    assert auth == "Bearer ${LOCAL_BRAIN_API_TOKEN:-}", "Authorization must use env placeholder with safe default"
+def test_plugin_does_not_ship_mcp_json():
+    """#278 — the plugin must not ship env-dependent MCP registration."""
+    assert not PLUGIN_MCP.exists(), "Claude MCP registration is installer-owned user scope"
 
 
-def test_mcp_json_does_not_hardcode_a_secret():
-    """#237 — no literal bearer token / secret-looking value anywhere in .mcp.json."""
-    raw = PLUGIN_MCP.read_text(encoding="utf-8")
-    data = json.loads(raw)
-    for server in data.values():
-        for value in server.get("headers", {}).values():
-            # Every header value must be an env placeholder (contains "${").
-            assert "${" in value, f"Header value must use env expansion: {value}"
-            # If it's a Bearer token, it must be exactly the safe placeholder.
-            if value.startswith("Bearer "):
-                assert value == "Bearer ${LOCAL_BRAIN_API_TOKEN:-}", f"Bearer token must be the safe placeholder, not: {value}"
+def test_readme_documents_installer_owned_mcp_registration():
+    readme = (PLUGIN / "README.md").read_text(encoding="utf-8")
+    assert "does **not** ship a plugin-root `.mcp.json`" in readme
+    assert "claude mcp add-json fritz-brain" in readme
+    assert "Bearer <literal-from-registry>" in readme
 
 
 # --- hooks.json: events, ordering, and resolvable commands ------------------
