@@ -291,6 +291,27 @@ def test_session_start_compile_pending_non_claude_unchanged(monkeypatch, capsys,
     assert "run `/fritz:brain-compile` manually" in ctx
 
 
+def test_session_start_surfaces_scheduler_compile_failure_alert(monkeypatch, capsys, tmp_path):
+    _clear_claude_markers(monkeypatch)
+    (tmp_path / ".scheduler-compile-failures.json").write_text(
+        json.dumps(
+            {
+                "count": 3,
+                "alert_threshold": 3,
+                "since": "2026-07-06T00:59:00",
+                "summary": "Scheduler compile completed with 1 errors: oversized.md failed",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    ctx = _run_session_start_main(monkeypatch, capsys, tmp_path, service_available=True)
+
+    assert "Brain scheduler alert" in ctx
+    assert "scheduler compile failing since 2026-07-06T00:59:00, see log" in ctx
+    assert "oversized.md failed" in ctx
+
+
 # ---------------------------------------------------------------------------
 # GAP 1: local_brain_service_setup_forcing_instruction() runtime-aware.
 # ---------------------------------------------------------------------------

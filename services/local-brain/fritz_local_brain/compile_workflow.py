@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -19,6 +20,7 @@ from .captures import (
     increment_capture_attempts,
     list_all_captures,
     mark_captures_processed,
+    park_captures,
     quarantine_captures,
     read_capture,
 )
@@ -31,10 +33,10 @@ from .logs import append_global_log, append_reconciliation_undo
 from .manifests import load_manifest, resolve_manifest_path
 from .models import AppliedArticleWrite, ArticleWriteProposal, CompileRunRequest, CompileRunResult, ReconciliationOutcome
 from .paths import PathMapper
-from .prompts import COMPILE_POLICY
+from .prompts import COMPILE_MVP_INSTRUCTIONS, COMPILE_POLICY, COMPILE_SYSTEM_PROMPT
 from .registry import RegistryError, load_registry, registered_vault_paths
 from .security import PolicyError, validate_article_write, validate_store_article_write
-from .telemetry import sync_log_to_telemetry_quietly
+from .telemetry import record_event, sync_log_to_telemetry_quietly
 
 
 def _compile_capture_prompt(store_mode: bool, vault_names: list[str]) -> str:
@@ -85,6 +87,15 @@ COMPILE_MAX_CAPTURE_ATTEMPTS = 3
 # eventually quarantined.
 COMPILE_MAX_CAPTURE_ATTEMPTS_ABSOLUTE = 10
 
+_CONTEXT_LENGTH_MARKERS = (
+    "context length",
+    "context_length",
+    "maximum context",
+    "max context",
+    "input length",
+    "too many tokens",
+)
+
 
 def _resolve_capture_source(brain_home: Path, source: str) -> Path:
     if source.startswith("~/.brain/"):
@@ -106,6 +117,87 @@ def _skipped_capture_paths(brain_home: Path, allowed_sources: set[Path], skipped
         if source_path in allowed_sources:
             accounted.add(source_path)
     return accounted
+
+
+def _estimate_compile_request_chars(
+    *,
+    prompt: str,
+    capture_paths: list[Path],
+    capture_max_chars: int,
+    vault_names: list[str],
+    article_paths: dict[str, list[str]],
+    related_articles: list[dict],
+) -> int:
+    """Estimate the full compile request envelope before submitting to an LLM.
+
+    The service does not know the provider tokenizer, so this is a conservative
+    character budget over the stable request pieces: system prompt, instructions,
+    policy, user prompt, and the tool context the agent will load.
+    """
+
+    context = {
+        "captures": [
+            {
+                "path": str(path),
+                "content": read_capture(path, capture_max_chars),
+            }
+            for path in capture_paths
+        ],
+        "vault_names": vault_names,
+        "article_paths": article_paths,
+        "related_articles": related_articles,
+    }
+    return sum(
+        len(part)
+        for part in (
+            COMPILE_SYSTEM_PROMPT,
+            COMPILE_MVP_INSTRUCTIONS,
+            COMPILE_POLICY,
+            prompt,
+            json.dumps(context, sort_keys=True, default=str),
+        )
+    )
+
+
+def _is_context_length_error(exc: Exception) -> bool:
+    text = f"{type(exc).__name__}: {exc}".lower()
+    return any(marker in text for marker in _CONTEXT_LENGTH_MARKERS)
+
+
+def _record_compile_event(settings: Settings, event_type: str, *, status: str, payload: dict) -> None:
+    try:
+        record_event(settings, event_type, agent="local-brain", status=status, payload=payload)
+    except Exception:  # noqa: BLE001 - telemetry must never break compile.
+        pass
+
+
+def _park_capture_with_reason(
+    *,
+    settings: Settings,
+    capture_path: Path,
+    capture_hashes: dict[Path, str],
+    reason: str,
+    dry_run: bool,
+    event_type: str,
+) -> list[Path]:
+    parked: list[Path] = []
+    if not dry_run:
+        parked = park_captures(settings.brain_home, [capture_path], reason=reason, expected_hashes=capture_hashes)
+        if parked:
+            append_global_log(
+                settings.brain_home,
+                "COMPILE",
+                f"parked {capture_path.name}: {reason} -> capture/parked",
+                dry_run,
+            )
+            clear_capture_attempts(settings.brain_home, {capture_path.resolve()})
+            _record_compile_event(
+                settings,
+                event_type,
+                status="parked",
+                payload={"capture": capture_path.name, "reason": reason, "parked_path": str(parked[0])},
+            )
+    return parked
 
 
 def _repair_single_capture_source(
@@ -405,7 +497,37 @@ async def run_compile(settings: Settings, request: CompileRunRequest, trusted: b
         # #150 accounting below always has them defined (#153 Fix 2).
         capture_applied_ok = False
         capture_failed = False
+        capture_terminal = False
+        skip_agent_run = False
         capture_skipped: list[str] = []
+
+        estimated_chars = _estimate_compile_request_chars(
+            prompt=prompt,
+            capture_paths=[capture_path],
+            capture_max_chars=settings.capture_max_chars,
+            vault_names=vault_names,
+            article_paths=article_paths,
+            related_articles=related,
+        )
+        if estimated_chars > settings.compile_context_budget_chars:
+            reason = (
+                f"estimated compile request {estimated_chars} chars exceeds configured budget "
+                f"{settings.compile_context_budget_chars} chars before LLM call"
+            )
+            error = f"{capture_path.name}: parked before LLM call: {reason}"
+            errors.append(error)
+            all_skipped.append(f"{capture_path}: parked: {reason}")
+            parked = _park_capture_with_reason(
+                settings=settings,
+                capture_path=capture_path,
+                capture_hashes=capture_hashes,
+                reason=reason,
+                dry_run=request.dry_run,
+                event_type="compile_capture_parked",
+            )
+            capture_failed = True
+            capture_terminal = bool(parked) or request.dry_run
+            skip_agent_run = True
 
         # ---- Run the agent + validate/apply for THIS capture, isolated so an
         # exception on one capture (unstable LLM endpoint: transport error,
@@ -414,61 +536,76 @@ async def run_compile(settings: Settings, request: CompileRunRequest, trusted: b
         # captures still run and earlier captures' post-loop mark/archive still
         # happens. ----
         try:
-            result = await agent.run(prompt, deps=deps, usage_limits=UsageLimits(request_limit=AGENT_REQUEST_LIMIT))
-            output = result.output
+            if not skip_agent_run:
+                result = await agent.run(prompt, deps=deps, usage_limits=UsageLimits(request_limit=AGENT_REQUEST_LIMIT))
+                output = result.output
 
-            # Repair a model-mangled source name for this one capture, then validate +
-            # apply its proposal(s) (1:1 coverage, #153).  Proposals are NOT pre-filtered
-            # by source: validation requires every cited source to be in single_allowed,
-            # so a missing/hallucinated/stray source is surfaced as an error and routes
-            # this capture to the retry path — never silently dropped.
-            capture_proposals = [
-                _repair_single_capture_source(settings.brain_home, capture_path, proposal)
-                for proposal in output.proposals
-            ]
-            capture_proposals_repaired: list[ArticleWriteProposal] = []
-            for repaired, warning in capture_proposals:
-                capture_proposals_repaired.append(repaired)
-                if warning:
-                    nonfatal_warnings.append(warning)
-            capture_proposals = capture_proposals_repaired
-            # Keep only skips that account for THIS capture; a skip citing some other
-            # path must not mark this capture done.
-            capture_skipped = [
-                item
-                for item in output.skipped
-                if _skipped_capture_paths(settings.brain_home, single_allowed, [item])
-            ]
-            all_proposals.extend(capture_proposals)
-            all_skipped.extend(capture_skipped)
+                # Repair a model-mangled source name for this one capture, then validate +
+                # apply its proposal(s) (1:1 coverage, #153).  Proposals are NOT pre-filtered
+                # by source: validation requires every cited source to be in single_allowed,
+                # so a missing/hallucinated/stray source is surfaced as an error and routes
+                # this capture to the retry path — never silently dropped.
+                capture_proposals = [
+                    _repair_single_capture_source(settings.brain_home, capture_path, proposal)
+                    for proposal in output.proposals
+                ]
+                capture_proposals_repaired: list[ArticleWriteProposal] = []
+                for repaired, warning in capture_proposals:
+                    capture_proposals_repaired.append(repaired)
+                    if warning:
+                        nonfatal_warnings.append(warning)
+                capture_proposals = capture_proposals_repaired
+                # Keep only skips that account for THIS capture; a skip citing some other
+                # path must not mark this capture done.
+                capture_skipped = [
+                    item
+                    for item in output.skipped
+                    if _skipped_capture_paths(settings.brain_home, single_allowed, [item])
+                ]
+                all_proposals.extend(capture_proposals)
+                all_skipped.extend(capture_skipped)
 
-            capture_applied_ok, capture_failed = _apply_capture_proposals(
-                settings=settings,
-                request=request,
-                store_mode=store_mode,
-                brain_store_root=brain_store_root,
-                vault_paths=vault_paths,
-                manifests=manifests,
-                capture_proposals=capture_proposals,
-                capture_source=capture_source,
-                single_allowed=single_allowed,
-                processed_sources=processed_sources,
-                simulated_article_paths=simulated_article_paths,
-                simulated_target_paths=simulated_target_paths,
-                applied=applied,
-                applied_store_targets=applied_store_targets,
-                processed_capture_paths=processed_capture_paths,
-                errors=errors,
-            )
+                capture_applied_ok, capture_failed = _apply_capture_proposals(
+                    settings=settings,
+                    request=request,
+                    store_mode=store_mode,
+                    brain_store_root=brain_store_root,
+                    vault_paths=vault_paths,
+                    manifests=manifests,
+                    capture_proposals=capture_proposals,
+                    capture_source=capture_source,
+                    single_allowed=single_allowed,
+                    processed_sources=processed_sources,
+                    simulated_article_paths=simulated_article_paths,
+                    simulated_target_paths=simulated_target_paths,
+                    applied=applied,
+                    applied_store_targets=applied_store_targets,
+                    processed_capture_paths=processed_capture_paths,
+                    errors=errors,
+                )
         except Exception as exc:  # noqa: BLE001 — one capture's failure must not abort the run (#153)
-            errors.append(f"{capture_path.name}: agent run failed: {exc}")
+            if _is_context_length_error(exc):
+                reason = f"context-length error from LLM after preflight estimate {estimated_chars} chars: {exc}"
+                errors.append(f"{capture_path.name}: agent run failed: {reason}")
+                all_skipped.append(f"{capture_path}: parked: {reason}")
+                parked = _park_capture_with_reason(
+                    settings=settings,
+                    capture_path=capture_path,
+                    capture_hashes=capture_hashes,
+                    reason=reason,
+                    dry_run=request.dry_run,
+                    event_type="compile_capture_context_length_error",
+                )
+                capture_terminal = bool(parked)
+            else:
+                errors.append(f"{capture_path.name}: agent run failed: {exc}")
             capture_failed = True
 
         # ---- Per-capture #150 accounting (1:1) ----
         # Applied → processed; explicitly skipped (and nothing failed) → processed +
         # archived; uncovered OR a failed/invalid proposal → increment this
         # capture's attempt counter and leave it pending / quarantine per #150.
-        if not request.dry_run and not approval_blocked:
+        if not request.dry_run and not approval_blocked and not capture_terminal:
             skipped_here = _skipped_capture_paths(settings.brain_home, single_allowed, capture_skipped)
             accounted = capture_applied_ok or (bool(skipped_here) and not capture_failed)
             if accounted:
@@ -552,6 +689,9 @@ async def run_compile(settings: Settings, request: CompileRunRequest, trusted: b
 
     for warning in nonfatal_warnings:
         append_global_log(settings.brain_home, "COMPILE", warning, request.dry_run)
+
+    for error in errors:
+        append_global_log(settings.brain_home, "COMPILE", f"error: {error}", request.dry_run)
 
     append_global_log(
         settings.brain_home,

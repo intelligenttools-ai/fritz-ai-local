@@ -626,7 +626,9 @@ def test_settings_group_field_membership() -> None:
     assert '"llm_protocol", "llm_base_url", "llm_model", "llm_api_key", "llm_timeout_seconds"' in groups_src
     assert '"embedding_enabled", "embedding_protocol", "embedding_base_url", "embedding_model",' in groups_src
     assert '"embedding_api_key", "embedding_timeout_seconds"' in groups_src
-    assert '"scheduler_enabled", "interval_minutes", "scheduler_dry_run", "reconciliation_autonomy"' in groups_src
+    assert '"scheduler_enabled", "interval_minutes", "scheduler_dry_run",' in groups_src
+    assert '"scheduler_compile_failure_alarm_threshold", "compile_context_budget_chars",' in groups_src
+    assert '"reconciliation_autonomy"' in groups_src
     assert '"telemetry_enabled", "telemetry_store_query_text", "telemetry_retention_days"' in groups_src
 
 

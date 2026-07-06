@@ -486,6 +486,88 @@ def quarantine_captures(brain_home: Path, paths: list[Path], expected_hashes: di
     return quarantined
 
 
+def park_captures(
+    brain_home: Path,
+    paths: list[Path],
+    *,
+    reason: str,
+    expected_hashes: dict[Path, str] | None = None,
+) -> list[Path]:
+    """Move captures into capture/parked/YYYY-MM-DD/ with a reason sidecar.
+
+    Parking is a terminal visible state for captures that cannot be submitted to
+    the compile model safely, for example because the estimated request would
+    exceed the configured context budget. Unlike the retry/quarantine path,
+    parked captures are not expected to succeed unchanged on a later run.
+    """
+
+    parked: list[Path] = []
+    capture_parent = brain_home / "capture"
+    if capture_parent.is_symlink() or not capture_parent.is_dir():
+        return parked
+    capture_root = capture_parent.resolve()
+    parked_parent = capture_parent / "parked"
+    for path in paths:
+        try:
+            resolved = path.resolve(strict=True)
+            relative = resolved.relative_to(capture_root)
+        except (OSError, ValueError):
+            continue
+        if path.is_symlink() or not path.is_file():
+            continue
+        if relative.parts[0] in {"parked", "quarantine"}:
+            continue
+        if relative.parts[:2] == ("inbox", "archive"):
+            continue
+        current_hash = capture_hash(path)
+        if expected_hashes is not None and expected_hashes.get(resolved, expected_hashes.get(path)) != current_hash:
+            continue
+        if parked_parent.exists() and parked_parent.is_symlink():
+            continue
+        parked_dir = parked_parent / datetime.now().strftime("%Y-%m-%d")
+        try:
+            parked_dir.mkdir(parents=True, exist_ok=True)
+            parked_dir.resolve().relative_to(parked_parent.resolve())
+        except (OSError, ValueError):
+            continue
+        if parked_parent.is_symlink() or parked_dir.is_symlink():
+            continue
+        target = parked_dir / path.name
+        if target.exists():
+            stem = target.stem
+            suffix = target.suffix
+            for index in range(1, 1000):
+                candidate = parked_dir / f"{stem}-{index}{suffix}"
+                if not candidate.exists():
+                    target = candidate
+                    break
+            else:
+                continue
+        try:
+            shutil.move(str(path), str(target))
+        except OSError:
+            continue
+        sidecar = target.with_name(f"{target.name}.reason.json")
+        try:
+            sidecar.write_text(
+                json.dumps(
+                    {
+                        "source": str(resolved),
+                        "parked_at": datetime.now().isoformat(),
+                        "reason": reason,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+        parked.append(target)
+    return parked
+
+
 def read_capture(path: Path, max_chars: int = 12000) -> str:
     text = read_capture_raw(path)
     if len(text) > max_chars:

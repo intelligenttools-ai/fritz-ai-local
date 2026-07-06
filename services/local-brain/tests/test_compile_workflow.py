@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sqlite3
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -9,7 +11,7 @@ import pytest
 
 from fritz_local_brain import compile_workflow
 from fritz_local_brain.config import Settings
-from fritz_local_brain.models import ArticleWriteProposal, CompileAgentOutput, CompileRunRequest
+from fritz_local_brain.models import ArticleWriteProposal, CompileAgentOutput, CompileRunRequest, CompileRunResult
 
 
 class FakeCompileAgent:
@@ -220,6 +222,11 @@ class CapturePathRecordingAgent:
         return SimpleNamespace(output=self.outputs.pop(0))
 
 
+class MustNotRunAgent:
+    async def run(self, prompt: str, *, deps: object, usage_limits: object) -> SimpleNamespace:
+        raise AssertionError("agent.run must not be called for an over-budget compile request")
+
+
 def _manifest_vault(tmp_path: Path) -> tuple[Path, Path]:
     """Create a registry+manifest vault and return (brain_home, skills_dir)."""
     brain_home = tmp_path / "brain"
@@ -266,6 +273,94 @@ def test_compile_ac1_each_run_processes_exactly_one_capture(
     assert len(agent.seen_paths) == 3, "one agent.run per capture"
     assert all(len(paths) == 1 for paths in agent.seen_paths), "each run's deps must carry exactly one capture"
     assert [paths[0] for paths in agent.seen_paths] == captures, "captures processed oldest-first, one at a time"
+
+
+def test_compile_preflight_splits_oversized_backlog_into_single_capture_requests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#273: a backlog that would exceed budget as one request is still drained by
+    per-capture requests that individually fit the preflight budget."""
+
+    brain_home, skills_dir = _manifest_vault(tmp_path)
+    captures = []
+    for index in range(2):
+        capture = brain_home / "capture" / "inbox" / f"large-{index}.md"
+        capture.write_text("# Large\n\n" + ("durable fact " * 80), encoding="utf-8")
+        os.utime(capture, (100 + index, 100 + index))
+        captures.append(capture)
+
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=skills_dir)
+    prompt = compile_workflow._compile_capture_prompt(store_mode=False, vault_names=["test"])
+    single_estimates = [
+        compile_workflow._estimate_compile_request_chars(
+            prompt=prompt,
+            capture_paths=[capture],
+            capture_max_chars=settings.capture_max_chars,
+            vault_names=["test"],
+            article_paths={"test": []},
+            related_articles=[],
+        )
+        for capture in captures
+    ]
+    batch_estimate = compile_workflow._estimate_compile_request_chars(
+        prompt=prompt,
+        capture_paths=captures,
+        capture_max_chars=settings.capture_max_chars,
+        vault_names=["test"],
+        article_paths={"test": []},
+        related_articles=[],
+    )
+    settings.compile_context_budget_chars = max(single_estimates) + 1
+    assert batch_estimate > settings.compile_context_budget_chars
+
+    agent = CapturePathRecordingAgent(
+        [CompileAgentOutput(skipped=[f"{capture}: no durable knowledge"]) for capture in captures]
+    )
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
+
+    result = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
+
+    assert result.errors == []
+    assert agent.seen_paths == [[captures[0]], [captures[1]]]
+    assert all(not capture.exists() for capture in captures), "both captures reached terminal skipped state"
+
+
+def test_compile_preflight_parks_single_oversized_capture_with_log_and_telemetry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#273: a capture that cannot fit even alone is parked with explicit reason."""
+
+    brain_home, skills_dir = _manifest_vault(tmp_path)
+    capture = brain_home / "capture" / "inbox" / "too-big.md"
+    capture.write_text("# Too Big\n\n" + ("x" * 5000), encoding="utf-8")
+
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: MustNotRunAgent())
+    settings = Settings(
+        LOCAL_BRAIN_HOME=brain_home,
+        LOCAL_BRAIN_SKILLS_DIR=skills_dir,
+        LOCAL_BRAIN_COMPILE_CONTEXT_BUDGET_CHARS=1000,
+    )
+
+    result = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
+
+    assert any("too-big.md" in err and "parked before LLM call" in err for err in result.errors)
+    assert not capture.exists(), "oversized capture must not remain pending for blind retries"
+    parked = list((brain_home / "capture" / "parked").glob("**/too-big.md"))
+    assert parked, "oversized capture must land in capture/parked"
+    reason_text = parked[0].with_name("too-big.md.reason.json").read_text(encoding="utf-8")
+    assert "estimated compile request" in reason_text
+
+    log_text = (brain_home / "log.md").read_text(encoding="utf-8")
+    assert "parked too-big.md" in log_text
+    assert "estimated compile request" in log_text
+
+    conn = sqlite3.connect(brain_home / "telemetry.db")
+    try:
+        rows = conn.execute("SELECT event_type, status, payload FROM events").fetchall()
+    finally:
+        conn.close()
+    assert any(row[0] == "compile_capture_parked" and row[1] == "parked" for row in rows)
+    assert any("too-big.md" in row[2] for row in rows if row[2])
 
 
 def test_compile_ac2_ten_capture_backlog_reaches_full_coverage(
@@ -533,7 +628,7 @@ def test_scheduler_runs_compile_with_trusted_true(
 
     monkeypatch.setattr(scheduler, "run_compile", fake_run_compile)
     monkeypatch.setattr(scheduler.asyncio, "sleep", no_sleep)
-    monkeypatch.setattr(scheduler, "record_compile", lambda result: None)
+    monkeypatch.setattr(scheduler, "record_compile", lambda *a, **k: None)
     monkeypatch.setattr(scheduler, "schedule_embedding_refresh_after_compile_result", lambda *a, **k: None)
     monkeypatch.setattr(scheduler, "sync_log_to_telemetry_quietly", lambda *a, **k: None)
     monkeypatch.setattr(scheduler, "prune_old_events_quietly", lambda *a, **k: None)
@@ -546,6 +641,60 @@ def test_scheduler_runs_compile_with_trusted_true(
     )
     asyncio.run(asyncio.wait_for(scheduler.scheduler_loop(settings, stop=stop), timeout=5))
     assert captured.get("trusted") is True
+
+
+def test_scheduler_compile_failure_loop_logs_alert_and_telemetry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from fritz_local_brain import scheduler
+
+    calls = {"count": 0}
+    stop = asyncio.Event()
+
+    async def fake_run_compile(settings, request, trusted=False):
+        calls["count"] += 1
+        if calls["count"] >= 3:
+            stop.set()
+        return CompileRunResult(
+            run_id=f"run-{calls['count']}",
+            started_at=datetime(2026, 7, 6, 0, calls["count"]),
+            finished_at=datetime(2026, 7, 6, 0, calls["count"], 1),
+            dry_run=False,
+            captures_considered=1,
+            errors=["oversized.md: agent run failed: Error code: 400 - input length exceeds context length"],
+        )
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(scheduler, "run_compile", fake_run_compile)
+    monkeypatch.setattr(scheduler.asyncio, "sleep", no_sleep)
+    monkeypatch.setattr(scheduler, "record_compile", lambda *a, **k: None)
+    monkeypatch.setattr(scheduler, "schedule_embedding_refresh_after_compile_result", lambda *a, **k: None)
+    monkeypatch.setattr(scheduler, "sync_log_to_telemetry_quietly", lambda *a, **k: None)
+    monkeypatch.setattr(scheduler, "prune_old_events_quietly", lambda *a, **k: None)
+
+    settings = Settings(
+        LOCAL_BRAIN_HOME=tmp_path,
+        LOCAL_BRAIN_SKILLS_DIR=tmp_path,
+        SCHEDULER_ENABLED=True,
+        SCHEDULER_DRY_RUN=False,
+        LOCAL_BRAIN_SCHEDULER_COMPILE_FAILURE_ALARM_THRESHOLD=3,
+    )
+    asyncio.run(asyncio.wait_for(scheduler.scheduler_loop(settings, stop=stop), timeout=5))
+
+    log_text = (tmp_path / "log.md").read_text(encoding="utf-8")
+    assert "ALERT scheduler compile failing since" in log_text
+    assert "oversized.md" in log_text
+    state = (tmp_path / ".scheduler-compile-failures.json").read_text(encoding="utf-8")
+    assert '"count": 3' in state
+
+    conn = sqlite3.connect(tmp_path / "telemetry.db")
+    try:
+        rows = conn.execute("SELECT event_type, status, payload FROM events").fetchall()
+    finally:
+        conn.close()
+    assert any(row[0] == "scheduler_compile_failure_alarm" and row[1] == "alert" for row in rows)
 
 
 def test_compile_apply_keeps_unrepresented_capture_pending(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1832,6 +1981,46 @@ def test_compile_apply_isolates_agent_run_exception_to_one_capture(
     assert boom.resolve() in attempt_keys, "the failing capture must be routed to the retry counter"
 
 
+def test_compile_context_length_400_parks_capture_and_continues_same_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """#273: a context-length 400 is terminal for that capture and does not abort
+    later per-capture work or retry the same failing request unchanged."""
+
+    brain_home, skills_dir = _manifest_vault(tmp_path)
+    good_a = brain_home / "capture" / "inbox" / "good-a.md"
+    boom = brain_home / "capture" / "inbox" / "boom.md"
+    good_b = brain_home / "capture" / "inbox" / "good-b.md"
+    for index, capture in enumerate((good_a, boom, good_b)):
+        capture.write_text(f"# {capture.stem}\n\nContent.\n", encoding="utf-8")
+        os.utime(capture, (100 + index, 100 + index))
+
+    proposal_a = ArticleWriteProposal(
+        vault="test", relative_path="facts/a.md", operation="create",
+        title="A", summary="s", sources=[str(good_a)], body="A body",
+    )
+    proposal_b = ArticleWriteProposal(
+        vault="test", relative_path="facts/b.md", operation="create",
+        title="B", summary="s", sources=[str(good_b)], body="B body",
+    )
+    agent = RaisingNthCompileAgent(
+        [CompileAgentOutput(proposals=[proposal_a]), CompileAgentOutput(proposals=[proposal_b])],
+        raise_on_index=1,
+        exc=RuntimeError("Error code: 400 - the input length exceeds the context length"),
+    )
+    monkeypatch.setattr(compile_workflow, "build_compile_agent", lambda settings, skill_text: agent)
+
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=skills_dir)
+    result = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
+
+    assert {write.title for write in result.applied} == {"A", "B"}
+    assert agent.calls == 3, "same run must continue with later captures"
+    assert any("boom.md" in err and "context-length error" in err for err in result.errors)
+    assert not boom.exists(), "context-length capture must not be retried unchanged"
+    assert list((brain_home / "capture" / "parked").glob("**/boom.md"))
+    assert "boom.md" in (brain_home / "log.md").read_text(encoding="utf-8")
+
+
 def test_compile_dry_run_detects_duplicate_create_against_earlier_same_run_target(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -2021,6 +2210,32 @@ def test_compile_capture_prompt_real_model_produces_proposals(tmp_path: Path) ->
         "real model must return at least one proposal for a substantive capture; "
         "zero proposals → prompt regression"
     )
+
+
+@pytest.mark.skipif(
+    not os.environ.get("LOCAL_BRAIN_SMOKE_LLM"),
+    reason="real-model smoke test; set LOCAL_BRAIN_SMOKE_LLM=1 and configure a live LLM endpoint to run",
+)
+def test_compile_real_model_smoke_oversized_capture_parks_before_context_error(tmp_path: Path) -> None:
+    """#273 real-model smoke companion: oversized captures are stopped by
+    preflight in the same smoke suite that exercises the live compile agent."""
+
+    brain_home, skills_dir = _store_mode_settings(tmp_path)
+    capture = brain_home / "capture" / "inbox" / "oversized-smoke.md"
+    capture.write_text("# Oversized Smoke\n\n" + ("large capture body " * 600), encoding="utf-8")
+
+    settings = Settings(
+        LOCAL_BRAIN_HOME=brain_home,
+        LOCAL_BRAIN_SKILLS_DIR=skills_dir,
+        LOCAL_BRAIN_COMPILE_CONTEXT_BUDGET_CHARS=1000,
+    )
+
+    result = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False)))
+
+    assert result.applied == []
+    assert any("oversized-smoke.md" in err and "parked before LLM call" in err for err in result.errors)
+    assert list((brain_home / "capture" / "parked").glob("**/oversized-smoke.md"))
+    assert "oversized-smoke.md" in (brain_home / "log.md").read_text(encoding="utf-8")
 
 
 # ---------------------------------------------------------------------------
