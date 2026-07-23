@@ -66,6 +66,21 @@ class TranscriptAdapter:
         if os.environ.get("CODEX_SESSION_ID"):
             return "codex"
 
+        # Codex fires its plugin hooks with a Claude-style payload AND sets
+        # CLAUDE_PLUGIN_ROOT, so it would otherwise be misdetected as claude_code
+        # below. Its session transcript lives under ~/.codex/sessions as a
+        # rollout-*.jsonl. Require BOTH the path component and the basename so a
+        # Claude/Pi transcript that merely happens to be named rollout-*.jsonl (or
+        # sits near a .codex-sessions-copy dir) is not misrouted here.
+        transcript_path = hook_input.get("transcript_path", "")
+        _tname = Path(transcript_path).name if transcript_path else ""
+        if (
+            "/.codex/sessions/" in transcript_path
+            and _tname.startswith("rollout-")
+            and _tname.endswith(".jsonl")
+        ):
+            return "codex"
+
         # Path-based detection: transcript or cwd points to pi session storage.
         # This is needed because hooks run as standalone scripts where
         # PI_CODING_AGENT_DIR may not be set.
