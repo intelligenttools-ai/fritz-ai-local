@@ -59,7 +59,8 @@ READMEs:
 | C8 skills | yes (`fritz:*`) | yes (`fritz-*`) | yes (`fritz:*`) | **N/A** — gateway has no skills mechanism |
 | C9 central + project config | yes | yes | yes | yes |
 
-Codex's plugin/skills half is **verified** against `codex-cli 0.139.0`; its hook
+Codex's plugin/skills half is **verified** against `codex-cli 0.139.0` (marketplace
+layout + install re-verified on `0.144.1`); its hook
 half is the documented open capability (Codex has a real hook subsystem but its
 config schema is not introspectable from the local CLI), so the Codex README
 marks those rows `REQUIRES-IN-CODEX-VERIFICATION` rather than overstating them.

@@ -18,7 +18,7 @@
 # the Codex docs anchor is `config-advanced#hooks`. See the maintained, annotated
 # candidate + the VERIFIED `notify` fallback in:
 #
-#     bindings/codex/hooks/config-hooks.toml.example
+#     bindings/codex/plugins/fritz-brain/hooks/config-hooks.toml.example
 #
 # and the canonical->Codex event map + per-capability status in:
 #
