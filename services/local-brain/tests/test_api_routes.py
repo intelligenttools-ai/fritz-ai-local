@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from fritz_local_brain.api import routes
-from fritz_local_brain.models import CompileRunRequest
+from fritz_local_brain.models import CompileRunRequest, SyncRunRequest
 
 
 class _Settings:
@@ -45,7 +45,10 @@ def test_compile_route_schedules_refresh_after_successful_apply(monkeypatch, tmp
         finished_at=datetime.now(),
     )
 
-    async def fake_run_compile(settings, request):
+    seen = {}
+
+    async def fake_run_compile(settings, request, trusted=False):
+        seen["trusted"] = trusted
         return result
 
     monkeypatch.setattr(routes, "get_settings", lambda: _Settings(tmp_path))
@@ -59,3 +62,23 @@ def test_compile_route_schedules_refresh_after_successful_apply(monkeypatch, tmp
 
     assert asyncio.run(routes.compile_run(CompileRunRequest(dry_run=False))) is result
     assert calls == [(result, "compile")]
+    # Operator-initiated HTTP compile runs trusted: the large-batch approval gate
+    # never walls a manual run (no approval token required).
+    assert seen["trusted"] is True
+
+
+def test_sync_route_runs_trusted(monkeypatch, tmp_path) -> None:
+    result = SimpleNamespace(dry_run=False, errors=[], results=[])
+    seen = {}
+
+    async def fake_run_sync(settings, request, trusted=False):
+        seen["trusted"] = trusted
+        return result
+
+    monkeypatch.setattr(routes, "get_settings", lambda: _Settings(tmp_path))
+    monkeypatch.setattr(routes, "run_sync", fake_run_sync)
+    monkeypatch.setattr(routes, "record_sync", lambda result, *a, **k: None)
+
+    assert asyncio.run(routes.sync_run(SyncRunRequest(dry_run=False))) is result
+    # Operator-initiated HTTP sync is approved (pushes) without an approval token.
+    assert seen["trusted"] is True
