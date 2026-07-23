@@ -106,9 +106,11 @@ def test_config_get_api_key_absent_reports_false(monkeypatch, tmp_path) -> None:
     assert fields["llm_api_key"]["value"] is False
 
 
-def test_config_get_requires_auth(monkeypatch, tmp_path) -> None:
+def test_config_get_open_without_auth(monkeypatch, tmp_path) -> None:
+    # Loopback-only deployment: require_token is a no-op, so /v1/config is
+    # reachable with no Bearer token.
     client = _client(monkeypatch, _settings(tmp_path))
-    assert client.get("/v1/config").status_code == 401
+    assert client.get("/v1/config").status_code == 200
 
 
 # ---------------------------------------------------------------------------
@@ -202,9 +204,34 @@ def test_patch_bool_from_string_coerces(monkeypatch, tmp_path) -> None:
     assert settings.telemetry_enabled is False
 
 
-def test_patch_requires_auth(monkeypatch, tmp_path) -> None:
+def test_patch_open_without_auth(monkeypatch, tmp_path) -> None:
+    # Loopback-only deployment: require_token is a no-op, so PATCH /v1/config is
+    # reachable with no Bearer token.
     client = _client(monkeypatch, _settings(tmp_path))
-    assert client.patch("/v1/config", json={"scheduler_enabled": True}).status_code == 401
+    assert client.patch("/v1/config", json={"scheduler_enabled": True}).status_code == 200
+
+
+def test_patch_from_foreign_origin_is_csrf_rejected(monkeypatch, tmp_path) -> None:
+    # CSRF guard: auth is open, so a cross-origin browser write (attacker page)
+    # must be rejected before it can mutate settings.
+    client = _client(monkeypatch, _settings(tmp_path))
+    resp = client.patch(
+        "/v1/config",
+        json={"scheduler_enabled": True},
+        headers={"Origin": "https://evil.example"},
+    )
+    assert resp.status_code == 403
+
+
+def test_patch_from_loopback_origin_is_allowed(monkeypatch, tmp_path) -> None:
+    # The dashboard itself is served from loopback, so its Origin must pass.
+    client = _client(monkeypatch, _settings(tmp_path))
+    resp = client.patch(
+        "/v1/config",
+        json={"scheduler_enabled": True},
+        headers={"Origin": "http://127.0.0.1:8765"},
+    )
+    assert resp.status_code == 200
 
 
 # ---------------------------------------------------------------------------
@@ -876,3 +903,178 @@ def test_patch_same_value_embedding_base_url_does_not_clear_api_key(monkeypatch,
     )
     assert resp.status_code == 200
     assert settings.embedding_api_key == "preset-embed-key"
+
+
+# ---------------------------------------------------------------------------
+# Model-listing endpoints: expose the models a gateway advertises for a picker.
+# ---------------------------------------------------------------------------
+
+
+def _stub_list_models(monkeypatch, *, result=None, boom: str | None = None) -> list[dict]:
+    captured: list[dict] = []
+
+    async def _fake(**kwargs):
+        captured.append(kwargs)
+        if boom is not None:
+            raise RuntimeError(boom)
+        return list(result or [])
+
+    monkeypatch.setattr(routes, "list_models", _fake)
+    return captured
+
+
+def test_llm_models_ok(monkeypatch, tmp_path) -> None:
+    settings = _settings(tmp_path)
+    client = _client(monkeypatch, settings, env_file=tmp_path / ".env")
+    _stub_list_models(monkeypatch, result=["a-model", "b-model"])
+
+    resp = client.post("/v1/config/llm-models", headers=_AUTH, json={})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["models"] == ["a-model", "b-model"]
+    assert body["error"] is None
+
+
+def test_embedding_models_ok(monkeypatch, tmp_path) -> None:
+    settings = _settings(tmp_path)
+    client = _client(monkeypatch, settings, env_file=tmp_path / ".env")
+    _stub_list_models(monkeypatch, result=["embed-1"])
+
+    resp = client.post("/v1/config/embedding-models", headers=_AUTH, json={})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["models"] == ["embed-1"]
+
+
+def test_llm_models_gateway_error_returns_ok_false(monkeypatch, tmp_path) -> None:
+    settings = _settings(tmp_path)
+    client = _client(monkeypatch, settings, env_file=tmp_path / ".env")
+    _stub_list_models(monkeypatch, boom="connection refused")
+
+    resp = client.post("/v1/config/llm-models", headers=_AUTH, json={})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert body["models"] == []
+    assert body["error"] and "connection refused" in body["error"]
+
+
+def test_embedding_models_gateway_error_returns_ok_false(monkeypatch, tmp_path) -> None:
+    settings = _settings(tmp_path)
+    client = _client(monkeypatch, settings, env_file=tmp_path / ".env")
+    _stub_list_models(monkeypatch, boom="dns failure")
+
+    resp = client.post("/v1/config/embedding-models", headers=_AUTH, json={})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert body["models"] == []
+    assert body["error"] and "dns failure" in body["error"]
+
+
+def test_llm_models_never_sends_saved_key_to_overridden_base_url(monkeypatch, tmp_path) -> None:
+    settings = _settings(tmp_path, LOCAL_BRAIN_LLM_API_KEY="saved-secret")
+    client = _client(monkeypatch, settings, env_file=tmp_path / ".env")
+    captured = _stub_list_models(monkeypatch, result=[])
+
+    resp = client.post("/v1/config/llm-models", headers=_AUTH, json={"base_url": "http://attacker:9/v1"})
+    assert resp.status_code == 200
+    # The listing used the caller endpoint but did NOT carry the saved key.
+    assert captured[0]["base_url"] == "http://attacker:9/v1"
+    assert captured[0]["api_key"] != "saved-secret"
+    assert "saved-secret" not in resp.text
+
+
+def test_llm_models_does_not_mutate_or_persist(monkeypatch, tmp_path) -> None:
+    env_file = tmp_path / ".env"
+    settings = _settings(
+        tmp_path, LLM_BASE_URL="http://original:11434/v1", LOCAL_BRAIN_LLM_MODEL="orig"
+    )
+    client = _client(monkeypatch, settings, env_file=env_file)
+    _stub_list_models(monkeypatch, result=["x"])
+
+    resp = client.post(
+        "/v1/config/llm-models",
+        headers=_AUTH,
+        json={"base_url": "http://supplied:9999/v1", "model": "candidate"},
+    )
+    assert resp.status_code == 200
+    # The live singleton is untouched and nothing was persisted.
+    assert settings.llm_base_url == "http://original:11434/v1"
+    assert settings.llm_model == "orig"
+    assert not env_file.exists()
+
+
+def _fake_openai_with_ids(ids: list):
+    """A fake AsyncOpenAI whose models.list() returns an async-iterable page
+    (mirrors the SDK paginator that list_models async-iterates)."""
+
+    class _AsyncPage:
+        def __aiter__(self):
+            async def _gen():
+                for i in ids:
+                    yield SimpleNamespace(id=i)
+            return _gen()
+
+    class _Models:
+        async def list(self):
+            return _AsyncPage()
+
+    class _Client:
+        def __init__(self, **kwargs) -> None:
+            self.models = _Models()
+
+    return _Client
+
+
+def test_llm_models_returns_all_ids_via_pagination(monkeypatch, tmp_path) -> None:
+    # list_models async-iterates the paginator, so every advertised id is
+    # returned (sorted+unique), not just the first page.
+    settings = _settings(tmp_path)
+    client = _client(monkeypatch, settings, env_file=tmp_path / ".env")
+    monkeypatch.setattr(llm, "AsyncOpenAI", _fake_openai_with_ids(["m3", "m1", "m2", "m1"]))
+
+    body = client.post("/v1/config/llm-models", headers=_AUTH, json={}).json()
+    assert body["ok"] is True
+    assert body["models"] == ["m1", "m2", "m3"]
+
+
+def test_llm_models_non_string_id_is_ok_false_not_500(monkeypatch, tmp_path) -> None:
+    # A malformed/hostile gateway returning a non-string id must not 500 — the
+    # real list_models validates and the route reports ok:false.
+    settings = _settings(tmp_path)
+    client = _client(monkeypatch, settings, env_file=tmp_path / ".env")
+    monkeypatch.setattr(llm, "AsyncOpenAI", _fake_openai_with_ids([1, "ok-model"]))
+
+    resp = client.post("/v1/config/llm-models", headers=_AUTH, json={})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["ok"] is False
+    assert body["models"] == []
+
+
+def test_llm_models_surrogate_id_is_ok_false_not_500(monkeypatch, tmp_path) -> None:
+    # An unpaired surrogate would break JSON encoding at the response boundary;
+    # list_models rejects it inside the try so the route returns ok:false.
+    settings = _settings(tmp_path)
+    client = _client(monkeypatch, settings, env_file=tmp_path / ".env")
+    monkeypatch.setattr(llm, "AsyncOpenAI", _fake_openai_with_ids(["\ud800bad"]))
+
+    resp = client.post("/v1/config/llm-models", headers=_AUTH, json={})
+    assert resp.status_code == 200
+    assert resp.json()["ok"] is False
+
+
+def test_llm_models_error_redacts_saved_key(monkeypatch, tmp_path) -> None:
+    # The returned error must never echo the saved key (a gateway that reflects
+    # its Authorization header would otherwise leak it).
+    settings = _settings(tmp_path, LOCAL_BRAIN_LLM_API_KEY="leaky-key-123")
+    client = _client(monkeypatch, settings, env_file=tmp_path / ".env")
+    _stub_list_models(monkeypatch, boom="401 Unauthorized: Bearer leaky-key-123 rejected")
+
+    body = client.post("/v1/config/llm-models", headers=_AUTH, json={}).json()
+    assert body["ok"] is False
+    assert "leaky-key-123" not in (body["error"] or "")
+    assert "***" in body["error"]

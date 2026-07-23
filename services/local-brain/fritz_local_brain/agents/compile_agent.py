@@ -15,6 +15,11 @@ from ..llm import OUTPUT_RETRIES, build_model, output_spec_for
 from ..models import CompileAgentOutput
 from ..prompts import COMPILE_MVP_INSTRUCTIONS, COMPILE_SYSTEM_PROMPT
 
+# Max article paths per vault actually sent to the LLM in the compile context.
+# The pre-flight budget estimator (compile_workflow) MUST cap by this same value
+# so it never parks a capture over paths the real request would never carry.
+ARTICLE_PATHS_LIMIT_PER_VAULT = 100
+
 
 @dataclass
 class CompileDeps:
@@ -47,7 +52,7 @@ def build_compile_agent(settings: Settings, skill_text: str) -> Agent[CompileDep
                 "instruction": "Compile context was already provided. Do not call tools again; return final structured output now.",
             }
         ctx.deps.context_loaded = True
-        limit = 100
+        limit = ARTICLE_PATHS_LIMIT_PER_VAULT
         return {
             "already_provided": False,
             "captures": [

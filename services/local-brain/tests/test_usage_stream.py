@@ -69,9 +69,13 @@ def test_latest_event_id_grows_with_inserts(tmp_path) -> None:
 # stream-ticket
 # ---------------------------------------------------------------------------
 
-def test_stream_ticket_requires_bearer(monkeypatch, tmp_path) -> None:
+def test_stream_ticket_open_without_bearer(monkeypatch, tmp_path) -> None:
+    # Loopback-only deployment: require_token is a no-op, so a ticket is issued
+    # without a Bearer token. (The stream itself is still ticket-gated below.)
     client = _client(monkeypatch, _settings(tmp_path))
-    assert client.post("/v1/usage/stream-ticket").status_code == 401
+    resp = client.post("/v1/usage/stream-ticket")
+    assert resp.status_code == 200
+    assert resp.json()["ticket"]
 
 
 def test_stream_ticket_returns_ticket_and_expiry(monkeypatch, tmp_path) -> None:

@@ -533,11 +533,13 @@ def test_article_missing_frontmatter_returns_200(monkeypatch, tmp_path) -> None:
 # auth
 # ---------------------------------------------------------------------------
 
-def test_endpoints_require_token(monkeypatch, tmp_path) -> None:
+def test_endpoints_open_without_token(monkeypatch, tmp_path) -> None:
+    # Loopback-only deployment: require_token is a no-op, so these endpoints are
+    # reachable with no Bearer token (they must not be gated with 401).
     settings = _settings(tmp_path)
     _seed_store(settings)
     client = _client(monkeypatch, settings)
 
-    assert client.get("/v1/knowledge/tree").status_code == 401
-    assert client.get("/v1/knowledge/articles").status_code == 401
-    assert client.get("/v1/knowledge/article?path=x.md").status_code == 401
+    assert client.get("/v1/knowledge/tree").status_code != 401
+    assert client.get("/v1/knowledge/articles").status_code != 401
+    assert client.get("/v1/knowledge/article?path=x.md").status_code != 401

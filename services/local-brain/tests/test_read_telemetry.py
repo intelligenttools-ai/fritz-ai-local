@@ -405,11 +405,11 @@ def test_http_whitespace_only_header_falls_back_to_unknown(monkeypatch, tmp_path
     assert read_events(settings)[0]["agent"] == "unknown"
 
 
-def test_http_query_run_requires_auth(monkeypatch, tmp_path) -> None:
-    """Real POST without Bearer token is rejected and records nothing."""
+def test_http_query_run_open_without_auth(monkeypatch, tmp_path) -> None:
+    """Loopback-only: a POST without a Bearer token runs and records normally."""
     client, settings = _http_client(monkeypatch, tmp_path)
 
     resp = client.post("/v1/query/run", json={"query": "hello"})
 
-    assert resp.status_code == 401
-    assert read_events(settings) == []
+    assert resp.status_code == 200
+    assert len(read_events(settings)) == 1

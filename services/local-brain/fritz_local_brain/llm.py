@@ -77,6 +77,54 @@ def build_model(settings: Settings):
     raise ValueError("Unsupported LOCAL_BRAIN_LLM_PROTOCOL; use openai-compatible or anthropic-compatible")
 
 
+async def list_models(
+    *,
+    protocol: str,
+    base_url: str,
+    api_key: str | None,
+    timeout_seconds: float,
+) -> list[str]:
+    """List the model ids an OpenAI-/Anthropic-compatible gateway advertises.
+
+    The caller passes an already-normalized ``base_url`` and ``api_key`` (post
+    exfiltration guard). Builds a throwaway client exactly like ``probe_llm``
+    (``max_retries=0`` for fast failure) and returns the sorted unique model ids.
+    Exceptions propagate to the caller.
+    """
+
+    if protocol == "openai-compatible":
+        client = AsyncOpenAI(
+            base_url=base_url,
+            api_key=api_key or "local-brain-no-key",
+            timeout=timeout_seconds,
+            max_retries=0,
+        )
+        result = await client.models.list()
+    elif protocol == "anthropic-compatible":
+        client = AsyncAnthropic(
+            base_url=base_url,
+            api_key=api_key or "local-brain-no-key",
+            timeout=timeout_seconds,
+            max_retries=0,
+        )
+        result = await client.models.list()
+    else:
+        raise ValueError("Unsupported protocol; use openai-compatible or anthropic-compatible")
+    # Async-iterate the paginator so ALL advertised models are returned, not just
+    # the first SDK page (Anthropic defaults to 20/page). A malformed/hostile
+    # gateway can return non-string or unpaired-surrogate ids (the SDKs build
+    # responses non-strictly); validate here so the caller's try/except turns it
+    # into ok=false instead of a 500 at response encoding.
+    ids: list[str] = []
+    async for item in result:
+        model_id = item.id
+        if not isinstance(model_id, str):
+            raise ValueError(f"gateway returned a non-string model id: {model_id!r}")
+        model_id.encode("utf-8")  # raises on unpaired surrogates → caught upstream
+        ids.append(model_id)
+    return sorted(set(ids))
+
+
 async def probe_llm(settings: Settings) -> ConfigTestResult:
     """Cheap real reachability probe for the configured LLM endpoint (#226).
 
