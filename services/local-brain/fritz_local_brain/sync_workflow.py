@@ -16,7 +16,11 @@ from .registry import load_registry, registered_vault_paths
 from .skill_loader import load_skill
 
 
-async def run_sync(settings: Settings, request: SyncRunRequest) -> SyncRunResult:
+async def run_sync(settings: Settings, request: SyncRunRequest, trusted: bool = False) -> SyncRunResult:
+    # ``trusted`` (in-process only, not a wire field) marks an operator-initiated
+    # run: the loopback dashboard operator IS the approval, so the sync pushes
+    # without needing an approval token. First-external-sync stays guarded
+    # separately by ``allow_first_external_sync``.
     started = datetime.now()
     run_id = str(uuid4())
     errors: list[str] = []
@@ -36,7 +40,7 @@ async def run_sync(settings: Settings, request: SyncRunRequest) -> SyncRunResult
             errors.append(f"{name}: missing manifest")
             continue
         registry_config = registry.get("vaults", {}).get(name, {})
-        approved = settings.approval_matches(request.approval_token)
+        approved = trusted or settings.approval_matches(request.approval_token)
         result = agent.run_vault(name, vault_path, registry_config, manifest, request.dry_run, approved)
         results.append(result)
         if result.pushed:

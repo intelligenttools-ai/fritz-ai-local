@@ -178,10 +178,15 @@ def test_operations_actions_panel_and_endpoints() -> None:
     assert "/v1/lint/run" in body
 
 
-def test_operations_approval_gate_and_toast() -> None:
+def test_operations_no_approval_token_gate() -> None:
+    # Operator-initiated runs must never demand an approval token; the apply
+    # confirm() is the only guard. The token gate UI is gone.
     body = _ops()
-    assert 'id="approval-gate"' in body
-    assert 'id="approval-token-input"' in body
+    assert 'id="approval-token-input"' not in body
+    assert "retryApplyCompile" not in body
+    assert "Approval token" not in body
+    # The apply action still confirms before running.
+    assert "APPLY mode" in body
     assert 'id="action-toast"' in body
 
 

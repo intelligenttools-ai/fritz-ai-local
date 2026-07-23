@@ -110,7 +110,11 @@ async def compile_run(request: CompileRunRequest) -> CompileRunResult:
     try:
         async with compile_lock.guard(settings.brain_home):
             try:
-                result = await run_compile(settings, request)
+                # Operator-initiated on the loopback dashboard = the operator IS the
+                # approval. Run trusted so the large-batch gate never walls a manual
+                # compile (the UI already confirms apply). The gate still applies to
+                # programmatic MCP-agent callers, which don't take this path.
+                result = await run_compile(settings, request, trusted=True)
                 record_compile(result, settings, source="api")
                 schedule_embedding_refresh_after_compile_result(settings, result, reason="compile")
                 return result
@@ -127,7 +131,9 @@ async def sync_run(request: SyncRunRequest) -> SyncRunResult:
     settings = get_settings()
     try:
         async with sync_lock.guard(settings.brain_home):
-            result = await run_sync(settings, request)
+            # Operator-initiated on the loopback dashboard = approved (the UI
+            # confirms apply). First-external-sync stays guarded separately.
+            result = await run_sync(settings, request, trusted=True)
             record_sync(result, settings, source="api")
             return result
     except OperationAlreadyRunning as exc:

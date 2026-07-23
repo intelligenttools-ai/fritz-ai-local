@@ -92,13 +92,6 @@
           </div>
         </div>
 
-        <!-- Approval gate (shown when apply compile returns approval-required) -->
-        <div id="approval-gate">
-          <p id="approval-message">Large compile run requires approval. Provide an approval token to proceed.</p>
-          <input type="text" id="approval-token-input" placeholder="Approval token">
-          <button onclick="retryApplyCompile()">Retry with token</button>
-        </div>
-
         <!-- Result toast -->
         <div id="action-toast">
           <button class="toast-close" onclick="dismissToast()">✕</button>
@@ -143,24 +136,6 @@
 // Operations page: #196 operation triggers + approval gate, plus a recent-runs
 // table. All run handlers reuse the shared postAction() helper and toast.
 
-function showApprovalGate(msg) {
-  const gate = document.getElementById("approval-gate");
-  document.getElementById("approval-message").textContent = msg;
-  document.getElementById("approval-token-input").value = "";
-  gate.style.display = "block";
-}
-
-function hideApprovalGate() {
-  document.getElementById("approval-gate").style.display = "none";
-}
-
-async function retryApplyCompile() {
-  const token = document.getElementById("approval-token-input").value.trim();
-  if (!token) return;
-  hideApprovalGate();
-  await _runCompileWith(false, token);
-}
-
 function setBtnRunning(id, running) {
   const btn = document.getElementById(id);
   if (!btn) return;
@@ -172,40 +147,16 @@ async function runCompile(dryRun) {
   if (!dryRun) {
     if (!confirm("Run compile in APPLY mode? This will write compiled articles to the knowledge base.")) return;
   }
-  hideApprovalGate();
-  await _runCompileWith(dryRun, null);
-}
-
-async function _runCompileWith(dryRun, approvalToken) {
   const btnId = dryRun ? "btn-compile-dry" : "btn-compile-apply";
   setBtnRunning(btnId, true);
   dismissToast();
   try {
-    const body = { dry_run: dryRun };
-    if (approvalToken) body.approval_token = approvalToken;
-    const result = await postAction("/v1/compile/run", body);
+    const result = await postAction("/v1/compile/run", { dry_run: dryRun });
     if (!result) return; // 401 — auth overlay shown
 
-    const { status, json } = result;
-
-    if (status === 403) {
-      showApprovalGate(json?.detail ?? "Large compile requires approval. Provide a token to proceed.");
-      return;
-    }
+    const { json } = result;
 
     if (!json) { showToast("Compile: no response body", true); return; }
-
-    const requiresApproval =
-      !dryRun &&
-      Array.isArray(json.applied) && json.applied.length === 0 &&
-      Array.isArray(json.errors) &&
-      json.errors.some(e => /requires approval|exceeds threshold/i.test(e));
-
-    if (requiresApproval) {
-      const approvalMsg = json.errors.find(e => /requires approval|exceeds threshold/i.test(e)) || "Large compile requires approval.";
-      showApprovalGate(approvalMsg);
-      return;
-    }
 
     const applied    = Array.isArray(json.applied)   ? json.applied.length   : 0;
     const considered = json.captures_considered       ?? "?";
