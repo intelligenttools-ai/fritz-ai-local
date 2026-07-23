@@ -158,7 +158,8 @@ binding — it defines the nine-capability bar.
 ## Platform: Codex
 
 Codex is wired through a **plugin** (`bindings/codex/`). The plugin/skills half
-is verified against `codex-cli 0.139.0`; the hook half (session/turn lifecycle)
+is verified against `codex-cli 0.139.0` (marketplace layout + install re-verified on
+`0.144.1`); the hook half (session/turn lifecycle)
 is the documented open capability and is marked
 **REQUIRES-IN-CODEX-VERIFICATION** in the binding README — do not assume the
 hooks are live until confirmed inside a real Codex session.
@@ -180,7 +181,7 @@ hooks are live until confirmed inside a real Codex session.
 3. **Hooks (open capability).** Codex has a real hook subsystem, but its config
    schema is not introspectable from the local CLI. The candidate wiring and the
    verified `notify` turn-end fallback are annotated in
-   [`bindings/codex/hooks/config-hooks.toml.example`](bindings/codex/hooks/config-hooks.toml.example).
+   [`bindings/codex/plugins/fritz-brain/hooks/config-hooks.toml.example`](bindings/codex/plugins/fritz-brain/hooks/config-hooks.toml.example).
    Add the candidate block to `~/.codex/config.toml`, run `codex doctor`, and if
    the config loads, verify capture/guardrail/context inside a real Codex
    session. Do not overstate the hooks as working until this passes.

@@ -4,7 +4,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CANONICAL = ROOT / "skills" / "brain-service-setup" / "SKILL.md"
 CLAUDE = ROOT / "bindings" / "claude" / "skills" / "brain-service-setup" / "SKILL.md"
-CODEX = ROOT / "bindings" / "codex" / "skills" / "fritz:brain-service-setup" / "SKILL.md"
+CODEX = ROOT / "bindings" / "codex" / "plugins" / "fritz-brain" / "skills" / "fritz:brain-service-setup" / "SKILL.md"
 
 
 def _canonicalized_binding_text(path: Path) -> str:

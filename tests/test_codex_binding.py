@@ -27,9 +27,12 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 HOOKS = REPO_ROOT / "hooks"
-PLUGIN = REPO_ROOT / "bindings" / "codex"
+# Codex marketplace layout (codex 0.144.1): the marketplace root is bindings/codex,
+# holding .agents/plugins/marketplace.json and plugins/<name>/ for each plugin.
+BINDING_ROOT = REPO_ROOT / "bindings" / "codex"
+PLUGIN = BINDING_ROOT / "plugins" / "fritz-brain"
 PLUGIN_MANIFEST = PLUGIN / ".codex-plugin" / "plugin.json"
-MARKETPLACE = PLUGIN / "marketplace.json"
+MARKETPLACE = BINDING_ROOT / ".agents" / "plugins" / "marketplace.json"
 PLUGIN_SKILLS = PLUGIN / "skills"
 
 # The Codex plugin-creator validator lives in the local Codex skills tree.
