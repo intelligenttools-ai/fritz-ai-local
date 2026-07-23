@@ -225,10 +225,28 @@ function selectControl(name, field, options) {
   return `<select data-field="${esc(name)}" data-kind="select">${opts}</select>`;
 }
 
+// Model picker (#): the free-text model input stays the source of truth Save
+// reads, PLUS a "List models" button that queries the CANDIDATE gateway
+// (POST /v1/config/{llm|embedding}-models) and a <select> populated with the
+// real model ids it exposes. Picking one just writes the input + registers
+// `pending` exactly like typing would; a gateway without a /models endpoint
+// falls back gracefully to free-text entry.
+function modelControl(name, field) {
+  const v = currentValue(name, field);
+  const prefix = name === "llm_model" ? "llm" : "embedding";
+  return `<input type="text" value="${esc(v == null ? "" : String(v))}"
+      data-field="${esc(name)}" data-kind="text" data-model-input="${esc(name)}">
+    <button type="button" class="btn-action" data-action="list-models"
+      data-model-prefix="${esc(prefix)}">List models</button>
+    <select class="model-select" data-model-target="${esc(name)}" style="display:none"></select>
+    <span class="test-result" id="model-status-${esc(name)}"></span>`;
+}
+
 function fieldControl(name, field) {
   if (field.secret) return secretControl(name, field);
   if (name === "llm_protocol" || name === "embedding_protocol") return selectControl(name, field, PROTOCOL_OPTIONS);
   if (name === "reconciliation_autonomy") return selectControl(name, field, AUTONOMY_OPTIONS);
+  if (name === "llm_model" || name === "embedding_model") return modelControl(name, field);
   const v = currentValue(name, field);
   if (typeof field.value === "boolean") {
     const checked = v ? " checked" : "";
@@ -377,10 +395,14 @@ function onConfigClick(e) {
   else if (action === "cancel-secret") hideSecretInput(field);
   else if (action === "save") saveGroup(group);
   else if (action === "test") testConnection(test);
+  else if (action === "list-models") listModels(btn.dataset.modelPrefix);
 }
 
 function onConfigInput(e) {
   const el = e.target;
+  // The model <select> is not a config field — picking an option writes the
+  // sibling free-text input and registers `pending`, then we're done.
+  if (el.dataset && el.dataset.modelTarget) { onModelPick(el); return; }
   const name = el.dataset && el.dataset.field;
   if (!name) return;
   const kind = el.dataset.kind;
@@ -528,6 +550,67 @@ async function testConnection(prefix) {
   } else {
     const detail = json && json.detail ? json.detail : `HTTP ${result.status}`;
     setTestResult(prefix, { ok: false, error: String(detail) });
+  }
+}
+
+// ---- model discovery (POST /v1/config/llm-models | embedding-models) --------
+// Same candidate-body shape as testConnection (dirty form values + the live
+// api_key from the Replace input). The free-text input remains the source of
+// truth Save reads; this only offers a pick-list of what the gateway exposes.
+
+function onModelPick(select) {
+  const name = select.dataset.modelTarget;
+  const value = select.value;
+  if (!value) return;
+  const input = document.querySelector(`input[data-model-input="${name}"]`);
+  if (input) input.value = value;
+  onFieldChange(name, value); // registers `pending` + enables Save, exactly like typing
+}
+
+async function listModels(prefix) {
+  const target = `${prefix}_model`;
+  const statusEl = document.getElementById(`model-status-${target}`);
+  const select = document.querySelector(`select[data-model-target="${target}"]`);
+  const body = {};
+  TEST_BODY_FIELDS.forEach(bodyKey => {
+    const fieldName = `${prefix}_${bodyKey}`;
+    if (!Object.prototype.hasOwnProperty.call(pending, fieldName)) return;
+    const v = pending[fieldName];
+    if (bodyKey === "timeout_seconds") {
+      const n = Number(v);
+      if (!Number.isNaN(n)) body[bodyKey] = n;
+    } else {
+      body[bodyKey] = v;
+    }
+  });
+  // SECURITY: candidate key read from the live Replace input, never a stored copy.
+  const secretInp = document.getElementById(`secret-input-${prefix}_api_key`);
+  if (secretInp && secretInp.value) body.api_key = secretInp.value;
+
+  if (statusEl) { statusEl.className = "test-result"; statusEl.textContent = "Listing…"; }
+  const endpoint = prefix === "llm" ? "/v1/config/llm-models" : "/v1/config/embedding-models";
+  const result = await postAction(endpoint, body, "POST");
+  if (!result) return; // 401 handled by postAction
+  const json = result.json;
+  const models = json && Array.isArray(json.models) ? json.models : [];
+  if (result.status === 200 && json && json.ok && models.length) {
+    if (select) {
+      // esc(): model ids come from an untrusted gateway.
+      select.innerHTML = `<option value="">Select a model…</option>` +
+        models.map(m => `<option value="${esc(String(m))}">${esc(String(m))}</option>`).join("");
+      select.style.display = "";
+    }
+    if (statusEl) { statusEl.className = "test-result test-ok"; statusEl.textContent = `${models.length} models`; }
+  } else if (result.status === 200 && json && json.ok) {
+    // Reachable gateway that advertises no models — keep free-text entry.
+    if (select) { select.style.display = "none"; select.innerHTML = ""; }
+    if (statusEl) { statusEl.className = "test-result"; statusEl.textContent = "No models advertised"; }
+  } else {
+    // Graceful fallback: keep the free-text input usable, just surface the error.
+    if (select) { select.style.display = "none"; select.innerHTML = ""; }
+    const err = json && json.error ? json.error
+      : (json && json.detail ? json.detail : `HTTP ${result.status}`);
+    if (statusEl) { statusEl.className = "test-result test-fail"; statusEl.textContent = String(err); }
   }
 }
 

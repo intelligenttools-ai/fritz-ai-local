@@ -475,10 +475,12 @@ def test_system_endpoint_empty_store_safe(monkeypatch, tmp_path) -> None:
     assert body["success_rate"] is None
 
 
-def test_system_endpoint_requires_auth(monkeypatch, tmp_path) -> None:
+def test_system_endpoint_open_without_auth(monkeypatch, tmp_path) -> None:
+    # Loopback-only deployment: require_token is a no-op, so this endpoint is
+    # reachable with no Bearer token.
     settings = _settings(tmp_path)
     client = _client(monkeypatch, settings)
-    assert client.get("/v1/usage/system").status_code == 401
+    assert client.get("/v1/usage/system").status_code == 200
 
 
 def test_no_double_counting_system_vs_agent(monkeypatch, tmp_path) -> None:
@@ -518,10 +520,10 @@ def test_unknown_event_type_stays_agent_side(monkeypatch, tmp_path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# AUTH: every endpoint 401 without bearer token
+# AUTH: loopback-only deployment — every endpoint is open (no bearer token)
 # ---------------------------------------------------------------------------
 
-def test_all_usage_endpoints_require_auth(monkeypatch, tmp_path) -> None:
+def test_all_usage_endpoints_open_without_auth(monkeypatch, tmp_path) -> None:
     settings = _settings(tmp_path)
     monkeypatch.setattr(routes.usage, "compute_kb_health", lambda s: {"articles_total": 0, "backlog": {}})
     client = _client(monkeypatch, settings)
@@ -534,7 +536,7 @@ def test_all_usage_endpoints_require_auth(monkeypatch, tmp_path) -> None:
         "/v1/usage/summary",
         "/v1/usage/system",
     ):
-        assert client.get(path).status_code == 401, path
+        assert client.get(path).status_code == 200, path
 
 
 # ---------------------------------------------------------------------------

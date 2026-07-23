@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from pydantic_ai.usage import UsageLimits
 
-from .agents.compile_agent import CompileDeps, build_compile_agent
+from .agents.compile_agent import ARTICLE_PATHS_LIMIT_PER_VAULT, CompileDeps, build_compile_agent
 from .agents.reconciliation_agent import ReconciliationDeps, build_reconciliation_agent
 from .captures import (
     _load_processed_captures,
@@ -144,7 +144,14 @@ def _estimate_compile_request_chars(
             for path in capture_paths
         ],
         "vault_names": vault_names,
-        "article_paths": article_paths,
+        # Mirror what load_compile_context actually sends: only the first
+        # ARTICLE_PATHS_LIMIT_PER_VAULT paths per vault ride in the request, so
+        # the estimate must not count the full vault listing (which grows with
+        # the whole brain and would park captures over never-sent payload).
+        "article_paths": {
+            vault: paths[:ARTICLE_PATHS_LIMIT_PER_VAULT]
+            for vault, paths in article_paths.items()
+        },
         "related_articles": related_articles,
     }
     return sum(

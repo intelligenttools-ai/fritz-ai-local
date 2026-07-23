@@ -7,11 +7,12 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import mcp_server
+from .api.auth import is_forbidden_cross_origin
 from .api.routes import router
 from .config import get_settings
 from .scheduler import scheduler_loop
@@ -60,6 +61,16 @@ _UI_PAGES = {
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Fritz Local Brain", version="0.1.0", lifespan=lifespan)
+
+    # CSRF guard: auth is open on this loopback deployment, so the token no longer
+    # blocks cross-origin writes. Reject unsafe-method requests carrying a
+    # non-loopback browser Origin (see auth.is_forbidden_cross_origin).
+    @app.middleware("http")
+    async def _csrf_guard(request: Request, call_next):
+        if is_forbidden_cross_origin(request.method, request.headers.get("origin")):
+            return JSONResponse({"detail": "cross-origin request rejected"}, status_code=403)
+        return await call_next(request)
+
     app.include_router(router)
 
     # #220: the old single-page /dashboard now lives under the /ui/ app shell.

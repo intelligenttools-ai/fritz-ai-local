@@ -745,6 +745,78 @@ def test_settings_service_section_read_only_with_guidance() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Model discovery — pick the LLM/embedding model from what the gateway exposes
+# instead of typing a free-text string (POST /v1/config/{llm|embedding}-models).
+# ---------------------------------------------------------------------------
+
+def test_settings_model_discovery_endpoints_wired() -> None:
+    """The settings page must POST the candidate gateway values to both model
+    discovery endpoints."""
+    body = _settings()
+    assert "/v1/config/llm-models" in body
+    assert "/v1/config/embedding-models" in body
+    assert "function listModels(" in body
+    # Reuses the shared POST helper (Bearer auth) like testConnection.
+    start = body.index("async function listModels(")
+    end = body.index("// ---- load ----", start)
+    fn = body[start:end]
+    assert 'postAction(' in fn
+    assert '"POST"' in fn
+
+
+def test_settings_model_picker_controls_for_both_groups() -> None:
+    """Both llm_model and embedding_model render a 'List models' button + a
+    populated <select>, driven through the modelControl renderer."""
+    body = _settings()
+    assert "function modelControl(" in body
+    # fieldControl routes BOTH model fields into the picker control.
+    assert 'name === "llm_model" || name === "embedding_model"' in body
+    start = body.index("function modelControl(")
+    end = body.index("function fieldControl(", start)
+    fn = body[start:end]
+    assert 'data-action="list-models"' in fn
+    assert "data-model-prefix" in fn
+    assert "data-model-target" in fn
+    assert "<select" in fn
+    assert "data-model-input" in fn  # free-text input stays the source of truth
+
+
+def test_settings_model_picker_wired_through_delegated_listeners() -> None:
+    """No inline handlers: the List-models button and the model <select> are wired
+    via the existing delegated click/input listeners (data-action / data-model-*)."""
+    body = _settings()
+    assert 'action === "list-models"' in body
+    assert "listModels(btn.dataset.modelPrefix)" in body
+    assert "function onModelPick(" in body
+    assert "dataset.modelTarget" in body
+
+
+def test_settings_model_picker_handles_empty_list_distinctly() -> None:
+    """A reachable gateway that advertises no models must not read as an error
+    (no 'HTTP 200' error text) — it shows a distinct 'No models advertised'."""
+    body = _settings()
+    assert "No models advertised" in body
+    # Picking a model registers pending exactly like typing (Save unchanged).
+    start = body.index("function onModelPick(")
+    end = body.index("async function listModels(", start)
+    fn = body[start:end]
+    assert "onFieldChange(" in fn
+
+
+def test_settings_model_ids_escaped() -> None:
+    """XSS guard: gateway-supplied model ids are untrusted and must be esc()'d
+    before entering the <select> innerHTML."""
+    body = _settings()
+    start = body.index("async function listModels(")
+    end = body.index("// ---- load ----", start)
+    fn = body[start:end]
+    assert "esc(String(m))" in fn
+    # Graceful fallback: an unreachable/endpoint-less gateway keeps free text.
+    assert "json.ok" in fn
+    assert "json.error" in fn
+
+
+# ---------------------------------------------------------------------------
 # Hard constraint — dependency-free (no external script/link/font/CDN)
 # ---------------------------------------------------------------------------
 

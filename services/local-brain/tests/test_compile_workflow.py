@@ -363,6 +363,30 @@ def test_compile_preflight_parks_single_oversized_capture_with_log_and_telemetry
     assert any("too-big.md" in row[2] for row in rows if row[2])
 
 
+def test_estimate_ignores_article_paths_beyond_per_vault_limit(tmp_path: Path) -> None:
+    """The pre-flight estimate must count only the article paths actually sent
+    (ARTICLE_PATHS_LIMIT_PER_VAULT per vault), so a large vault listing cannot
+    park a small capture over payload the real request would never carry.
+    """
+    from fritz_local_brain.agents.compile_agent import ARTICLE_PATHS_LIMIT_PER_VAULT
+
+    capture = tmp_path / "small.md"
+    capture.write_text("# Small\n\nshort body", encoding="utf-8")
+
+    def estimate(n_paths: int) -> int:
+        return compile_workflow._estimate_compile_request_chars(
+            prompt="prompt",
+            capture_paths=[capture],
+            capture_max_chars=48000,
+            vault_names=["brain"],
+            article_paths={"brain": [f"a/long/path/segment-{i:05d}.md" for i in range(n_paths)]},
+            related_articles=[],
+        )
+
+    # Paths beyond the per-vault cap add nothing to the estimate.
+    assert estimate(ARTICLE_PATHS_LIMIT_PER_VAULT) == estimate(ARTICLE_PATHS_LIMIT_PER_VAULT + 5000)
+
+
 def test_compile_ac2_ten_capture_backlog_reaches_full_coverage(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

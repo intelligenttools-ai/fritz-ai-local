@@ -92,7 +92,7 @@ async function apiFetch(path, params) {
   showLoader(true);
   try {
     const resp = await fetch(url.toString(), {
-      headers: { Authorization: `Bearer ${token}` }
+      headers: token ? { Authorization: `Bearer ${token}` } : {}
     });
     if (resp.status === 401) {
       clearToken();
@@ -121,7 +121,7 @@ async function postAction(path, body, method = "POST") {
     const resp = await fetch(path, {
       method: method,
       headers: {
-        "Authorization": `Bearer ${token}`,
+        ...(token ? { "Authorization": `Bearer ${token}` } : {}),
         "Content-Type": "application/json",
       },
       body: JSON.stringify(body),
@@ -509,13 +509,15 @@ function initShell() {
   restoreIntervalSelect();
   startTicker();
   startRefreshTimer();
-  if (getToken()) {
-    hideAuthOverlay();
-    loadAll();
-    if (window.usesSSE !== false) setupSSE();
-  } else {
-    showAuthOverlay(false);
-  }
+  // The /v1 surface is open on this loopback-only deployment (require_token is a
+  // no-op server-side), so the dashboard loads directly without a token prompt.
+  // Seed a sentinel token so the per-page `if (!getToken()) return` render guards
+  // pass; the server ignores the value. Without this, data fetches succeed but
+  // nothing paints.
+  if (!getToken()) setToken("loopback");
+  hideAuthOverlay();
+  loadAll();
+  if (window.usesSSE !== false) setupSSE();
 }
 
 if (document.readyState === "loading") {

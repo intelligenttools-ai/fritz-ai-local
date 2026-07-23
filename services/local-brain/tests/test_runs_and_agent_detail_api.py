@@ -217,9 +217,11 @@ def test_agent_detail_test_agent_isolation(monkeypatch, tmp_path) -> None:
 # AUTH
 # ---------------------------------------------------------------------------
 
-def test_new_endpoints_require_token(monkeypatch, tmp_path) -> None:
+def test_new_endpoints_open_without_token(monkeypatch, tmp_path) -> None:
+    # Loopback-only deployment: require_token is a no-op, so these endpoints are
+    # reachable with no Bearer token (they must not be gated with 401).
     settings = _settings(tmp_path)
     client = _client(monkeypatch, settings)
-    assert client.get("/v1/runs").status_code == 401
-    assert client.get("/v1/runs/x").status_code == 401
-    assert client.get("/v1/usage/agents/pi").status_code == 401
+    assert client.get("/v1/runs").status_code != 401
+    assert client.get("/v1/runs/x").status_code != 401
+    assert client.get("/v1/usage/agents/pi").status_code != 401

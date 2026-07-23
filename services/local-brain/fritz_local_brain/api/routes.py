@@ -25,8 +25,9 @@ from ..config import (
     config_env_value,
     config_field_value,
     get_settings,
+    redact_secrets,
 )
-from ..llm import probe_llm
+from ..llm import list_models, probe_llm
 from .. import env_persist
 from ..telemetry import latest_event_id, record_query_event
 from ..embeddings import (
@@ -42,6 +43,7 @@ from ..models import (
     CompileRunRequest,
     CompileRunResult,
     ConfigField,
+    ConfigModelsResult,
     ConfigPatchResult,
     ConfigResult,
     ConfigTestRequest,
@@ -627,3 +629,33 @@ async def config_test_embedding(body: ConfigTestRequest) -> ConfigTestResult:
     latency = round((perf_counter() - start) * 1000, 1)
     ok = probe.error is None and probe.dimensions is not None
     return ConfigTestResult(ok=ok, latency_ms=latency, error=probe.error)
+
+
+@router.post("/v1/config/llm-models", response_model=ConfigModelsResult, dependencies=[Depends(require_token)])
+async def config_llm_models(body: ConfigTestRequest) -> ConfigModelsResult:
+    settings = _probe_settings(get_settings(), body, prefix="llm")
+    try:
+        models = await list_models(
+            protocol=settings.llm_protocol,
+            base_url=settings.normalized_llm_base_url(),
+            api_key=settings.normalized_api_key(),
+            timeout_seconds=settings.llm_timeout_seconds,
+        )
+    except Exception as exc:  # noqa: BLE001 - never 500 on an unreachable gateway.
+        return ConfigModelsResult(ok=False, error=redact_secrets(str(exc), [settings.normalized_api_key()]))
+    return ConfigModelsResult(ok=True, models=models)
+
+
+@router.post("/v1/config/embedding-models", response_model=ConfigModelsResult, dependencies=[Depends(require_token)])
+async def config_embedding_models(body: ConfigTestRequest) -> ConfigModelsResult:
+    settings = _probe_settings(get_settings(), body, prefix="embedding", embedding_enabled=True)
+    try:
+        models = await list_models(
+            protocol=settings.embedding_protocol,
+            base_url=settings.normalized_embedding_base_url(),
+            api_key=settings.normalized_embedding_api_key(),
+            timeout_seconds=settings.embedding_timeout_seconds,
+        )
+    except Exception as exc:  # noqa: BLE001 - never 500 on an unreachable gateway.
+        return ConfigModelsResult(ok=False, error=redact_secrets(str(exc), [settings.normalized_embedding_api_key()]))
+    return ConfigModelsResult(ok=True, models=models)

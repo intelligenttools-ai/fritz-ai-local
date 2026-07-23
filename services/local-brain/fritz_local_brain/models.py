@@ -594,6 +594,14 @@ class ConfigTestResult(BaseModel):
     error: str | None = None
 
 
+class ConfigModelsResult(BaseModel):
+    """Model list advertised by a configured/candidate AI gateway. Never persists."""
+
+    ok: bool
+    models: list[str] = []
+    error: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Read-only knowledge browse API (#221)
 # ---------------------------------------------------------------------------

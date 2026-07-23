@@ -35,13 +35,12 @@ function closeSSE() {
 /** Exchange the Bearer token for a stream ticket, then open the EventSource. */
 async function setupSSE() {
   const token = getToken();
-  if (!token) return;
   closeSSE();
   let ticket;
   try {
     const resp = await fetch("/v1/usage/stream-ticket", {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}` },
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
     if (!resp.ok) return; // 401/503 etc — polling remains the backstop
     ticket = (await resp.json()).ticket;
@@ -62,7 +61,7 @@ async function setupSSE() {
     closeSSE();
     if (!_sseRetried) {
       _sseRetried = true;
-      setTimeout(() => { if (getToken()) setupSSE(); }, 3000);
+      setTimeout(() => { setupSSE(); }, 3000);
     }
   });
 
