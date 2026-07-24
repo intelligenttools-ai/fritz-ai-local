@@ -93,6 +93,9 @@ async def find_related_articles(
             "path": relpath,
             "title": title,
             "content": content,
+            # Reconciliation safety: a 'duplicates' verdict must never retire an
+            # article whose full content the judge did not see.
+            "content_truncated": len(raw) > len(content),
         })
         remaining -= len(content)
         if len(raw) > remaining + len(content):

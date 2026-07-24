@@ -276,12 +276,13 @@ referential integrity is enforced at write time.
 When a compile run produces a new store article in non-dry-run mode, the
 **reconciliation agent** compares it against related existing articles (found
 via the correlation feed — top-K related content by TF-IDF similarity). For
-each (new, old) pair it returns one of five verdicts:
+each (new, old) pair it returns one of six verdicts:
 
 | Verdict | Effect |
 |---|---|
 | `corroborates` | old article promoted to `corroborated`; link added |
 | `refines` | no status change; bidirectional `refines`/`refined_by` links added |
+| `duplicates` | old article is a same-topic restatement absorbed by the new one; demoted to `superseded` (same mechanics as below, but no contradiction required). Auto-applies only when the judge saw the old article's full content, with high confidence, and within a per-article cap — otherwise downgraded to `refines` |
 | `contradicts_supersedes` | old article demoted to `superseded`; old removed from active indexes, added to `archive.index.md` |
 | `context_split` | both articles gain a `scope` qualifier; no status change |
 | `orthogonal` | no changes |

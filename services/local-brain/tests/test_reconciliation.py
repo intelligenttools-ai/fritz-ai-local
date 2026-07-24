@@ -195,6 +195,166 @@ def test_verdict_contradicts_supersedes(tmp_path: Path) -> None:
     assert new_fm["supersedes"] == ["old.md"]
 
 
+def test_verdict_duplicates_supersedes_old_restatement(tmp_path: Path) -> None:
+    """duplicates retires the OLD restatement via the supersession mechanics —
+    dedup without requiring a contradiction; one living article per topic."""
+    store_root = tmp_path / "knowledge"
+    old = store_root / "old.md"
+    new = store_root / "new.md"
+    _write_article(old, {"type": "article", "title": "Old", "status": "active"})
+    _write_article(new, {"type": "article", "title": "New", "status": "active"})
+
+    outcome = apply_reconciliation_verdict(
+        _verdict("duplicates"), new_path=new, old_path=old, store_root=store_root, dry_run=False
+    )
+
+    old_fm = _read_frontmatter(old)
+    new_fm = _read_frontmatter(new)
+    assert old_fm["status"] == "superseded"
+    assert old_fm["superseded_by"] == ["new.md"]
+    assert new_fm["supersedes"] == ["old.md"]
+    assert outcome.applied is True
+
+
+def test_verdict_duplicates_revert_restores_old(tmp_path: Path) -> None:
+    """The undo path treats duplicates like any supersession: revert restores the
+    OLD article's prior status and removes the links."""
+    from fritz_local_brain.knowledge import revert_reconciliation
+
+    store_root = tmp_path / "knowledge"
+    old = store_root / "old.md"
+    new = store_root / "new.md"
+    _write_article(old, {"type": "article", "title": "Old", "status": "active"})
+    _write_article(new, {"type": "article", "title": "New", "status": "active"})
+
+    outcome = apply_reconciliation_verdict(
+        _verdict("duplicates"), new_path=new, old_path=old, store_root=store_root, dry_run=False
+    )
+    revert_reconciliation(outcome, store_root=store_root, dry_run=False)
+
+    old_fm = _read_frontmatter(old)
+    new_fm = _read_frontmatter(new)
+    assert old_fm["status"] == "active"
+    assert not old_fm.get("superseded_by")
+    assert not new_fm.get("supersedes")
+
+
+def test_duplicates_does_not_flag_predecessors_for_rereconciliation(tmp_path: Path) -> None:
+    """Absorption keeps OLD's content alive inside NEW, so OLD's past
+    supersessions remain valid — no resurrection flagging (unlike a genuine
+    contradiction), and thus nothing an undo could fail to reverse."""
+    store_root = tmp_path / "knowledge"
+    pred = store_root / "pred.md"
+    old = store_root / "old.md"
+    new = store_root / "new.md"
+    _write_article(pred, {"type": "article", "title": "Pred", "status": "superseded"})
+    _write_article(old, {"type": "article", "title": "Old", "status": "active", "supersedes": ["pred.md"]})
+    _write_article(new, {"type": "article", "title": "New", "status": "active"})
+
+    apply_reconciliation_verdict(
+        _verdict("duplicates"), new_path=new, old_path=old, store_root=store_root, dry_run=False
+    )
+
+    pred_fm = _read_frontmatter(pred)
+    assert not pred_fm.get("needs_rereconciliation"), "duplicates must not resurrection-flag predecessors"
+
+
+def test_gate_duplicates_verdict_downgrades_unsafe_cases() -> None:
+    """The duplicates auto-apply gate: truncated OLD content, low confidence, or
+    the per-article cap each downgrade to refines (link, never retire)."""
+    from fritz_local_brain.compile_workflow import _gate_duplicates_verdict
+
+    def dup(confidence: float) -> ReconciliationVerdict:
+        return ReconciliationVerdict(verdict="duplicates", reasoning="r", confidence=confidence)
+
+    # Clean case passes through untouched.
+    ok = _gate_duplicates_verdict(dup(0.9), old_truncated=False, duplicates_so_far=0)
+    assert ok.verdict == "duplicates"
+
+    truncated = _gate_duplicates_verdict(dup(0.95), old_truncated=True, duplicates_so_far=0)
+    assert truncated.verdict == "refines"
+    assert "truncated" in truncated.reasoning
+
+    low_conf = _gate_duplicates_verdict(dup(0.5), old_truncated=False, duplicates_so_far=0)
+    assert low_conf.verdict == "refines"
+    assert "confidence" in low_conf.reasoning
+
+    capped = _gate_duplicates_verdict(dup(0.9), old_truncated=False, duplicates_so_far=2)
+    assert capped.verdict == "refines"
+    assert "cap" in capped.reasoning
+
+    # Non-finite / out-of-range confidence must not bypass the floor check
+    # (NaN < x is always False, and values > 1.0 are nonsensical).
+    nan_conf = _gate_duplicates_verdict(dup(float("nan")), old_truncated=False, duplicates_so_far=0)
+    assert nan_conf.verdict == "refines"
+    assert "confidence" in nan_conf.reasoning
+
+    huge_conf = _gate_duplicates_verdict(dup(2.0), old_truncated=False, duplicates_so_far=0)
+    assert huge_conf.verdict == "refines"
+    assert "confidence" in huge_conf.reasoning
+
+    # Non-duplicates verdicts are never touched.
+    contra = ReconciliationVerdict(verdict="contradicts_supersedes", reasoning="r", confidence=0.1)
+    assert _gate_duplicates_verdict(contra, old_truncated=True, duplicates_so_far=99) is contra
+
+
+def test_gate_duplicates_verdict_per_article_cap_counts_sequentially() -> None:
+    """The Phase-B gate is fed a per-unique-article counter that grows one at a
+    time as duplicates verdicts are applied; the cap trips on the (N+1)th."""
+    from fritz_local_brain.compile_workflow import _gate_duplicates_verdict
+
+    def dup(confidence: float) -> ReconciliationVerdict:
+        return ReconciliationVerdict(verdict="duplicates", reasoning="r", confidence=confidence)
+
+    first = _gate_duplicates_verdict(dup(0.9), old_truncated=False, duplicates_so_far=0)
+    assert first.verdict == "duplicates"
+
+    second = _gate_duplicates_verdict(dup(0.9), old_truncated=False, duplicates_so_far=1)
+    assert second.verdict == "duplicates"
+
+    third = _gate_duplicates_verdict(dup(0.9), old_truncated=False, duplicates_so_far=2)
+    assert third.verdict == "refines"
+    assert "cap" in third.reasoning
+
+
+def test_reconcile_applied_articles_dedupes_repeated_targets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """applied_targets can list the same resolved path more than once (a create
+    followed by an update within one run); _reconcile_applied_articles must run
+    exactly one reconciliation sweep per unique article, not one per occurrence."""
+    settings = _store_mode_settings(tmp_path)
+    brain_home = settings.brain_home
+    store_root = brain_home / "knowledge"
+
+    new_article = store_root / "common" / "decisions" / "new.md"
+    old_article = store_root / "common" / "decisions" / "old.md"
+    _write_article(new_article, {"type": "article", "title": "New", "status": "active"}, body="New content.")
+    _write_article(old_article, {"type": "article", "title": "Old", "status": "active"}, body="Old content.")
+
+    find_related_calls = {"n": 0}
+
+    async def _fake_find_related(settings, content, *, store_root, top_k, char_budget):
+        find_related_calls["n"] += 1
+        return [{"path": "common/decisions/old.md", "title": "Old", "content": "Old content."}]
+
+    monkeypatch.setattr(compile_workflow, "find_related_articles", _fake_find_related)
+
+    fake_agent = FakeReconciliationAgent(ReconciliationVerdict(verdict="orthogonal", reasoning="unrelated"))
+    monkeypatch.setattr(compile_workflow, "build_reconciliation_agent", lambda s: fake_agent)
+
+    request = CompileRunRequest(dry_run=False)
+    outcomes = asyncio.run(
+        compile_workflow._reconcile_applied_articles(
+            settings, store_root, [new_article, new_article.resolve()], request
+        )
+    )
+
+    assert find_related_calls["n"] == 1
+    assert len(fake_agent.deps) == 1
+    assert len(outcomes) == 1
+
+
 def test_verdict_context_split_sets_scope_on_both(tmp_path: Path) -> None:
     store_root = tmp_path / "knowledge"
     old = store_root / "old.md"

@@ -370,32 +370,38 @@ def apply_reconciliation_verdict(
         )
         actions.append(f"old refined_by += {new_rel}; new refines += {old_rel}")
 
-    elif verdict.verdict == "contradicts_supersedes":
+    elif verdict.verdict in {"contradicts_supersedes", "duplicates"}:
+        # duplicates shares the supersession mechanics: the NEW article absorbs the
+        # OLD restatement (no contradiction required), OLD is retired with full
+        # links so nothing is lost and the undo path applies as usual.
         # --- Resurrection flagging: OLD previously superseded predecessors ---
-        # OLD's superseder (OLD itself) is now being invalidated, so any
-        # articles that OLD previously superseded should be flagged for
-        # re-reconciliation (their superseder is no longer authoritative).
+        # ONLY for contradicts_supersedes: OLD's claims are being invalidated, so
+        # articles OLD defeated may deserve re-reconciliation. An absorption
+        # (duplicates) keeps OLD's content alive inside NEW, so OLD's past
+        # supersessions remain valid — flagging them would schedule spurious
+        # re-reconciliation work that an undo could not fully reverse.
         resurrection_flagged: list[str] = []
-        try:
-            old_text = old_path.read_text(encoding="utf-8", errors="replace")
-            old_fm, _body = _split_front_matter(old_text)
-            old_supersedes = old_fm.get("supersedes")
-            if isinstance(old_supersedes, list):
-                predecessor_relpaths = old_supersedes
-            elif isinstance(old_supersedes, str) and old_supersedes.strip():
-                predecessor_relpaths = [old_supersedes.strip()]
-            else:
-                predecessor_relpaths = []
-            for pred_rel in predecessor_relpaths:
-                pred_abs = (store_root / pred_rel).resolve()
-                if not is_relative_to(pred_abs, store_root.resolve()):
-                    continue
-                if not pred_abs.exists():
-                    continue
-                mark_for_rereconciliation(pred_abs, store_root=store_root, dry_run=dry_run)
-                resurrection_flagged.append(pred_rel)
-        except OSError:
-            pass
+        if verdict.verdict == "contradicts_supersedes":
+            try:
+                old_text = old_path.read_text(encoding="utf-8", errors="replace")
+                old_fm, _body = _split_front_matter(old_text)
+                old_supersedes = old_fm.get("supersedes")
+                if isinstance(old_supersedes, list):
+                    predecessor_relpaths = old_supersedes
+                elif isinstance(old_supersedes, str) and old_supersedes.strip():
+                    predecessor_relpaths = [old_supersedes.strip()]
+                else:
+                    predecessor_relpaths = []
+                for pred_rel in predecessor_relpaths:
+                    pred_abs = (store_root / pred_rel).resolve()
+                    if not is_relative_to(pred_abs, store_root.resolve()):
+                        continue
+                    if not pred_abs.exists():
+                        continue
+                    mark_for_rereconciliation(pred_abs, store_root=store_root, dry_run=dry_run)
+                    resurrection_flagged.append(pred_rel)
+            except OSError:
+                pass
         apply_frontmatter_update(
             old_path,
             store_root=store_root,
@@ -472,7 +478,7 @@ def revert_reconciliation(
     old_rel = outcome.old_path
     new_rel = outcome.new_path
 
-    if outcome.verdict == "contradicts_supersedes":
+    if outcome.verdict in {"contradicts_supersedes", "duplicates"}:
         # Restore old article: status back to prior, remove superseded_by link.
         restore_status = outcome.prior_status or DEFAULT_STATUS
         apply_frontmatter_update(

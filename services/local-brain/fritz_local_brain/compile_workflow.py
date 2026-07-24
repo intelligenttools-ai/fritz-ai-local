@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from datetime import datetime
 from difflib import SequenceMatcher
 from pathlib import Path
@@ -95,6 +96,40 @@ _CONTEXT_LENGTH_MARKERS = (
     "input length",
     "too many tokens",
 )
+
+# Safety gates for the LLM-judged 'duplicates' verdict (it retires an article
+# without requiring a contradiction, so it gets stricter auto-apply conditions
+# than contradicts_supersedes; failing the gate downgrades to 'refines' — link,
+# don't retire — so dedup can never lose knowledge on weak evidence).
+_DUPLICATES_MIN_CONFIDENCE = 0.8
+_DUPLICATES_MAX_PER_ARTICLE = 2
+
+
+def _gate_duplicates_verdict(verdict, *, old_truncated: bool, duplicates_so_far: int):
+    """Downgrade an unsafe 'duplicates' verdict to 'refines'.
+
+    Unsafe when: the judge did not see the OLD article's full content (it cannot
+    know nothing durable is lost), its confidence is below the floor, or this NEW
+    article already retired the per-run cap of duplicates (bounds how much damage
+    one malicious/degenerate capture can do in a single run).
+    """
+    if verdict.verdict != "duplicates":
+        return verdict
+    reason = None
+    if old_truncated:
+        reason = "old article content was truncated at the correlation budget"
+    elif not (math.isfinite(verdict.confidence) and _DUPLICATES_MIN_CONFIDENCE <= verdict.confidence <= 1.0):
+        reason = f"confidence {verdict.confidence!r} outside [{_DUPLICATES_MIN_CONFIDENCE}, 1.0]"
+    elif duplicates_so_far >= _DUPLICATES_MAX_PER_ARTICLE:
+        reason = f"per-article duplicates cap ({_DUPLICATES_MAX_PER_ARTICLE}) reached"
+    if reason is None:
+        return verdict
+    return verdict.model_copy(
+        update={
+            "verdict": "refines",
+            "reasoning": f"{verdict.reasoning} [duplicates downgraded to refines: {reason}]",
+        }
+    )
 
 
 def _resolve_capture_source(brain_home: Path, source: str) -> Path:
@@ -687,7 +722,7 @@ async def run_compile(settings: Settings, request: CompileRunRequest, trusted: b
             # Rebuild active + archive indexes when reconciliation moved any
             # article into an archive status (contradicts_supersedes applied).
             archived_by_reconciliation = any(
-                o.applied and o.verdict == "contradicts_supersedes"
+                o.applied and o.verdict in {"contradicts_supersedes", "duplicates"}
                 for o in reconciliations
             )
             if archived_by_reconciliation:
@@ -776,7 +811,13 @@ async def _reconcile_applied_articles(
     # standalone re-reconciliation sweep passes none and uses the live settings.
     agent = build_reconciliation_agent(llm_settings or settings)
 
-    for new_target in applied_targets:
+    # Dedupe iteration: applied_targets can contain the same target path multiple
+    # times (one entry per proposal that touched it, e.g. a create followed by an
+    # update within the same run), so iterate unique targets — one reconciliation
+    # sweep per article, order preserved.
+    unique_targets = list(dict.fromkeys(p.resolve() for p in applied_targets))
+
+    for new_target in unique_targets:
         try:
             new_content = new_target.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -818,13 +859,13 @@ async def _reconcile_applied_articles(
                     request.dry_run,
                 )
                 continue
-            pending.append((new_target, old_path, result.output))
+            pending.append((new_target, old_path, result.output, bool(entry.get("content_truncated"))))
 
     # ---- Phase B: gate + apply ----
 
     autonomy = settings.reconciliation_autonomy
     approved = settings.approval_matches(request.approval_token)
-    supersession_count = sum(1 for _, _, v in pending if v.verdict == "contradicts_supersedes")
+    supersession_count = sum(1 for _, _, v, _ in pending if v.verdict in {"contradicts_supersedes", "duplicates"})
 
     # Determine which verdicts to block.
     block_supersessions = False
@@ -838,12 +879,15 @@ async def _reconcile_applied_articles(
             block_supersessions = True
 
     outcomes: list[ReconciliationOutcome] = []
+    # Per-article count of duplicates verdicts actually being applied this run (the
+    # gate's cap must count what's applied, not what Phase A merely proposed).
+    applied_duplicates: dict[str, int] = {}
 
-    for new_target, old_path, verdict in pending:
+    for new_target, old_path, verdict, old_truncated in pending:
         new_rel = str(new_target.resolve().relative_to(store_root.resolve()))
         old_rel = str(old_path.resolve().relative_to(store_root.resolve()))
 
-        is_supersession = verdict.verdict == "contradicts_supersedes"
+        is_supersession = verdict.verdict in {"contradicts_supersedes", "duplicates"}
 
         if global_block:
             outcomes.append(
@@ -875,6 +919,16 @@ async def _reconcile_applied_articles(
             )
             continue
 
+        # Gate an unsafe 'duplicates' verdict down to 'refines' only NOW — right
+        # before it applies. Gating in Phase A would consume the per-article cap
+        # even when this verdict was only proposed/escalated above (nothing applied).
+        gated = _gate_duplicates_verdict(
+            verdict, old_truncated=old_truncated, duplicates_so_far=applied_duplicates.get(new_rel, 0)
+        )
+        if gated.verdict == "duplicates":
+            applied_duplicates[new_rel] = applied_duplicates.get(new_rel, 0) + 1
+        verdict = gated
+
         # Apply the verdict.
         outcome = apply_reconciliation_verdict(
             verdict,
@@ -886,9 +940,9 @@ async def _reconcile_applied_articles(
         outcomes.append(outcome)
 
         # Write reversible undo log for status-mutating verdicts.
-        if verdict.verdict in {"contradicts_supersedes", "corroborates"}:
+        if verdict.verdict in {"contradicts_supersedes", "duplicates", "corroborates"}:
             links_added: dict[str, list[str]] = {}
-            if verdict.verdict == "contradicts_supersedes":
+            if verdict.verdict in {"contradicts_supersedes", "duplicates"}:
                 links_added = {"superseded_by": [new_rel], "supersedes": [old_rel]}
             elif verdict.verdict == "corroborates":
                 links_added = {"corroborated_by": [new_rel]}

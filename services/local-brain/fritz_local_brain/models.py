@@ -56,6 +56,7 @@ class ReconciliationVerdict(BaseModel):
     verdict: Literal[
         "corroborates",
         "refines",
+        "duplicates",
         "contradicts_supersedes",
         "context_split",
         "orthogonal",
