@@ -317,6 +317,70 @@ def test_gate_duplicates_verdict_per_article_cap_counts_sequentially() -> None:
     assert "cap" in third.reasoning
 
 
+# ---------------------------------------------------------------------------
+# #319: _reconciliation_already_applied (idempotent re-apply detection)
+# ---------------------------------------------------------------------------
+
+
+def test_reconciliation_already_applied_true_when_link_present(tmp_path: Path) -> None:
+    from fritz_local_brain.compile_workflow import _reconciliation_already_applied
+
+    old = tmp_path / "old.md"
+    _write_article(old, {"title": "Old", "status": "corroborated", "corroborated_by": ["new.md"]})
+    assert _reconciliation_already_applied("corroborates", "new.md", old) is True
+
+
+def test_reconciliation_already_applied_false_when_link_absent(tmp_path: Path) -> None:
+    from fritz_local_brain.compile_workflow import _reconciliation_already_applied
+
+    old = tmp_path / "old.md"
+    _write_article(old, {"title": "Old", "status": "active"})
+    assert _reconciliation_already_applied("corroborates", "new.md", old) is False
+
+
+def test_reconciliation_already_applied_checks_verdict_specific_key(tmp_path: Path) -> None:
+    """Only undo-bearing verdicts (corroborates/contradicts_supersedes/duplicates)
+    are guarded. ``refines`` writes no undo record, so it is deliberately NOT in
+    the key map — it must return False even when refined_by already lists
+    new_rel, so a re-sweep still repairs the NEW-side ``refines`` back-link if
+    that one write didn't happen yet."""
+    from fritz_local_brain.compile_workflow import _reconciliation_already_applied
+
+    old = tmp_path / "old.md"
+    _write_article(old, {"title": "Old", "status": "active", "refined_by": ["new.md"]})
+    assert _reconciliation_already_applied("refines", "new.md", old) is False
+    # Same file, wrong verdict key → not considered already-applied either.
+    assert _reconciliation_already_applied("corroborates", "new.md", old) is False
+
+
+def test_reconciliation_already_applied_true_for_supersession_and_duplicates(tmp_path: Path) -> None:
+    from fritz_local_brain.compile_workflow import _reconciliation_already_applied
+
+    old = tmp_path / "old.md"
+    _write_article(old, {"title": "Old", "status": "superseded", "superseded_by": ["new.md"]})
+    assert _reconciliation_already_applied("contradicts_supersedes", "new.md", old) is True
+    assert _reconciliation_already_applied("duplicates", "new.md", old) is True
+
+
+def test_reconciliation_already_applied_false_for_non_linking_verdicts(tmp_path: Path) -> None:
+    """context_split/orthogonal never map to a link key → always False, even
+    when the (unrelated) superseded_by link happens to already list new_rel."""
+    from fritz_local_brain.compile_workflow import _reconciliation_already_applied
+
+    old = tmp_path / "old.md"
+    _write_article(old, {"title": "Old", "status": "active", "superseded_by": ["new.md"]})
+    assert _reconciliation_already_applied("context_split", "new.md", old) is False
+    assert _reconciliation_already_applied("orthogonal", "new.md", old) is False
+
+
+def test_reconciliation_already_applied_string_valued_link(tmp_path: Path) -> None:
+    from fritz_local_brain.compile_workflow import _reconciliation_already_applied
+
+    old = tmp_path / "old.md"
+    _write_article(old, {"title": "Old", "status": "corroborated", "corroborated_by": "new.md"})
+    assert _reconciliation_already_applied("corroborates", "new.md", old) is True
+
+
 def test_reconcile_applied_articles_dedupes_repeated_targets(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -353,6 +417,102 @@ def test_reconcile_applied_articles_dedupes_repeated_targets(
     assert find_related_calls["n"] == 1
     assert len(fake_agent.deps) == 1
     assert len(outcomes) == 1
+
+
+def test_reconcile_applied_articles_second_sweep_skips_already_applied_and_preserves_undo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mixed (applied + escalated) article re-swept twice: the applied pair must
+    NOT be re-applied or double-logged on the second sweep, and the escalated pair
+    must remain escalated (unapplied) both times — this is exactly the #317 flag
+    behaviour that leaves such a mixed article eligible for re-sweeping.
+
+    Regression for #319: before the idempotency guard, the second sweep re-ran
+    apply_reconciliation_verdict + append_reconciliation_undo for the
+    already-applied pair, appending a second undo record whose old_prior_status
+    reflected the POST-first-apply status instead of the original one.
+    """
+    settings = _store_mode_settings_wi8(
+        tmp_path,
+        LOCAL_BRAIN_RECONCILIATION_AUTONOMY="apply",
+        LOCAL_BRAIN_BULK_SUPERSESSION_THRESHOLD=1,
+    )
+    brain_home = settings.brain_home
+    store_root = brain_home / "knowledge"
+
+    flagged = store_root / "common" / "decisions" / "flagged.md"
+    corroborated_target = store_root / "common" / "decisions" / "related-a.md"
+    # Two supersession targets so supersession_count (2) exceeds the threshold
+    # (1) — the minimum config that escalates (the threshold field enforces >= 1).
+    escalated_target = store_root / "common" / "decisions" / "related-b.md"
+    escalated_target2 = store_root / "common" / "decisions" / "related-c.md"
+    _write_article(flagged, {"type": "article", "title": "Flagged", "status": "active"}, body="Flagged body.")
+    _write_article(
+        corroborated_target, {"type": "article", "title": "Related A", "status": "active"}, body="Related A body."
+    )
+    _write_article(
+        escalated_target, {"type": "article", "title": "Related B", "status": "active"}, body="Related B body."
+    )
+    _write_article(
+        escalated_target2, {"type": "article", "title": "Related C", "status": "active"}, body="Related C body."
+    )
+
+    async def _fake_find_related(settings, content, *, store_root, top_k, char_budget):
+        return [
+            {"path": "common/decisions/related-a.md", "title": "Related A", "content": "Related A body."},
+            {"path": "common/decisions/related-b.md", "title": "Related B", "content": "Related B body."},
+            {"path": "common/decisions/related-c.md", "title": "Related C", "content": "Related C body."},
+        ]
+
+    monkeypatch.setattr(compile_workflow, "find_related_articles", _fake_find_related)
+
+    class RoutingAgent:
+        async def run(self, prompt: str, *, deps: object, usage_limits: object) -> SimpleNamespace:
+            if deps.old_path == "common/decisions/related-a.md":
+                return SimpleNamespace(output=ReconciliationVerdict(verdict="corroborates", reasoning="corr"))
+            return SimpleNamespace(output=ReconciliationVerdict(verdict="contradicts_supersedes", reasoning="sup"))
+
+    monkeypatch.setattr(compile_workflow, "build_reconciliation_agent", lambda s: RoutingAgent())
+
+    request = CompileRunRequest(dry_run=False)
+
+    # --- Sweep 1: corroborates applies; contradicts_supersedes escalates (count 2 > threshold 1) ---
+    outcomes1 = asyncio.run(
+        compile_workflow._reconcile_applied_articles(settings, store_root, [flagged], request)
+    )
+    applied1 = [o for o in outcomes1 if o.disposition == "applied"]
+    escalated1 = [o for o in outcomes1 if o.disposition == "escalated"]
+    assert len(applied1) == 1
+    assert len(escalated1) == 2
+    assert not all(o.applied for o in outcomes1)  # mix → #317 preserves needs_rereconciliation
+
+    assert _read_frontmatter(corroborated_target)["status"] == "corroborated"
+    assert _read_frontmatter(escalated_target)["status"] == "active"
+    assert _read_frontmatter(escalated_target2)["status"] == "active"
+
+    records_after_1 = read_reconciliation_undo(brain_home)
+    corr_records_after_1 = [r for r in records_after_1 if r["verdict"] == "corroborates"]
+    assert len(corr_records_after_1) == 1
+    assert corr_records_after_1[0]["old_prior_status"] == "active"
+
+    # --- Sweep 2: the same pending pairs are re-evaluated (flag was preserved) ---
+    outcomes2 = asyncio.run(
+        compile_workflow._reconcile_applied_articles(settings, store_root, [flagged], request)
+    )
+    applied2 = [o for o in outcomes2 if o.verdict == "corroborates"]
+    escalated2 = [o for o in outcomes2 if o.disposition == "escalated"]
+    assert len(escalated2) == 2, "escalated pairs keep re-escalating until approved"
+    assert applied2 and applied2[0].applied is True, "already-applied pair still reports applied=True"
+
+    records_after_2 = read_reconciliation_undo(brain_home)
+    corr_records_after_2 = [r for r in records_after_2 if r["verdict"] == "corroborates"]
+    assert len(corr_records_after_2) == 1, (
+        "must NOT append a second undo record for an already-applied pair (unbounded growth)"
+    )
+    assert corr_records_after_2[0]["old_prior_status"] == "active", (
+        "the surviving undo record's old_prior_status must be the ORIGINAL pre-apply status, "
+        "not one mutated by a stray re-apply on the second sweep"
+    )
 
 
 def test_verdict_context_split_sets_scope_on_both(tmp_path: Path) -> None:

@@ -598,6 +598,106 @@ def test_sweep_non_dry_run_correlated_pair_applies_verdict_and_clears_flag(
 
 
 # ---------------------------------------------------------------------------
+# #319: idempotent re-apply through the real production path (two full sweeps)
+# ---------------------------------------------------------------------------
+
+
+def test_sweep_second_pass_skips_already_applied_pair_end_to_end(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A flagged article with a MIX outcome (one applied corroborates pair, two
+    escalated bulk-supersession pairs) is re-swept via run_rereconciliation_sweep
+    TWICE — the actual #317 -> #319 production chain: #317 preserves the flag
+    because the escalated pairs are unapplied, so the flagged article is picked
+    up again by find_rereconciliation_flagged() on the second sweep, and
+    _reconcile_applied_articles (NOT mocked here) re-evaluates the same pairs.
+
+    Only find_related_articles and build_reconciliation_agent are monkeypatched
+    (the same seam every other test in this module uses) — the reconcile/apply
+    machinery itself runs for real, so this exercises the #319 guard on the
+    actual code path a live re-reconciliation sweep takes, not a narrated
+    direct call.
+    """
+    settings = _settings(
+        tmp_path,
+        LOCAL_BRAIN_RECONCILIATION_AUTONOMY="apply",
+        LOCAL_BRAIN_BULK_SUPERSESSION_THRESHOLD=1,
+        LOCAL_BRAIN_CORRELATION_TOP_K=5,
+    )
+    brain_home = settings.brain_home
+    store_root = settings.resolve_brain_store_path()
+
+    flagged = store_root / "flagged.md"
+    corroborated_target = store_root / "related-a.md"
+    # Two supersession targets so supersession_count (2) exceeds the threshold
+    # (1) — LOCAL_BRAIN_BULK_SUPERSESSION_THRESHOLD enforces >= 1.
+    escalated_target = store_root / "related-b.md"
+    escalated_target2 = store_root / "related-c.md"
+    _write_article(
+        flagged,
+        {"title": "Flagged", "status": "active", "needs_rereconciliation": True},
+        body="Flagged body.",
+    )
+    _write_article(corroborated_target, {"title": "Related A", "status": "active"}, body="Related A body.")
+    _write_article(escalated_target, {"title": "Related B", "status": "active"}, body="Related B body.")
+    _write_article(escalated_target2, {"title": "Related C", "status": "active"}, body="Related C body.")
+
+    async def _fake_find_related(settings, content, *, store_root, top_k, char_budget):
+        return [
+            {"path": "related-a.md", "title": "Related A", "content": "Related A body."},
+            {"path": "related-b.md", "title": "Related B", "content": "Related B body."},
+            {"path": "related-c.md", "title": "Related C", "content": "Related C body."},
+        ]
+
+    monkeypatch.setattr(compile_workflow, "find_related_articles", _fake_find_related)
+
+    class RoutingAgent:
+        async def run(self, prompt: str, *, deps: object, usage_limits: object) -> SimpleNamespace:
+            if deps.old_path == "related-a.md":
+                return SimpleNamespace(output=ReconciliationVerdict(verdict="corroborates", reasoning="corr"))
+            return SimpleNamespace(output=ReconciliationVerdict(verdict="contradicts_supersedes", reasoning="sup"))
+
+    monkeypatch.setattr(compile_workflow, "build_reconciliation_agent", lambda s: RoutingAgent())
+
+    # --- Sweep 1: corroborates applies; both supersessions escalate (2 > threshold 1) ---
+    result1 = asyncio.run(run_rereconciliation_sweep(settings, dry_run=False))
+
+    applied1 = [o for o in result1.outcomes if o.disposition == "applied"]
+    escalated1 = [o for o in result1.outcomes if o.disposition == "escalated"]
+    assert len(applied1) == 1
+    assert len(escalated1) == 2
+    assert result1.cleared_count == 0, "mix of applied+escalated must preserve the flag (#317)"
+
+    fm_after_1 = _read_frontmatter(flagged)
+    assert fm_after_1.get("needs_rereconciliation") is True
+
+    records_after_1 = read_reconciliation_undo(brain_home)
+    corr_after_1 = [r for r in records_after_1 if r["verdict"] == "corroborates"]
+    assert len(corr_after_1) == 1
+    assert corr_after_1[0]["old_prior_status"] == "active"
+
+    # --- Sweep 2: flag was preserved, so the flagged article is picked up again ---
+    result2 = asyncio.run(run_rereconciliation_sweep(settings, dry_run=False))
+
+    assert result2.processed_count == 1, "flagged article must be re-swept (flag was preserved)"
+    escalated2 = [o for o in result2.outcomes if o.disposition == "escalated"]
+    assert len(escalated2) == 2, "escalated pairs keep re-escalating until approved"
+    assert result2.cleared_count == 0
+    fm_after_2 = _read_frontmatter(flagged)
+    assert fm_after_2.get("needs_rereconciliation") is True, "still flagged: escalated pairs remain unapplied"
+
+    records_after_2 = read_reconciliation_undo(brain_home)
+    corr_after_2 = [r for r in records_after_2 if r["verdict"] == "corroborates"]
+    assert len(corr_after_2) == 1, (
+        "must NOT append a second undo record for the already-applied corroborates pair"
+    )
+    assert corr_after_2[0]["old_prior_status"] == "active", (
+        "the surviving undo record's old_prior_status must remain the ORIGINAL pre-apply status"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Result dataclass
 # ---------------------------------------------------------------------------
 
