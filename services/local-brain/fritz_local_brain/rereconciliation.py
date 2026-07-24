@@ -43,6 +43,9 @@ class RereconciliationResult:
     cleared_count: int = 0
     """Number of articles whose flag was cleared (non-dry-run only)."""
 
+    failed_count: int = 0
+    """Number of articles whose reconcile evaluation raised an exception."""
+
     dry_run: bool = True
     """Whether this sweep ran in dry-run mode."""
 
@@ -103,18 +106,32 @@ async def run_rereconciliation_sweep(
 
         # Treat the flagged article as the "new" article in a reconciliation
         # call — _reconcile_applied_articles finds related content internally.
-        outcomes: list[ReconciliationOutcome] = await compile_workflow._reconcile_applied_articles(
-            settings,
-            brain_store_root,
-            [abs_path],
-            request,
-        )
+        try:
+            outcomes: list[ReconciliationOutcome] = await compile_workflow._reconcile_applied_articles(
+                settings,
+                brain_store_root,
+                [abs_path],
+                request,
+            )
+        except Exception as exc:
+            # Evaluation failed — preserve the flag so the next sweep retries,
+            # and continue with the remaining flagged articles.
+            append_global_log(
+                settings.brain_home,
+                "RERECONCILE",
+                f"Re-reconcile failed for {rel_path!r}: {exc}",
+                dry_run,
+            )
+            result.failed_count += 1
+            continue
+
         result.outcomes.extend(outcomes)
 
-        # Clear the flag on processed articles so they are not swept again.
-        # Only do this when NOT in dry-run AND reconciliation ran (even if it
-        # produced no pairs — the article was processed and the flag is stale).
-        if not dry_run:
+        # Clear the flag only once every verdict for this article was actually
+        # applied (or there were no pairs to reconcile at all — a stale flag
+        # with nothing to do). Preserve it on any proposed/escalated outcome
+        # (autonomy/bulk guard) so the next sweep retries.
+        if not dry_run and all(o.applied for o in outcomes):
             apply_frontmatter_update(
                 abs_path,
                 store_root=brain_store_root,
@@ -131,6 +148,7 @@ async def run_rereconciliation_sweep(
         (
             f"Re-reconciliation sweep: {result.flagged_count} flagged, "
             f"{result.processed_count} processed, {result.cleared_count} cleared, "
+            f"{result.failed_count} failed, "
             f"{len(result.outcomes)} pairs evaluated ({applied_count} applied)"
         ),
         dry_run,
