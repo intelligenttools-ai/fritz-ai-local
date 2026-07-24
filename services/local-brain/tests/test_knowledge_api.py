@@ -169,6 +169,34 @@ def test_articles_list_all_excludes_index(monkeypatch, tmp_path) -> None:
     assert glossary["status"] == "active"
 
 
+def test_articles_sorted_newest_first(monkeypatch, tmp_path) -> None:
+    """The list is chronological, newest on top (updated, else created), in the
+    all-articles view AND any category subtree; undated articles sink last."""
+    from fritz_local_brain import knowledge
+
+    settings = _settings(tmp_path)
+    root = knowledge.store_root(settings)
+    root.mkdir(parents=True, exist_ok=True)
+    _write(root, "cat/older.md", front={"title": "Older", "created": "2026-06-17"})
+    _write(root, "cat/newest.md", front={"title": "Newest", "created": "2026-07-01", "updated": "2026-07-09"})
+    _write(root, "cat/middle.md", front={"title": "Middle", "created": "2026-07-03"})
+    _write(root, "cat/undated.md", front={"title": "Undated"})
+    _write(root, "other/elsewhere.md", front={"title": "Elsewhere", "created": "2026-07-05"})
+    client = _client(monkeypatch, settings)
+
+    all_paths = [a["path"] for a in client.get("/v1/knowledge/articles", headers=_AUTH).json()["articles"]]
+    assert all_paths == [
+        "cat/newest.md",
+        "other/elsewhere.md",
+        "cat/middle.md",
+        "cat/older.md",
+        "cat/undated.md",
+    ]
+
+    cat_paths = [a["path"] for a in client.get("/v1/knowledge/articles?path=cat", headers=_AUTH).json()["articles"]]
+    assert cat_paths == ["cat/newest.md", "cat/middle.md", "cat/older.md", "cat/undated.md"]
+
+
 def test_articles_status_filter(monkeypatch, tmp_path) -> None:
     settings = _settings(tmp_path)
     _seed_store(settings)

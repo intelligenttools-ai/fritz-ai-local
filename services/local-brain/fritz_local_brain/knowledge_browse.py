@@ -237,6 +237,11 @@ def list_articles(
             }
         )
 
+    # Chronological, newest on top (holds for the all-articles view and any
+    # category subtree alike). ISO date strings sort lexically; undated articles
+    # sink to the end; path is the deterministic tiebreak.
+    rows.sort(key=lambda r: (r["updated"] or r["created"] or "", r["path"]), reverse=True)
+
     total = len(rows)
     window = rows[effective_offset : effective_offset + effective_limit]
     return {"total": total, "limit": effective_limit, "offset": effective_offset, "articles": window}

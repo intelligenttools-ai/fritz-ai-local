@@ -180,14 +180,32 @@ def test_operations_actions_panel_and_endpoints() -> None:
 
 def test_operations_no_approval_token_gate() -> None:
     # Operator-initiated runs must never demand an approval token; the apply
-    # confirm() is the only guard. The token gate UI is gone.
+    # confirm dialog is the only guard. The token gate UI is gone.
     body = _ops()
     assert 'id="approval-token-input"' not in body
     assert "retryApplyCompile" not in body
     assert "Approval token" not in body
-    # The apply action still confirms before running.
+    # The apply action still confirms before running — via the themed in-app
+    # dialog, never the native browser confirm() popup.
     assert "APPLY mode" in body
+    assert "await appConfirm(" in body
+    assert "!confirm(" not in body
     assert 'id="action-toast"' in body
+
+
+def test_shared_app_confirm_dialog_replaces_native_popups() -> None:
+    """The shared toolbox ships the themed promise-based confirm; message text is
+    set via textContent (XSS-safe) and no page uses native confirm()."""
+    js = _api_js()
+    assert "function appConfirm(" in js
+    assert 'textContent = message' in js
+    client = _client()
+    for path in ("/ui/", "/ui/activity", "/ui/agents", "/ui/operations",
+                 "/ui/settings", "/ui/knowledge"):
+        body = client.get(path).text
+        assert "!confirm(" not in body, f"native confirm() popup on {path}"
+    css = client.get("/ui/shared/app.css").text
+    assert "#app-confirm-box" in css
 
 
 def test_operations_recent_runs_table() -> None:

@@ -448,3 +448,32 @@ tr[data-run-id] { cursor: pointer; }
   color: var(--text); text-decoration: none; font-size: .85rem; box-shadow: var(--shadow);
 }
 .page-link:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ---- in-app confirm dialog (replaces native confirm()) -------------------- */
+#app-confirm {
+  position: fixed; inset: 0;
+  background: rgba(0,0,0,.6);
+  display: none; align-items: center; justify-content: center;
+  z-index: 1000;
+}
+#app-confirm-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.5rem;
+  width: 380px; max-width: calc(100vw - 2rem);
+  box-shadow: var(--shadow);
+}
+#app-confirm-msg { color: var(--text); font-size: .9rem; line-height: 1.5; margin-bottom: 1.25rem; }
+#app-confirm-actions { display: flex; gap: .6rem; justify-content: flex-end; }
+#app-confirm-actions button {
+  padding: .5rem 1.1rem;
+  border-radius: 6px; font-size: .85rem; cursor: pointer;
+  border: 1px solid var(--border);
+  background: transparent; color: var(--text);
+}
+#app-confirm-actions button:hover { border-color: var(--accent); color: var(--accent); }
+#app-confirm-actions #app-confirm-ok {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+}
+#app-confirm-actions #app-confirm-ok:hover { opacity: .9; color: #fff; }
