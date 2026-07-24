@@ -10,7 +10,13 @@ from .agents.query_agent import BrainQueryAgent
 from .captures import list_queryable_captures, read_capture_raw
 from .config import Settings
 from .live_fetch import live_fetch as _live_fetch
-from .embeddings import embedding_index_unavailable_reason, ensure_embedding_index, search_embedding_index
+from .embeddings import (
+    embedding_index_is_stale,
+    embedding_index_unavailable_reason,
+    ensure_embedding_index,
+    schedule_embedding_refresh_after_compile,
+    search_embedding_index,
+)
 from .knowledge import ARCHIVE_STATUSES, store_root
 from .agents.query_agent import _status_of as _qa_status_of
 from .manifests import load_manifest, resolve_manifest_path
@@ -243,6 +249,10 @@ async def run_query(
                 if unavailable_reason:
                     skipped.append(f"vector search: {unavailable_reason}")
                     vector_search_available = False
+                elif embedding_index_is_stale(settings):
+                    # A lagging index still serves; catch up in the background so
+                    # new captures never blank out search (debounced, non-blocking).
+                    schedule_embedding_refresh_after_compile(settings, reason="stale index at search")
             seen = {(match.vault, match.path) for match in matches}
             allowed_vector_paths = _allowed_vector_paths(settings, vault_paths, capture_vault_name, scope=request.scope)
             if request.vault:

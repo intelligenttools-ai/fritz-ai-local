@@ -141,6 +141,55 @@ def test_query_workflow_does_not_refresh_embedding_index_for_interactive_search(
     assert result.skipped == ["vector search: Embedding index is missing; waiting for compile/ingest refresh"]
 
 
+def test_query_workflow_serves_stale_index_and_schedules_background_refresh(tmp_path, monkeypatch) -> None:
+    """A new capture makes the index stale — search must STILL serve the existing
+    index (no blank results) and schedule the debounced background refresh."""
+    brain_home = tmp_path / "brain"
+    skill_path = tmp_path / "skills" / "brain-query" / "SKILL.md"
+    capture = brain_home / "capture" / "inbox" / "fact.md"
+    brain_home.mkdir(parents=True)
+    capture.parent.mkdir(parents=True)
+    skill_path.parent.mkdir(parents=True)
+    (brain_home / "registry.yaml").write_text("vaults: {}\n", encoding="utf-8")
+    skill_path.write_text("# Query Skill\n", encoding="utf-8")
+    capture.write_text("# Storage\n\nLonghorn replica scheduling failure runbook.\n", encoding="utf-8")
+
+    async def fake_embed(settings, text):
+        return [1.0, 0.0] if "disk pressure" in text else [0.9, 0.1]
+
+    monkeypatch.setattr(embeddings, "_embed_text", fake_embed)
+    settings = Settings(
+        LOCAL_BRAIN_HOME=brain_home,
+        LOCAL_BRAIN_SKILLS_DIR=tmp_path / "skills",
+        LOCAL_BRAIN_EMBEDDING_ENABLED=True,
+    )
+    asyncio.run(embeddings.refresh_embedding_index(settings))
+
+    # A NEW capture arrives after the index build → index is now stale.
+    (brain_home / "capture" / "inbox" / "later.md").write_text(
+        "# Later\n\nA capture that arrived after the index build.\n", encoding="utf-8"
+    )
+
+    import fritz_local_brain.query_workflow as query_workflow
+
+    scheduled: list[str] = []
+    monkeypatch.setattr(
+        query_workflow,
+        "schedule_embedding_refresh_after_compile",
+        lambda s, *, reason: scheduled.append(reason) or "scheduled",
+    )
+
+    result = asyncio.run(run_query(settings, QueryRunRequest(query="disk pressure"), use_vector=True, ensure_index=False))
+
+    assert result.errors == []
+    # The pre-existing indexed capture is still served from the stale index.
+    assert any(match.path == "capture/inbox/fact.md" for match in result.matches)
+    # Staleness is not reported as a vector-search skip.
+    assert not any("stale" in entry for entry in result.skipped)
+    # The background refresh was scheduled so the index catches up.
+    assert scheduled == ["stale index at search"]
+
+
 def test_query_workflow_skips_vector_search_when_index_refresh_fails(tmp_path, monkeypatch) -> None:
     brain_home = tmp_path / "brain"
     skill_path = tmp_path / "skills" / "brain-query" / "SKILL.md"

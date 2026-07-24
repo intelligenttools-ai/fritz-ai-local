@@ -383,3 +383,28 @@ def test_registry_mode_compile_related_articles_not_populated(
     assert len(agent.captured_deps) == 1
     # Registry mode → related_articles must be empty.
     assert agent.captured_deps[0].related_articles == []
+
+
+def test_find_related_articles_falls_back_to_keywords_on_stale_index(tmp_path: Path, monkeypatch) -> None:
+    """A stale index must not shrink correlation coverage: correlation feeds
+    compile's supersession/dedup decisions, and recently-changed articles are
+    exactly what a stale index lacks — so it uses keyword ranking over the
+    CURRENT files instead of partial vectors."""
+    from fritz_local_brain import correlation as corr
+
+    settings = _settings(tmp_path, embedding_enabled=True)
+    store_root = tmp_path / "brain" / "knowledge"
+    _write_article(store_root, "ops/runbook.md", "# Runbook\n\nwireguard mtu tuning notes.\n")
+
+    monkeypatch.setattr(corr, "embedding_index_unavailable_reason", lambda s: None)
+    monkeypatch.setattr(corr, "embedding_index_is_stale", lambda s: True)
+
+    async def _must_not_search(*a, **kw):
+        raise AssertionError("stale index must not be used for correlation")
+
+    monkeypatch.setattr(corr, "search_embedding_index", _must_not_search)
+
+    related = asyncio.run(
+        find_related_articles(settings, "wireguard mtu tuning", store_root=store_root, top_k=5, char_budget=4000)
+    )
+    assert any("runbook" in item["path"] for item in related)
