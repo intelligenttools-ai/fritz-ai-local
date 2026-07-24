@@ -369,7 +369,15 @@ async def ensure_embedding_index(settings: Settings) -> EmbeddingIndexResult:
 
 
 def embedding_index_unavailable_reason(settings: Settings) -> str | None:
-    """Return why vector search should be skipped without refreshing inline."""
+    """Return why vector search cannot be served at all (hard reasons only).
+
+    Source-fingerprint drift (new/changed docs — e.g. every fresh session
+    capture) is NOT an unavailable reason: a lagging index is still a good
+    index. Use :func:`embedding_index_is_stale` for that; search serves the
+    existing index and schedules a background refresh. Only a model/endpoint
+    mismatch blocks serving — vectors from a different embedding model are not
+    comparable to the query embedding.
+    """
 
     if not settings.embedding_enabled:
         return "Embedding endpoint is disabled; set EMBEDDING_ENABLED=true"
@@ -381,11 +389,27 @@ def embedding_index_unavailable_reason(settings: Settings) -> str | None:
         return f"Embedding index is unreadable; waiting for compile/ingest refresh: {exc}"
     if data is None:
         return "Embedding index is missing; waiting for compile/ingest refresh"
+    if not _index_data_is_compatible(settings, data):
+        return "Embedding index was built for a different embedding model/endpoint; waiting for rebuild"
+    return None
+
+
+def embedding_index_is_stale(settings: Settings) -> bool:
+    """True when the index is servable but lags the current documents.
+
+    Staleness never blocks search — callers serve the existing index and
+    schedule a debounced background refresh so it catches up.
+    """
+
+    try:
+        data = _read_index_data(settings)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+    if data is None:
+        return False
     current_documents = _collect_embedding_documents(settings)
     source_fingerprint = _effective_source_fingerprint(settings, data, current_documents)
-    if not _index_data_is_compatible(settings, data, source_fingerprint):
-        return "Embedding index is stale; waiting for compile/ingest refresh"
-    return None
+    return data.get("source_fingerprint") != source_fingerprint
 
 
 async def search_embedding_index(
@@ -399,11 +423,25 @@ async def search_embedding_index(
     data = _read_index_data(settings)
     if data is None:
         return []
-    current_documents = _collect_embedding_documents(settings)
-    source_fingerprint = _effective_source_fingerprint(settings, data, current_documents)
-    if not _index_data_is_compatible(settings, data, source_fingerprint):
+    # Serve the existing index even when it lags the current documents (source
+    # drift is mere staleness — the caller schedules a background refresh). Only
+    # a model/endpoint mismatch blocks: those vectors are not comparable to the
+    # query embedding.
+    if not _index_data_is_compatible(settings, data):
         return []
     documents = data.get("documents", [])
+    # Per-document freshness: serve an entry only while its source is unchanged.
+    # A changed or deleted source (e.g. a capture edited to redact a secret) is
+    # dropped immediately — never served from the stale index — while unchanged
+    # entries keep serving until the background refresh lands.
+    current_state = {
+        (str(d.get("vault", "")), str(d.get("path", ""))): (
+            str(d.get("source_mtime_ns", "")),
+            str(d.get("source_size", "")),
+            str(d.get("content_hash", "")),
+        )
+        for d in _collect_embedding_documents(settings)
+    }
     query_vector = await _embed_text(settings, query)
 
     scored: list[tuple[float, dict[str, Any]]] = []
@@ -411,6 +449,12 @@ async def search_embedding_index(
         if not isinstance(document, dict):
             continue
         key = (str(document.get("vault", "")), str(document.get("path", "")))
+        if current_state.get(key) != (
+            str(document.get("source_mtime_ns", "")),
+            str(document.get("source_size", "")),
+            str(document.get("content_hash", "")),
+        ):
+            continue
         if allowed_keys is not None and key not in allowed_keys:
             continue
         vector = document.get("embedding")

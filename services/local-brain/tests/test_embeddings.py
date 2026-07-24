@@ -347,11 +347,13 @@ def test_oversize_doc_does_not_mark_index_stale_for_search(tmp_path: Path, monke
     assert any(m.path == "ok.md" for m in matches)
 
 
-def test_changed_indexed_doc_still_marks_index_stale(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A genuine change to an indexed doc must still invalidate the index (no skips case)."""
+def test_changed_doc_drops_but_unchanged_docs_still_serve(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Per-document freshness: a changed doc is dropped from stale-index results
+    (redaction safety) while unchanged docs KEEP serving — staleness never blanks
+    search, it only schedules the background refresh."""
     settings = _settings(tmp_path)
 
-    doc = {
+    doc_a = {
         "vault": "brain",
         "path": "ok.md",
         "title": "Ok",
@@ -361,8 +363,18 @@ def test_changed_indexed_doc_still_marks_index_stale(tmp_path: Path, monkeypatch
         "content_hash": "def",
         "text": "ok content",
     }
+    doc_b = {
+        "vault": "brain",
+        "path": "other.md",
+        "title": "Other",
+        "snippet": "other snippet",
+        "source_mtime_ns": 2,
+        "source_size": 10,
+        "content_hash": "ghi",
+        "text": "other content",
+    }
 
-    monkeypatch.setattr(emb, "_collect_embedding_documents", lambda s: [dict(doc)])
+    monkeypatch.setattr(emb, "_collect_embedding_documents", lambda s: [dict(doc_a), dict(doc_b)])
 
     async def fake_embed(settings, text: str) -> list[float]:
         return [0.1, 0.2, 0.3]
@@ -372,21 +384,25 @@ def test_changed_indexed_doc_still_marks_index_stale(tmp_path: Path, monkeypatch
 
     result = asyncio.run(_refresh_embedding_index_unlocked(settings, EmbeddingIndexRequest(force=True)))
     assert result.indexed is True
-    assert result.documents_indexed == 1
+    assert result.documents_indexed == 2
     assert emb.embedding_index_unavailable_reason(settings) is None
 
-    # Now the doc's content/mtime change → must read as stale.
-    changed = dict(doc)
+    # doc_a changes (e.g. secret redacted) → stale, but NOT unavailable.
+    changed = dict(doc_a)
     changed["content_hash"] = "CHANGED"
     changed["source_mtime_ns"] = 999
-    monkeypatch.setattr(emb, "_collect_embedding_documents", lambda s: [changed])
+    monkeypatch.setattr(emb, "_collect_embedding_documents", lambda s: [changed, dict(doc_b)])
 
-    assert emb.embedding_index_unavailable_reason(settings) == "Embedding index is stale; waiting for compile/ingest refresh"
-    assert asyncio.run(emb.search_embedding_index(settings, "query text", 3)) == []
+    assert emb.embedding_index_unavailable_reason(settings) is None
+    assert emb.embedding_index_is_stale(settings) is True
+    matches = asyncio.run(emb.search_embedding_index(settings, "query text", 3))
+    assert any(m.path == "other.md" for m in matches), "unchanged doc must still serve"
+    assert not any(m.path == "ok.md" for m in matches), "changed doc must not serve stale content"
 
 
 def test_new_unskipped_doc_marks_index_stale(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """A brand-new doc (not in skipped_keys) must invalidate the index."""
+    """A brand-new doc (e.g. a fresh session capture) marks the index stale for
+    the background refresh — but never unavailable."""
     settings = _settings(tmp_path)
 
     doc = {
@@ -425,7 +441,43 @@ def test_new_unskipped_doc_marks_index_stale(tmp_path: Path, monkeypatch: pytest
     }
     monkeypatch.setattr(emb, "_collect_embedding_documents", lambda s: [dict(doc), new_doc])
 
-    assert emb.embedding_index_unavailable_reason(settings) == "Embedding index is stale; waiting for compile/ingest refresh"
+    assert emb.embedding_index_unavailable_reason(settings) is None
+    assert emb.embedding_index_is_stale(settings) is True
+    # The existing index still serves the already-indexed doc.
+    matches = asyncio.run(emb.search_embedding_index(settings, "query text", 3))
+    assert any(m.path == "ok.md" for m in matches)
+
+
+def test_model_mismatch_is_hard_unavailable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An index built with a DIFFERENT embedding model/endpoint must not serve:
+    its vectors are not comparable to the query embedding."""
+    settings = _settings(tmp_path)
+
+    doc = {
+        "vault": "brain",
+        "path": "ok.md",
+        "title": "Ok",
+        "snippet": "ok snippet",
+        "source_mtime_ns": 1,
+        "source_size": 8,
+        "content_hash": "def",
+        "text": "ok content",
+    }
+    monkeypatch.setattr(emb, "_collect_embedding_documents", lambda s: [dict(doc)])
+
+    async def fake_embed(settings, text: str) -> list[float]:
+        return [0.1, 0.2, 0.3]
+
+    monkeypatch.setattr(emb, "_embed_text", fake_embed)
+    monkeypatch.setattr(emb, "append_global_log", lambda *a, **kw: None)
+    result = asyncio.run(_refresh_embedding_index_unlocked(settings, EmbeddingIndexRequest(force=True)))
+    assert result.indexed is True
+
+    # Repoint the embedding model → the stored vectors are incomparable.
+    settings.embedding_model = "some-other-model:latest"
+    reason = emb.embedding_index_unavailable_reason(settings)
+    assert reason is not None and "different embedding model" in reason
+    assert asyncio.run(emb.search_embedding_index(settings, "query text", 3)) == []
 
 
 # ---------------------------------------------------------------------------

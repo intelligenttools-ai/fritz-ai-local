@@ -6,7 +6,13 @@ import re
 from pathlib import Path
 
 from .config import Settings
-from .embeddings import _is_regular_knowledge_file, _title_for, embedding_index_unavailable_reason, search_embedding_index
+from .embeddings import (
+    _is_regular_knowledge_file,
+    _title_for,
+    embedding_index_is_stale,
+    embedding_index_unavailable_reason,
+    search_embedding_index,
+)
 
 _BRAIN_VAULT_NAME = "brain"
 
@@ -51,7 +57,12 @@ async def find_related_articles(
         str(path.relative_to(store_root)): path for path in candidates
     }
 
-    use_embeddings = embedding_index_unavailable_reason(settings) is None
+    # Correlation needs coverage of the CURRENT articles (it feeds compile's
+    # supersession/dedup decisions), and recently-changed articles are exactly
+    # what a stale index filters out or lacks. Unlike interactive search, keyword
+    # ranking over the live files is a full-coverage substitute here — so on a
+    # stale index, fall back to keywords instead of serving partial vectors.
+    use_embeddings = embedding_index_unavailable_reason(settings) is None and not embedding_index_is_stale(settings)
 
     if use_embeddings:
         allowed_keys: set[tuple[str, str]] = {(_BRAIN_VAULT_NAME, relpath) for relpath in relpath_to_path}
