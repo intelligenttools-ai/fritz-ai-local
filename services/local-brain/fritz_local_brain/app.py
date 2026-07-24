@@ -78,6 +78,12 @@ def create_app() -> FastAPI:
     async def dashboard() -> RedirectResponse:
         return RedirectResponse(url="/ui/", status_code=307)
 
+    # Browsers request /favicon.ico unprompted; serve the SVG mark the page
+    # shells also reference via <link rel="icon">.
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon() -> FileResponse:
+        return FileResponse(_UI_DIR / "shared" / "favicon.svg", media_type="image/svg+xml")
+
     # Clean deep-linkable page paths without a .html suffix (e.g. /ui/activity).
     # Registered as EXACT paths (not a catch-all) so the .html form and the
     # /ui/shared/ assets fall through to the StaticFiles mount below. Uses a
