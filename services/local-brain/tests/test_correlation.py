@@ -408,3 +408,24 @@ def test_find_related_articles_falls_back_to_keywords_on_stale_index(tmp_path: P
         find_related_articles(settings, "wireguard mtu tuning", store_root=store_root, top_k=5, char_budget=4000)
     )
     assert any("runbook" in item["path"] for item in related)
+
+
+def test_find_related_articles_marks_truncated_content(tmp_path: Path) -> None:
+    """Entries whose content was cut at the char budget carry content_truncated —
+    the reconciliation duplicates-gate refuses to retire what it hasn't fully seen."""
+    settings = _settings(tmp_path, embedding_enabled=False)
+    store_root = tmp_path / "brain" / "knowledge"
+    _write_article(store_root, "ops/long.md", "# Long\n\n" + ("wireguard mtu tuning " * 400))
+
+    related = asyncio.run(
+        find_related_articles(settings, "wireguard mtu tuning", store_root=store_root, top_k=3, char_budget=500)
+    )
+    assert related, "expected the long article to rank"
+    entry = related[0]
+    assert entry["content_truncated"] is True
+    assert len(entry["content"]) <= 500
+
+    related_full = asyncio.run(
+        find_related_articles(settings, "wireguard mtu tuning", store_root=store_root, top_k=3, char_budget=100000)
+    )
+    assert related_full[0]["content_truncated"] is False

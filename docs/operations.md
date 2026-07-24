@@ -150,9 +150,10 @@ settings:
 ```
 
 - `apply` (default) — verdicts are written automatically. If a single compile
-  run would produce more `contradicts_supersedes` verdicts than
-  `bulk_supersession_threshold` (default `5`) without an `approval_token`,
-  the surplus supersessions are escalated (not applied) and reported.
+  run would produce more supersessions (`contradicts_supersedes` plus
+  `duplicates`) than `bulk_supersession_threshold` (default `5`) without an
+  `approval_token`, all supersessions in that batch are escalated (not applied)
+  and reported.
 - `propose` — all verdicts are computed but not applied; they are returned in
   the compile result for human review. Apply-mode requires an `approval_token`.
 
@@ -165,7 +166,7 @@ or the `bulk_supersession_threshold` setting.
 ### Undo log
 
 Every status-mutating reconciliation verdict (`contradicts_supersedes`,
-`corroborates`) writes a reversible record to
+`duplicates`, `corroborates`) writes a reversible record to
 `~/.brain/reconciliation-undo.jsonl`. Keep this file to enable manual undo of
 reconciliation decisions.
 
