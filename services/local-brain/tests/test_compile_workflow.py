@@ -2467,4 +2467,247 @@ def test_compile_freezes_llm_wiring_so_recorded_equals_used_after_mid_run_patch(
     # And the recorded wiring equals what was used (run-start), not the mutation.
     assert result.llm_model == "model-at-start"
     assert result.llm_base_url == start_base_url
+
+
+# ---------------------------------------------------------------------------
+# #318: apply-side merge guard for updates against truncated related content
+# ---------------------------------------------------------------------------
+
+
+def test_update_is_superset_false_when_new_body_is_shorter() -> None:
+    old_body = "## Section A\n\nAlpha content here.\n"
+    new_body = "short"
+    assert compile_workflow._update_is_superset(old_body, new_body) is False
+
+
+def test_update_is_superset_false_when_heading_missing_even_if_longer() -> None:
+    old_body = "## Section A\n\nAlpha.\n\n## Section B\n\nBeta.\n"
+    new_body = "## Section A\n\nAlpha content extended significantly beyond the original text.\n"
+    assert len(new_body) > len(old_body)
+    assert compile_workflow._update_is_superset(old_body, new_body) is False
+
+
+def test_update_is_superset_true_when_longer_and_all_headings_retained() -> None:
+    old_body = "## Section A\n\nAlpha.\n\n## Section B\n\nBeta.\n"
+    new_body = old_body + "\n## Section C\n\nGamma appended.\n"
+    assert compile_workflow._update_is_superset(old_body, new_body) is True
+
+
+_TRUNCATED_OLD_ARTICLE_TEXT = (
+    "---\n"
+    "type: article\n"
+    "title: Truncated Decision\n"
+    "sources: []\n"
+    "status: active\n"
+    "---\n\n"
+    "## Section A\n\nAlpha content.\n\n"
+    "## Section B\n\nBeta content the model never saw.\n"
+)
+
+
+def test_update_withheld_when_truncated_target_new_body_drops_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Issue #318: an UPDATE proposal against a target whose related-articles entry
+    was ``content_truncated`` (the compile agent only saw a partial old article) must
+    NOT overwrite the file when the new body is not a superset of the full on-disk
+    old body — it must instead flag ``needs_rereconciliation`` and refuse the write
+    (routed to the existing retry/error path), never silently drop content.
+    """
+    brain_home, skills_dir = _store_mode_settings(tmp_path)
+    store_root = brain_home / "knowledge"
+    rel_path = "common/decisions/decision-001.md"
+    article_path = store_root / rel_path
+    article_path.parent.mkdir(parents=True)
+    article_path.write_text(_TRUNCATED_OLD_ARTICLE_TEXT, encoding="utf-8")
+
+    capture_path = brain_home / "capture" / "inbox" / "enrich.md"
+    capture_path.write_text("# Capture\n\nEnrichment detail.\n", encoding="utf-8")
+
+    update_proposal = ArticleWriteProposal(
+        vault="brain",
+        relative_path=rel_path,
+        operation="update",
+        title="Truncated Decision",
+        summary="Enriched decision.",
+        sources=[str(capture_path)],
+        body="## Section A\n\nAlpha content, slightly reworded.\n",
+    )
+    monkeypatch.setattr(
+        compile_workflow, "build_compile_agent", lambda settings, skill_text: FakeCompileAgent(update_proposal)
+    )
+
+    async def fake_related(settings, query_text, *, store_root, top_k, char_budget):
+        return [
+            {
+                "vault": "brain",
+                "path": rel_path,
+                "title": "Truncated Decision",
+                "content": "## Section A\n\nAlpha content.\n",
+                "content_truncated": True,
+            }
+        ]
+
+    monkeypatch.setattr(compile_workflow, "find_related_articles", fake_related)
+
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=skills_dir)
+    result = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False, max_captures=1)))
+
+    # Old file on disk is UNCHANGED — full original content still present, the
+    # proposed (content-dropping) body was never written.
+    current_text = article_path.read_text(encoding="utf-8")
+    assert "Beta content the model never saw." in current_text
+    assert "Alpha content, slightly reworded." not in current_text
+
+    # The target gained needs_rereconciliation: true.
+    from fritz_local_brain.knowledge import split_front_matter
+
+    frontmatter, _ = split_front_matter(current_text)
+    assert frontmatter.get("needs_rereconciliation") is True
+
+    # The proposal was recorded as an error, not applied.
+    assert result.applied == []
+    assert any("withheld" in error for error in result.errors), result.errors
+
+    # The capture was NOT silently archived — it stays pending (#150 retry path).
+    assert capture_path.exists()
+
+
+def test_update_applies_when_truncated_target_new_body_is_superset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the new body IS a superset of the full old body (retains every old
+    heading, at least as long), the guard must not block the write even though the
+    target was ``content_truncated`` — this is the non-lossy case.
+    """
+    brain_home, skills_dir = _store_mode_settings(tmp_path)
+    store_root = brain_home / "knowledge"
+    rel_path = "common/decisions/decision-002.md"
+    article_path = store_root / rel_path
+    article_path.parent.mkdir(parents=True)
+    article_path.write_text(
+        "---\n"
+        "type: article\n"
+        "title: Superset Decision\n"
+        "sources: []\n"
+        "status: active\n"
+        "---\n\n"
+        "## Section A\n\nAlpha content.\n\n"
+        "## Section B\n\nBeta content.\n",
+        encoding="utf-8",
+    )
+
+    capture_path = brain_home / "capture" / "inbox" / "enrich2.md"
+    capture_path.write_text("# Capture\n\nMore detail.\n", encoding="utf-8")
+
+    new_body = (
+        "## Section A\n\nAlpha content.\n\n"
+        "## Section B\n\nBeta content.\n\n"
+        "## Section C\n\nGamma content newly added.\n"
+    )
+    update_proposal = ArticleWriteProposal(
+        vault="brain",
+        relative_path=rel_path,
+        operation="update",
+        title="Superset Decision",
+        summary="Enriched decision.",
+        sources=[str(capture_path)],
+        body=new_body,
+    )
+    monkeypatch.setattr(
+        compile_workflow, "build_compile_agent", lambda settings, skill_text: FakeCompileAgent(update_proposal)
+    )
+
+    async def fake_related(settings, query_text, *, store_root, top_k, char_budget):
+        # old_rel == new_rel here, so the reconciliation-phase call to this same
+        # fake (over the just-updated article) self-excludes and never invokes a
+        # real reconciliation agent.
+        return [
+            {
+                "vault": "brain",
+                "path": rel_path,
+                "title": "Superset Decision",
+                "content": "## Section A\n\nAlpha content.\n",
+                "content_truncated": True,
+            }
+        ]
+
+    monkeypatch.setattr(compile_workflow, "find_related_articles", fake_related)
+
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=skills_dir)
+    result = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False, max_captures=1)))
+
+    assert result.errors == []
+    assert len(result.applied) == 1
+
+    current_text = article_path.read_text(encoding="utf-8")
+    assert "Gamma content newly added." in current_text
+
+    from fritz_local_brain.knowledge import split_front_matter
+
+    frontmatter, _ = split_front_matter(current_text)
+    assert "needs_rereconciliation" not in frontmatter
+
+
+def test_update_applies_normally_when_target_not_truncated_even_if_shorter(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard is scoped to targets whose related-articles entry had
+    content_truncated=True. A non-truncated target's update applies normally even
+    with a shorter new body — unchanged pre-#318 behavior.
+    """
+    brain_home, skills_dir = _store_mode_settings(tmp_path)
+    store_root = brain_home / "knowledge"
+    rel_path = "common/decisions/decision-003.md"
+    article_path = store_root / rel_path
+    article_path.parent.mkdir(parents=True)
+    old_text = (
+        "---\n"
+        "type: article\n"
+        "title: Non-truncated Decision\n"
+        "sources: []\n"
+        "status: active\n"
+        "---\n\n"
+        "## Section A\n\nAlpha content.\n\n"
+        "## Section B\n\nBeta content.\n"
+    )
+    article_path.write_text(old_text, encoding="utf-8")
+
+    capture_path = brain_home / "capture" / "inbox" / "enrich3.md"
+    capture_path.write_text("# Capture\n\nCorrection detail.\n", encoding="utf-8")
+
+    update_proposal = ArticleWriteProposal(
+        vault="brain",
+        relative_path=rel_path,
+        operation="update",
+        title="Non-truncated Decision",
+        summary="Corrected decision.",
+        sources=[str(capture_path)],
+        body="## Section A\n\nAlpha content, corrected and shortened.\n",
+    )
+    monkeypatch.setattr(
+        compile_workflow, "build_compile_agent", lambda settings, skill_text: FakeCompileAgent(update_proposal)
+    )
+
+    async def fake_related(settings, query_text, *, store_root, top_k, char_budget):
+        return [
+            {
+                "vault": "brain",
+                "path": rel_path,
+                "title": "Non-truncated Decision",
+                "content": old_text,
+                "content_truncated": False,
+            }
+        ]
+
+    monkeypatch.setattr(compile_workflow, "find_related_articles", fake_related)
+
+    settings = Settings(LOCAL_BRAIN_HOME=brain_home, LOCAL_BRAIN_SKILLS_DIR=skills_dir)
+    result = asyncio.run(compile_workflow.run_compile(settings, CompileRunRequest(dry_run=False, max_captures=1)))
+
+    assert result.errors == []
+    assert len(result.applied) == 1
+    current_text = article_path.read_text(encoding="utf-8")
+    assert "corrected and shortened" in current_text
+    assert "Beta content." not in current_text
     assert result.llm_protocol == "openai-compatible"

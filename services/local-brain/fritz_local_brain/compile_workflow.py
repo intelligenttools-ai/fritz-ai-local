@@ -29,7 +29,16 @@ from .config import Settings
 from .correlation import find_related_articles
 from .llm import AGENT_REQUEST_LIMIT
 from .indexes import backfill_indexes, update_directory_index, update_indexes_for_article
-from .knowledge import ARCHIVE_STATUSES, _current_status, apply_article_write, apply_reconciliation_verdict, ensure_store_root
+from .knowledge import (
+    ARCHIVE_STATUSES,
+    _current_status,
+    apply_article_write,
+    apply_frontmatter_update,
+    apply_reconciliation_verdict,
+    ensure_store_root,
+    render_article,
+    split_front_matter,
+)
 from .logs import append_global_log, append_reconciliation_undo
 from .manifests import load_manifest, resolve_manifest_path
 from .models import AppliedArticleWrite, ArticleWriteProposal, CompileRunRequest, CompileRunResult, ReconciliationOutcome
@@ -292,6 +301,17 @@ def _looks_like_mangled_single_capture_source(source_path: Path, actual_path: Pa
     return similarity >= 0.78
 
 
+def _update_is_superset(old_body: str, new_body: str) -> bool:
+    """Conservative check that a compile UPDATE does not drop old content the
+    model may not have seen (related entry was content_truncated). New body must
+    be at least as long and retain every old markdown section heading."""
+    old_s, new_s = old_body.strip(), new_body.strip()
+    if len(new_s) < len(old_s):
+        return False
+    old_headings = [ln.strip() for ln in old_s.splitlines() if ln.lstrip().startswith("#")]
+    return all(h in new_s for h in old_headings)
+
+
 def _apply_capture_proposals(
     *,
     settings: Settings,
@@ -310,6 +330,7 @@ def _apply_capture_proposals(
     applied_store_targets: list[Path],
     processed_capture_paths: set[Path],
     errors: list[str],
+    truncated_update_targets: set[str] = frozenset(),
 ) -> tuple[bool, bool]:
     """Validate + apply one capture's proposal(s).  Returns ``(applied_ok, failed)``.
 
@@ -356,6 +377,26 @@ def _apply_capture_proposals(
                 )
             if proposal.operation == "create":
                 known_existing_targets.add(target)
+            if store_mode and proposal.operation == "update":
+                assert brain_store_root is not None
+                target_rel = str(target.resolve().relative_to(brain_store_root.resolve()))
+                if target_rel in truncated_update_targets and target.exists():
+                    old_text = target.read_text(encoding="utf-8", errors="replace")
+                    _, old_body = split_front_matter(old_text)
+                    _, new_body = split_front_matter(render_article(proposal))
+                    if not _update_is_superset(old_body, new_body):
+                        message = (
+                            f"Update to {target_rel!r} withheld: related content was truncated in "
+                            "context and the new body is not a superset; flagged needs_rereconciliation."
+                        )
+                        apply_frontmatter_update(
+                            target,
+                            store_root=brain_store_root,
+                            set_fields={"needs_rereconciliation": True},
+                            dry_run=request.dry_run,
+                        )
+                        append_global_log(settings.brain_home, "COMPILE", message, request.dry_run)
+                        raise PolicyError(message)
             apply_article_write(target, proposal, request.dry_run)
             if store_mode:
                 assert brain_store_root is not None
@@ -607,6 +648,7 @@ async def run_compile(settings: Settings, request: CompileRunRequest, trusted: b
                 all_proposals.extend(capture_proposals)
                 all_skipped.extend(capture_skipped)
 
+                truncated_update_targets = {e["path"] for e in related if e.get("content_truncated")}
                 capture_applied_ok, capture_failed = _apply_capture_proposals(
                     settings=settings,
                     request=request,
@@ -624,6 +666,7 @@ async def run_compile(settings: Settings, request: CompileRunRequest, trusted: b
                     applied_store_targets=applied_store_targets,
                     processed_capture_paths=processed_capture_paths,
                     errors=errors,
+                    truncated_update_targets=truncated_update_targets,
                 )
         except Exception as exc:  # noqa: BLE001 — one capture's failure must not abort the run (#153)
             if _is_context_length_error(exc):
