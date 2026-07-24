@@ -25,7 +25,7 @@ import yaml
 from fritz_local_brain import compile_workflow
 from fritz_local_brain.config import Settings
 from fritz_local_brain.logs import read_reconciliation_undo
-from fritz_local_brain.models import ReconciliationVerdict
+from fritz_local_brain.models import ReconciliationOutcome, ReconciliationVerdict
 from fritz_local_brain.rereconciliation import RereconciliationResult, run_rereconciliation_sweep
 
 
@@ -249,6 +249,171 @@ def test_sweep_non_dry_run_applies_verdict_and_clears_flag(
     # Flag must be cleared.
     old_fm = _read_frontmatter(old)
     assert old_fm.get("needs_rereconciliation") is not True
+
+
+# ---------------------------------------------------------------------------
+# #317: flag is preserved when work was not actually applied, or failed
+# ---------------------------------------------------------------------------
+
+
+def test_sweep_proposed_outcome_preserves_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """non-dry-run, propose-mode outcome (applied=False): flag PRESERVED."""
+    settings = _settings(tmp_path)
+    store_root = settings.resolve_brain_store_path()
+
+    flagged = store_root / "predecessor.md"
+    _write_article(
+        flagged,
+        {"title": "Predecessor", "status": "active", "needs_rereconciliation": True},
+    )
+
+    async def _fake_reconcile(settings, store_root, applied_targets, request):
+        return [
+            ReconciliationOutcome(
+                new_path="predecessor.md",
+                old_path="related.md",
+                verdict="corroborates",
+                applied=False,
+                disposition="proposed",
+            )
+        ]
+
+    monkeypatch.setattr(compile_workflow, "_reconcile_applied_articles", _fake_reconcile)
+
+    result = asyncio.run(run_rereconciliation_sweep(settings, dry_run=False))
+
+    assert result.cleared_count == 0
+    assert len(result.outcomes) == 1
+    fm = _read_frontmatter(flagged)
+    assert fm.get("needs_rereconciliation") is True
+
+
+def test_sweep_escalated_outcome_preserves_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """non-dry-run, escalated outcome (applied=False): flag PRESERVED."""
+    settings = _settings(tmp_path)
+    store_root = settings.resolve_brain_store_path()
+
+    flagged = store_root / "predecessor.md"
+    _write_article(
+        flagged,
+        {"title": "Predecessor", "status": "active", "needs_rereconciliation": True},
+    )
+
+    async def _fake_reconcile(settings, store_root, applied_targets, request):
+        return [
+            ReconciliationOutcome(
+                new_path="predecessor.md",
+                old_path="related.md",
+                verdict="contradicts_supersedes",
+                applied=False,
+                disposition="escalated",
+            )
+        ]
+
+    monkeypatch.setattr(compile_workflow, "_reconcile_applied_articles", _fake_reconcile)
+
+    result = asyncio.run(run_rereconciliation_sweep(settings, dry_run=False))
+
+    assert result.cleared_count == 0
+    assert len(result.outcomes) == 1
+    fm = _read_frontmatter(flagged)
+    assert fm.get("needs_rereconciliation") is True
+
+
+def test_sweep_mixed_applied_and_escalated_outcomes_preserves_flag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One applied + one escalated outcome for the same article: flag PRESERVED.
+
+    Exercises the ``all(o.applied for o in outcomes)`` short-circuit — a
+    single non-applied outcome must prevent the clear even when other
+    outcomes for the same article were applied.
+    """
+    settings = _settings(tmp_path)
+    store_root = settings.resolve_brain_store_path()
+
+    flagged = store_root / "predecessor.md"
+    _write_article(
+        flagged,
+        {"title": "Predecessor", "status": "active", "needs_rereconciliation": True},
+    )
+
+    async def _fake_reconcile(settings, store_root, applied_targets, request):
+        return [
+            ReconciliationOutcome(
+                new_path="predecessor.md",
+                old_path="related-a.md",
+                verdict="corroborates",
+                applied=True,
+                disposition="applied",
+            ),
+            ReconciliationOutcome(
+                new_path="predecessor.md",
+                old_path="related-b.md",
+                verdict="contradicts_supersedes",
+                applied=False,
+                disposition="escalated",
+            ),
+        ]
+
+    monkeypatch.setattr(compile_workflow, "_reconcile_applied_articles", _fake_reconcile)
+
+    result = asyncio.run(run_rereconciliation_sweep(settings, dry_run=False))
+
+    assert result.cleared_count == 0
+    assert len(result.outcomes) == 2
+    fm = _read_frontmatter(flagged)
+    assert fm.get("needs_rereconciliation") is True
+
+
+def test_sweep_agent_failure_preserves_flag_and_continues(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One article's reconcile call raises: its flag is preserved, and the
+
+    sweep does not crash — it still processes the remaining flagged articles.
+    """
+    settings = _settings(tmp_path)
+    store_root = settings.resolve_brain_store_path()
+
+    failing = store_root / "a.md"
+    succeeding = store_root / "b.md"
+    _write_article(
+        failing,
+        {"title": "A", "status": "active", "needs_rereconciliation": True},
+    )
+    _write_article(
+        succeeding,
+        {"title": "B", "status": "active", "needs_rereconciliation": True},
+    )
+
+    async def _fake_reconcile(settings, store_root, applied_targets, request):
+        path = applied_targets[0]
+        if path.name == "a.md":
+            raise RuntimeError("agent boom")
+        return []
+
+    monkeypatch.setattr(compile_workflow, "_reconcile_applied_articles", _fake_reconcile)
+
+    result = asyncio.run(run_rereconciliation_sweep(settings, dry_run=False))
+
+    assert result.processed_count == 2
+    assert result.cleared_count == 1
+    assert result.failed_count == 1
+
+    failing_fm = _read_frontmatter(failing)
+    assert failing_fm.get("needs_rereconciliation") is True
+
+    succeeding_fm = _read_frontmatter(succeeding)
+    assert succeeding_fm.get("needs_rereconciliation") is not True
 
 
 # ---------------------------------------------------------------------------
