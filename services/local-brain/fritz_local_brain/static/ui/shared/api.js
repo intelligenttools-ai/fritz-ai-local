@@ -366,6 +366,50 @@ function renderTimeChart(containerId, buckets) {
     <div class="tc-legend">${legendItems}</div>`;
 }
 
+// ---- in-app confirm dialog --------------------------------------------------
+// Replaces native confirm(): a themed modal, promise-based. Usage:
+//   if (!(await appConfirm("Run compile in APPLY mode?"))) return;
+// Message text is set via textContent (never innerHTML) — safe for any string.
+
+let _confirmResolve = null;
+
+function _confirmEl() {
+  let el = document.getElementById("app-confirm");
+  if (el) return el;
+  el = document.createElement("div");
+  el.id = "app-confirm";
+  el.innerHTML = `
+    <div id="app-confirm-box" role="dialog" aria-modal="true" aria-labelledby="app-confirm-msg">
+      <p id="app-confirm-msg"></p>
+      <div id="app-confirm-actions">
+        <button id="app-confirm-cancel" type="button">Cancel</button>
+        <button id="app-confirm-ok" type="button">Confirm</button>
+      </div>
+    </div>`;
+  document.body.appendChild(el);
+  el.querySelector("#app-confirm-ok").addEventListener("click", () => _settleConfirm(true));
+  el.querySelector("#app-confirm-cancel").addEventListener("click", () => _settleConfirm(false));
+  el.addEventListener("click", (e) => { if (e.target === el) _settleConfirm(false); });
+  document.addEventListener("keydown", (e) => {
+    if (el.style.display === "flex" && e.key === "Escape") _settleConfirm(false);
+  });
+  return el;
+}
+
+function _settleConfirm(answer) {
+  const el = document.getElementById("app-confirm");
+  if (el) el.style.display = "none";
+  if (_confirmResolve) { _confirmResolve(answer); _confirmResolve = null; }
+}
+
+function appConfirm(message) {
+  const el = _confirmEl();
+  el.querySelector("#app-confirm-msg").textContent = message;
+  el.style.display = "flex";
+  el.querySelector("#app-confirm-ok").focus();
+  return new Promise((resolve) => { _confirmResolve = resolve; });
+}
+
 // ---- toast ------------------------------------------------------------------
 
 let _toastTimer = null;
