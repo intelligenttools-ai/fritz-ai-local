@@ -196,6 +196,22 @@ def test_operations_recent_runs_table() -> None:
     assert 'id="runs-table"' in body
 
 
+def test_favicon_served_and_linked_on_every_page() -> None:
+    client = _client()
+    # The SVG asset serves via the static mount and the /favicon.ico fallback.
+    svg = client.get("/ui/shared/favicon.svg")
+    assert svg.status_code == 200
+    assert "<svg" in svg.text
+    ico = client.get("/favicon.ico")
+    assert ico.status_code == 200
+    assert "image/svg+xml" in ico.headers["content-type"]
+    # Every page shell links the icon.
+    for path in ("/ui/", "/ui/activity", "/ui/agents", "/ui/operations",
+                 "/ui/settings", "/ui/knowledge"):
+        body = client.get(path).text
+        assert 'rel="icon"' in body and "/ui/shared/favicon.svg" in body, path
+
+
 def test_operations_uses_shared_post_helper() -> None:
     """The action handlers must reuse the shared postAction() helper (no inline
     duplication of the Bearer-token POST)."""
