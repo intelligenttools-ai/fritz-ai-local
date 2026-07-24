@@ -816,6 +816,37 @@ async def run_compile(settings: Settings, request: CompileRunRequest, trusted: b
     )
 
 
+def _reconciliation_already_applied(verdict_type: str, new_rel: str, old_path: Path) -> bool:
+    """True when this reconciliation verdict's link is already present on the OLD
+    article (idempotent re-application) — used to skip re-apply + undo on re-sweeps.
+
+    Only covers the undo-bearing verdicts (corroborates, contradicts_supersedes,
+    duplicates) — those are the ones append_reconciliation_undo writes a record
+    for, so they're the ones subject to unbounded undo-log growth on a re-sweep.
+    ``refines`` writes no undo record and is deliberately excluded: guarding it
+    here would risk skipping the NEW-side ``refines`` back-link repair when OLD's
+    ``refined_by`` link exists but NEW's ``refines`` link doesn't (e.g. a prior
+    partial write).
+    """
+    key = {
+        "corroborates": "corroborated_by",
+        "contradicts_supersedes": "superseded_by",
+        "duplicates": "superseded_by",
+    }.get(verdict_type)
+    if key is None:
+        return False
+    try:
+        fm, _ = split_front_matter(old_path.read_text(encoding="utf-8", errors="replace"))
+    except OSError:
+        return False
+    val = fm.get(key)
+    if isinstance(val, list):
+        return new_rel in val
+    if isinstance(val, str):
+        return val.strip() == new_rel
+    return False
+
+
 async def _reconcile_applied_articles(
     settings: Settings,
     store_root: Path,
@@ -968,9 +999,30 @@ async def _reconcile_applied_articles(
         gated = _gate_duplicates_verdict(
             verdict, old_truncated=old_truncated, duplicates_so_far=applied_duplicates.get(new_rel, 0)
         )
-        if gated.verdict == "duplicates":
-            applied_duplicates[new_rel] = applied_duplicates.get(new_rel, 0) + 1
         verdict = gated
+
+        # Idempotent re-apply guard (#319): a re-sweep (e.g. re-reconciliation)
+        # can present the same pair again after it was already applied. Frontmatter
+        # links are idempotent, so detect this via the link already present on OLD
+        # and skip both re-apply and a duplicate undo record — before the
+        # duplicates cap is consumed, since nothing new is being applied.
+        if _reconciliation_already_applied(verdict.verdict, new_rel, old_path):
+            outcomes.append(
+                ReconciliationOutcome(
+                    new_path=new_rel,
+                    old_path=old_rel,
+                    verdict=verdict.verdict,
+                    actions=["already applied; skipped re-apply and undo (idempotent)"],
+                    reasoning=verdict.reasoning,
+                    applied=True,
+                    prior_status=_current_status(old_path),
+                    disposition="applied",
+                )
+            )
+            continue
+
+        if verdict.verdict == "duplicates":
+            applied_duplicates[new_rel] = applied_duplicates.get(new_rel, 0) + 1
 
         # Apply the verdict.
         outcome = apply_reconciliation_verdict(
