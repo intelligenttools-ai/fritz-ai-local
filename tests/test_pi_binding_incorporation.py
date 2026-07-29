@@ -60,6 +60,35 @@ def test_pi_binding_resolves_path_relative_to_file():
     assert "import.meta.url" in source, "must resolve from the module's own URL"
 
 
+def test_pi_binding_registers_api_backed_brain_tools_and_mcp_config():
+    source = _binding_source() + "\n" + "\n".join(
+        (PI_BINDING.parent / "runtime" / "current" / name).read_text(encoding="utf-8")
+        for name in ("pi-config.mjs", "private-json.mjs", "run-command.mjs")
+    )
+    for name in ("brain_search", "brain_query", "brain_compile", "brain_sync", "brain_lint"):
+        assert f'name: "{name}"' in source
+    assert 'brainHook("brain_service_request.py")' in source
+    assert 'FRITZ_AGENT: "pi"' in source
+    assert 'join(homedir(), ".pi", "mcp.json")' in source
+    assert 'bearerTokenEnv' in source
+    assert "token_env_ready" in source
+    assert 'delete servers["fritz-brain"]' in source
+    assert '"fritz-brain": desired' in source
+    assert "ensureClaudeAgentSdkIsolation" in source
+    assert "strictMcpConfig: true" in source
+    assert "Pi MCP registration could not be persisted" in source
+    assert "Claude Agent SDK MCP isolation could not be verified" in source
+    assert "Repair ~/.pi/agent/settings.json and reload Pi" in source
+    assert "LOCK_WAIT_ATTEMPTS" in source
+    assert "createdAt" in source
+    assert "LOCK_STALE_MS" in source
+    assert "configuration changed outside the managed lock" in source
+    assert "renameSync(tempPath, path)" in source
+    assert 'signal?.addEventListener("abort", abort, { once: true })' in source
+    assert 'child.kill("SIGKILL")' in source
+    assert 'ctx.cwd, signal)' in source
+
+
 def test_capability_spec_exists():
     assert CAPABILITY_SPEC.exists(), f"missing {CAPABILITY_SPEC}"
     assert CAPABILITY_SPEC.stat().st_size > 0, "capability-spec.md is empty"

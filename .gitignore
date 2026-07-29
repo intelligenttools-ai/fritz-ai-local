@@ -7,3 +7,4 @@ build/
 .env
 .handovers/
 .planning/
+.pi/worktree-created-by-pi.json
