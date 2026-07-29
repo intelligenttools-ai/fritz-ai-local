@@ -221,19 +221,44 @@ def claude_mcp_registration_drift() -> str | None:
     return None
 
 
-def check_mcp_token_wiring(context_parts: list[str]):
-    """Warn when Claude's user-scope MCP registration is absent or stale (#278)."""
+def repair_claude_mcp_registration() -> bool:
+    """Best-effort reconcile of Claude's installer-owned MCP registration."""
+    script = FRITZ_REPO / "migrations" / "006-claude-user-scope-mcp-registration.py"
+    if not script.exists():
+        return False
+    try:
+        result = subprocess.run(
+            [sys.executable, str(script), "--refresh"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env={**os.environ, "HOME": str(Path.home())},
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0 and claude_mcp_registration_drift() is None
+
+
+def check_mcp_token_wiring(context_parts: list[str], *, repair: bool = False):
+    """Repair or warn when Claude's user-scope MCP registration is stale."""
     drift = claude_mcp_registration_drift()
     if drift is None:
+        return
+    if repair and repair_claude_mcp_registration():
+        context_parts.append(
+            "\n## Brain MCP registration repaired\n"
+            f"The Claude user-scope `{CLAUDE_MCP_SERVER_NAME}` registration was refreshed from `~/.brain/registry.yaml`. "
+            "This session may already have loaded its tool registry, so use the HTTP API immediately when the `brain_*` MCP tools are absent or fail. "
+            "The repaired MCP registration is available after restarting Claude Code.\n"
+        )
         return
     fix = claude_form("/fritz:update")
     context_parts.append(
         "\n## Brain MCP registration drift\n"
         f"The Claude user-scope `{CLAUDE_MCP_SERVER_NAME}` MCP registration is {drift}, "
-        "so the `brain_*` MCP tools may be unavailable or unauthorized. "
-        f"Run `{fix}` to refresh the installer-owned registration from "
-        "`~/.brain/registry.yaml`, then quit and restart Claude Code if this session "
-        "already loaded MCP servers.\n"
+        "and the current process may have already loaded MCP servers, so do not attempt the `brain_*` MCP tools in this session; use the HTTP API immediately. "
+        f"Automatic repair did not complete. Run `{fix}` to refresh the installer-owned registration from "
+        "`~/.brain/registry.yaml`, then quit and restart Claude Code.\n"
     )
 
 
@@ -349,8 +374,9 @@ def main():
         else:
             context_parts.append("Knowledge base at `~/.brain/`. Use `/fritz:brain-query` to search, `/fritz:brain-compile` to promote captures, `/fritz:brain-ingest` to import sources.\n")
 
-    # Self-healing: warn if the service is up but the MCP token env is unset.
-    check_mcp_token_wiring(context_parts)
+    # Self-healing is Claude-only: non-Claude runtimes must never mutate ~/.claude.json.
+    if is_claude:
+        check_mcp_token_wiring(context_parts, repair=service_available)
     check_scheduler_compile_failure_alert(context_parts)
 
     # List available vaults

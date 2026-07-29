@@ -142,6 +142,9 @@ def test_service_instructions_claude_leads_with_mcp_tools(monkeypatch):
 
     assert "brain_search" in instructions
     assert "fallback" in instructions.lower()
+    assert "tool-not-found" in instructions
+    assert "do not retry that MCP call" in instructions
+    assert "actual tool registry" in instructions
     # brain_search / the MCP-tool guidance leads; the curl fallback trails it.
     assert instructions.index("brain_search") < instructions.index("curl")
     # No raw /fritz:brain-* colon-form skill-tree name leaks into Claude context.
@@ -158,6 +161,19 @@ def test_service_instructions_claude_contains_query_guidance(monkeypatch):
     assert "SHORT and CONCEPTUAL (2-6 terms)" in instructions
     assert "Good: `proxmox cloudinit template debian`" in instructions
     assert "192.168.1.53" in instructions  # bad-example IP dump
+
+
+def test_service_instructions_pi_uses_api_backed_tools_not_mcp(monkeypatch):
+    _clear_claude_markers(monkeypatch)
+    monkeypatch.setenv("FRITZ_AGENT", "pi")
+    monkeypatch.setattr(brain_common, "get_local_brain_base_url", lambda: "http://127.0.0.1:8765")
+    monkeypatch.setattr(brain_common, "get_local_brain_api_token", lambda: None)
+
+    instructions = brain_common.local_brain_service_instructions()
+
+    assert "direct API-backed Pi tools" in instructions
+    assert "Do not attempt `mcp__fritz-brain__*` names" in instructions
+    assert "/v1/search/run" in instructions
 
 
 def test_service_instructions_non_claude_contains_query_guidance(monkeypatch):
@@ -244,6 +260,11 @@ def test_session_start_service_available_claude_sanitizes_ingest_ref(monkeypatch
 
 def test_session_start_service_available_non_claude_unchanged(monkeypatch, capsys, tmp_path):
     _clear_claude_markers(monkeypatch)
+    monkeypatch.setattr(
+        brain_session_start,
+        "check_mcp_token_wiring",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("non-Claude runtime touched Claude MCP config")),
+    )
     ctx = _run_session_start_main(monkeypatch, capsys, tmp_path, service_available=True)
     assert "Use `/fritz:brain-ingest` for imports" in ctx
 

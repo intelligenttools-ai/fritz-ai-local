@@ -24,9 +24,14 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import os
+import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -76,6 +81,13 @@ def _run(install_mod, argv):
     return install_mod.main(argv)
 
 
+def _subprocess_env_with_loaded_dependencies():
+    env = os.environ.copy()
+    site = str(Path(yaml.__file__).resolve().parent.parent)
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [site, env.get("PYTHONPATH", "")]))
+    return env
+
+
 # --- install --agent pi -----------------------------------------------------
 
 
@@ -100,6 +112,134 @@ def test_install_pi_creates_dirs_links_hooks_and_skills(
     assert (skills / "fritz-brain-query" / "SKILL.md").exists()
     assert (skills / "fritz-brain-setup" / "SKILL.md").exists()
     assert not (skills / "fritz:brain-query").exists()
+
+    extension = tmp_path / "home" / ".pi" / "agent" / "extensions" / "fritz-brain"
+    current = extension / "runtime" / "current"
+    assert current.is_symlink()
+    for name in install_mod.PI_BINDING_RUNTIME_FILES:
+        assert (current / name).read_bytes() == (REPO_ROOT / "bindings" / "pi" / "runtime" / "current" / name).read_bytes()
+    deployed_index = (extension / "index.ts").read_text()
+    assert "./runtime/current/" not in deployed_index
+    assert f"./runtime/{current.readlink()}/" in deployed_index
+
+
+def test_install_repairs_corrupt_immutable_pi_runtime(
+    install_mod, synthetic_brain, tmp_path
+):
+    skills = tmp_path / "pi-skills"
+    _run(install_mod, ["install", "--agent", "pi", "--skills-dir", str(skills)])
+    extension = tmp_path / "home" / ".pi" / "agent" / "extensions" / "fritz-brain"
+    current = extension / "runtime" / "current"
+    damaged = current / "pi-config.mjs"
+    damaged.write_text("corrupt")
+
+    _run(install_mod, ["install", "--agent", "pi", "--skills-dir", str(skills)])
+
+    assert damaged.read_bytes() == (REPO_ROOT / "bindings" / "pi" / "runtime" / "current" / "pi-config.mjs").read_bytes()
+
+
+def test_concurrent_corrupt_runtime_repairs_publish_new_versions(
+    install_mod, synthetic_brain, tmp_path
+):
+    skills = tmp_path / "pi-skills"
+    _run(install_mod, ["install", "--agent", "pi", "--skills-dir", str(skills)])
+    target = tmp_path / "home" / ".pi" / "agent" / "extensions" / "fritz-brain"
+    (target / "runtime" / "current" / "pi-config.mjs").write_text("corrupt")
+    script = """
+import importlib.util
+import sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('_repair_install', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.install_pi_binding(Path(sys.argv[2]), Path(sys.argv[3]), dry_run=False)
+"""
+    command = [sys.executable, "-c", script, str(INSTALL_PY), str(REPO_ROOT), str(target)]
+    child_env = _subprocess_env_with_loaded_dependencies()
+    first = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=child_env)
+    second = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=child_env)
+    first_out, first_err = first.communicate(timeout=15)
+    second_out, second_err = second.communicate(timeout=15)
+    assert first.returncode == 0, first_out + first_err
+    assert second.returncode == 0, second_out + second_err
+    deployed_index = (target / "index.ts").read_text()
+    match = re.search(r"\./runtime/versions/([^/]+)/pi-config\.mjs", deployed_index)
+    assert match
+    active_version = target / "runtime" / "versions" / match.group(1)
+    assert (active_version / "pi-config.mjs").read_bytes() == (
+        REPO_ROOT / "bindings" / "pi" / "runtime" / "current" / "pi-config.mjs"
+    ).read_bytes()
+
+
+def test_pi_binding_deploy_preflight_is_all_or_nothing(install_mod, tmp_path):
+    incomplete_repo = tmp_path / "incomplete-repo"
+    (incomplete_repo / "bindings" / "pi" / "runtime" / "current").mkdir(parents=True)
+    (incomplete_repo / "bindings" / "pi" / "index.ts").write_text("old")
+    target = tmp_path / "extension"
+    target.mkdir()
+    marker = target / "marker"
+    marker.write_text("preserve")
+
+    with pytest.raises(FileNotFoundError, match="deployment preflight failed"):
+        install_mod.install_pi_binding(incomplete_repo, target, dry_run=False)
+
+    assert marker.read_text() == "preserve"
+    assert sorted(path.name for path in target.iterdir()) == ["marker"]
+
+
+def test_concurrent_pi_binding_publishers_accept_verified_winner(tmp_path):
+    target = tmp_path / "extension"
+    script = """
+import importlib.util
+import sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location('_concurrent_install', sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.install_pi_binding(Path(sys.argv[2]), Path(sys.argv[3]), dry_run=False)
+"""
+    command = [sys.executable, "-c", script, str(INSTALL_PY), str(REPO_ROOT), str(target)]
+    child_env = _subprocess_env_with_loaded_dependencies()
+    first = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=child_env)
+    second = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=child_env)
+    first_out, first_err = first.communicate(timeout=15)
+    second_out, second_err = second.communicate(timeout=15)
+    assert first.returncode == 0, first_out + first_err
+    assert second.returncode == 0, second_out + second_err
+    assert (target / "runtime" / "current").is_symlink()
+    assert (target / "index.ts").is_file()
+
+
+def test_installed_pi_binding_module_graph_imports(
+    install_mod, synthetic_brain, tmp_path
+):
+    skills = tmp_path / "pi-skills"
+    _run(install_mod, ["install", "--agent", "pi", "--skills-dir", str(skills)])
+    extension = tmp_path / "home" / ".pi" / "agent" / "extensions" / "fritz-brain"
+
+    version = subprocess.run(["node", "--version"], check=True, capture_output=True, text=True).stdout.strip()
+    if int(version.lstrip("v").split(".", 1)[0]) < 22:
+        pytest.skip("Node 22+ is required to import TypeScript without a build step")
+    typebox = extension / "node_modules" / "typebox"
+    typebox.mkdir(parents=True)
+    (typebox / "package.json").write_text('{"type":"module","exports":"./index.js"}')
+    (typebox / "index.js").write_text("export const Type = {};\n")
+    result = subprocess.run(
+        [
+            "node",
+            "--experimental-strip-types",
+            "--input-type=module",
+            "-e",
+            "const mod = await import(process.argv[1]); console.log(typeof mod.default);",
+            (extension / "index.ts").as_uri(),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "function"
 
 
 def test_install_preserves_existing_captures_byte_for_byte(

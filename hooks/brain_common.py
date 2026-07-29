@@ -793,14 +793,13 @@ def local_brain_service_instructions() -> str:
             "## Local Brain Service Active\n\n"
             f"The Dockerized Local Brain service is reachable at `{base_url}`. "
             "For supported workflows, use this service layer first instead of duplicating the old local slash-skill workflow.\n\n"
-            "Agent integration order: call `brain_search` (the registered MCP tool) as your default brain check, "
-            "with `brain_query`, `brain_compile`, `brain_sync`, and `brain_lint` available as registered MCP tools for their respective workflows — "
-            "call these MCP tools directly, one native tool call, instead of shelling out.\n\n"
+            "Agent integration order: use `brain_search` as the default brain check only when the exact MCP tool is present in the current session's actual tool registry (or ToolSearch returned it). "
+            "A configured MCP server or this instruction is not proof that the tool is loaded. Apply the same rule to `brain_query`, `brain_compile`, `brain_sync`, and `brain_lint`.\n\n"
             "Query guidance: keep `brain_search`/`brain_query` queries SHORT and CONCEPTUAL (2-6 terms), "
             "never verbatim log/keyword dumps, IP addresses, or hostnames. "
             "Good: `proxmox cloudinit template debian`. "
             "Bad: `racktaq Proxmox Debian 13 cloudinit template gateway VM WireGuard macOS client 192.168.1.53`.\n\n"
-            "Fallback only if the MCP tools are unavailable, use curl from the host. The optional CLI is for installed local packages only; do not assume it is on the host PATH.\n\n"
+            "Immediate fallback rule: if an MCP tool is absent, not registered, disconnected, unauthorized, times out, or returns tool-not-found, do not retry that MCP call. Perform the same operation immediately through the matching HTTP API curl command below. The optional CLI is for installed local packages only; do not assume it is on the host PATH.\n\n"
             "Fallback service-backed workflows (curl):\n"
             f"- Search/brain check, semantic when embeddings are enabled: `curl -fsS -X POST {base_url}/v1/search/run{auth} -H 'content-type: application/json' -H 'X-Brain-Agent: {agent}' -d '{{\"query\":\"<query>\"}}'`\n"
             f"- Exact query compatibility only, not the default brain check: `curl -fsS -X POST {base_url}/v1/query/run{auth} -H 'content-type: application/json' -H 'X-Brain-Agent: {agent}' -d '{{\"query\":\"<query>\"}}'`\n"
@@ -811,6 +810,27 @@ def local_brain_service_instructions() -> str:
             f"Do not also run `{claude_form('/fritz:brain-query')}`, `{claude_form('/fritz:brain-compile')}`, `{claude_form('/fritz:brain-sync')}`, or `{claude_form('/fritz:brain-lint')}` "
             "for the same work unless the service is unavailable or the human explicitly requests the non-service path. "
             "Use the existing local skills only for workflows the service does not provide, such as setup, ingest, update, and writing the handover document itself."
+        )
+
+    if agent == "pi":
+        return (
+            "## Local Brain Service Active\n\n"
+            f"The Dockerized Local Brain service is reachable at `{base_url}`. "
+            "For supported workflows, use this service layer first instead of duplicating the old local slash-skill workflow.\n\n"
+            "Pi binding note: `brain_search`, `brain_query`, `brain_compile`, `brain_sync`, and `brain_lint` are direct API-backed Pi tools. "
+            "Call those tools directly; they already use the Local Brain HTTP API and do not depend on MCP registration. "
+            "Do not attempt `mcp__fritz-brain__*` names. The Pi binding separately maintains MCP Runner configuration for sessions where MCP is available.\n\n"
+            "Query guidance: keep search/query bodies SHORT and CONCEPTUAL (2-6 terms), "
+            "never verbatim log/keyword dumps, IP addresses, or hostnames. "
+            "Good: `proxmox cloudinit template debian`. "
+            "Bad: `racktaq Proxmox Debian 13 cloudinit template gateway VM WireGuard macOS client 192.168.1.53`.\n\n"
+            "Direct HTTP equivalents (only if the API-backed Pi tool itself is unavailable):\n"
+            f"- Search/brain check, semantic when embeddings are enabled: `curl -fsS -X POST {base_url}/v1/search/run{auth} -H 'content-type: application/json' -H 'X-Brain-Agent: {agent}' -d '{{\"query\":\"<query>\"}}'`\n"
+            f"- Exact query compatibility only, not the default brain check: `curl -fsS -X POST {base_url}/v1/query/run{auth} -H 'content-type: application/json' -H 'X-Brain-Agent: {agent}' -d '{{\"query\":\"<query>\"}}'`\n"
+            f"- Compile: `curl -fsS -X POST {base_url}/v1/compile/run{auth} -H 'content-type: application/json' -H 'X-Brain-Agent: {agent}' -d '{{\"dry_run\":true}}'`\n"
+            f"- Sync: `curl -fsS -X POST {base_url}/v1/sync/run{auth} -H 'content-type: application/json' -H 'X-Brain-Agent: {agent}' -d '{{\"dry_run\":true}}'`\n"
+            f"- Lint: `curl -fsS -X POST {base_url}/v1/lint/run{auth} -H 'content-type: application/json' -d '{{}}'`\n\n"
+            "Do not also run `/fritz:brain-query`, `/fritz:brain-compile`, `/fritz:brain-sync`, or `/fritz:brain-lint` for the same work unless the service is unavailable or the human explicitly requests the non-service path."
         )
 
     if agent == "codex":
