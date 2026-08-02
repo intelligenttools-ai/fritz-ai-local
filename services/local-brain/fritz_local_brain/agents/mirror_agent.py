@@ -35,8 +35,8 @@ def build_mirror_agent(settings: Settings) -> Agent[MirrorSummaryDeps, MirrorSum
         build_model(settings),
         deps_type=MirrorSummaryDeps,
         output_type=MirrorSummary,
-        system_prompt=MIRROR_SYSTEM_PROMPT,
-        instructions=MIRROR_INSTRUCTIONS,
+        # #337: ONE system message — see compile_agent for the rationale.
+        instructions=f"{MIRROR_SYSTEM_PROMPT}\n\n{MIRROR_INSTRUCTIONS}",
     )
 
     @agent.tool
