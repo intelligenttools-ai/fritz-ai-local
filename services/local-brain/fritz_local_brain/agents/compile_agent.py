@@ -38,8 +38,11 @@ def build_compile_agent(settings: Settings, skill_text: str) -> Agent[CompileDep
         output_type=output_spec_for(settings.llm_protocol, CompileAgentOutput),
         retries={"output": OUTPUT_RETRIES},
         model_settings=ModelSettings(temperature=0.0),
-        system_prompt=COMPILE_SYSTEM_PROMPT,
-        instructions=f"{COMPILE_MVP_INSTRUCTIONS}\n\n{skill_text}",
+        # #337: ONE system message. pydantic-ai maps ``system_prompt`` and
+        # ``instructions`` to two separate system messages, which strict chat
+        # templates reject (qwen3.6-27b-coder: 400 "System message must be at
+        # the beginning.").
+        instructions=f"{COMPILE_SYSTEM_PROMPT}\n\n{COMPILE_MVP_INSTRUCTIONS}\n\n{skill_text}",
     )
 
     @agent.tool

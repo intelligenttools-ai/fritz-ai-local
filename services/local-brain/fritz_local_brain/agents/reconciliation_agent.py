@@ -32,8 +32,8 @@ def build_reconciliation_agent(settings: Settings) -> Agent[ReconciliationDeps, 
         output_type=output_spec_for(settings.llm_protocol, ReconciliationVerdict),
         retries={"output": OUTPUT_RETRIES},
         model_settings=ModelSettings(temperature=0.0),
-        system_prompt=RECONCILIATION_SYSTEM_PROMPT,
-        instructions=RECONCILIATION_INSTRUCTIONS,
+        # #337: ONE system message — see compile_agent for the rationale.
+        instructions=f"{RECONCILIATION_SYSTEM_PROMPT}\n\n{RECONCILIATION_INSTRUCTIONS}",
     )
 
     @agent.tool
