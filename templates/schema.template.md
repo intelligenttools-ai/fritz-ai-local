@@ -48,6 +48,8 @@ related: []
 tags: []
 confidence: high | medium | low
 status: active | corroborated | deprecated | superseded | historical
+trust: observed | inferred | user_confirmed | imported | generated | disputed
+use_policy: instruction | evidence | requires_confirmation | no_auto_inject
 supersedes: []
 superseded_by: []
 created: YYYY-MM-DD

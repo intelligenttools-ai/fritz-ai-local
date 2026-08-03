@@ -271,6 +271,23 @@ Articles may also carry optional bidirectional link lists:
 Both fields are optional lists of strings. They are freeform references — no
 referential integrity is enforced at write time.
 
+### Trust and use policy
+
+Articles may also carry two optional fields that say whether an agent may
+*act* on a claim, distinct from `confidence` (how sure the source is) and
+`status` (where the claim sits in the supersession lifecycle):
+
+- `trust: observed | inferred | user_confirmed | imported | generated | disputed`
+  — provenance of the claim
+- `use_policy: instruction | evidence | requires_confirmation | no_auto_inject`
+  — how an agent may use the claim
+
+Both are freeform frontmatter — no migration required for existing articles,
+which remain valid with neither field. An unknown value is normalized to
+absent plus a logged warning; it never invalidates the article. Applying a
+default value, backfilling existing articles, or surfacing these fields in
+retrieval/labelling is out of scope for this schema addition.
+
 ### Reconciliation
 
 When a compile run produces a new store article in non-dry-run mode, the
