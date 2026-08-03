@@ -4,7 +4,7 @@
 Fires on UserPromptSubmit. Three modes:
 - off: injects "BRAIN CHECK" reminder (today's behavior)
 - light: searches knowledge dirs, injects matching file paths
-- full: same as light, plus reminds agent to spawn a subagent
+- full: same as light, but retrieves more matched knowledge (higher file cap)
 
 Works with:
 - Claude Code: UserPromptSubmit event
@@ -153,7 +153,8 @@ def _is_regular_markdown_file(md_file: Path) -> bool:
 
 
 def search_knowledge_files(vault_path: Path, manifest: dict, keywords: list[str],
-                           project_name: str | None, max_chars: int) -> str:
+                           project_name: str | None, max_chars: int,
+                           file_limit: int = 10) -> str:
     """Search knowledge directories for files matching keywords. Return formatted results."""
     results = []
     seen_paths = set()
@@ -220,7 +221,7 @@ def search_knowledge_files(vault_path: Path, manifest: dict, keywords: list[str]
 
     if results and _fits(lines + ["Knowledge articles:"]):
         lines.append("Knowledge articles:")
-        for path in results[:10]:
+        for path in results[:file_limit]:
             line = f"- {path}"
             if not _fits(lines + [line]):
                 break
@@ -381,14 +382,10 @@ def main():
             "BRAIN CHECK: Use the service-backed query path for this prompt before local file search. "
             "If the service returns insufficient results, then fall back to local knowledge files."
         )
-        if level == "full":
-            injection += (
-                "\n\nMANDATORY (context_injection: full): You MUST spawn a subagent to run the service-backed query "
-                "and synthesize the results before responding. This is not optional."
-            )
         _emit(hook_input, injection)
 
     max_chars = get_max_injection_chars(fritz_local)
+    file_limit = 25 if level == "full" else 10
     project_name = fritz_local.get("project") if fritz_local else None
     keywords = extract_keywords(prompt)
 
@@ -396,7 +393,7 @@ def main():
     if vault_path:
         manifest = load_manifest(vault_path)
         if manifest and keywords:
-            injection = search_knowledge_files(vault_path, manifest, keywords, project_name, max_chars)
+            injection = search_knowledge_files(vault_path, manifest, keywords, project_name, max_chars, file_limit)
 
     if not injection:
         # Even in light/full, fall back to basic reminder if no matches
@@ -410,15 +407,6 @@ def main():
         injection = f"{injection}\n\n{local_brain_configuration_decision_prompt()}"
     elif local_brain_setup_suggestions_enabled() and should_suggest_local_brain_service(prompt):
         injection = f"{injection}\n\n{local_brain_setup_suggestion()}"
-
-    # Level: full — append subagent instruction
-    if level == "full" and injection:
-        injection += (
-            "\n\nMANDATORY (context_injection: full): You MUST spawn a subagent to "
-            "read and synthesize the files listed above before responding. "
-            "The subagent should read all listed files, extract relevant information, "
-            "and return a summary with citations. This is not optional."
-        )
 
     _emit(hook_input, injection)
 

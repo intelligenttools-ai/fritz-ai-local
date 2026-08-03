@@ -829,3 +829,79 @@ def test_brain_capture_only_captures_never_compiles(monkeypatch, tmp_path):
     assert exc.value.code == 0
     daily = tmp_path / "capture" / "daily"
     assert daily.exists() and list(daily.glob("*.md")), "daily rollup must still be written"
+
+
+def _run_level_hook(monkeypatch, capsys, tmp_path, vault, level, prompt, article_count=1):
+    knowledge = vault / "knowledge"
+    manifest_dir = vault / ".brain"
+    knowledge.mkdir(parents=True)
+    manifest_dir.mkdir()
+    for i in range(article_count):
+        article = knowledge / f"frobnicator-routing-{i}.md"
+        article.write_text(f"# Frobnicator Routing {i}\n\nUse the blue route.", encoding="utf-8")
+    (manifest_dir / "manifest.yaml").write_text("paths:\n  knowledge: knowledge\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        brain_common,
+        "load_registry",
+        lambda: {"settings": {"context_injection": level, "max_injection_chars": 20000}},
+    )
+    monkeypatch.setattr(brain_prompt_check, "BRAIN_HOME", tmp_path)
+    monkeypatch.setattr(brain_prompt_check, "load_registry", lambda: {"vaults": {"test": {"path": str(vault)}}})
+    monkeypatch.setattr(brain_prompt_check, "resolve_project_vault", lambda cwd: ("test", {"path": str(vault)}, vault, None))
+    monkeypatch.setattr(brain_prompt_check, "local_brain_service_available", lambda: False)
+    monkeypatch.setattr(brain_prompt_check, "local_brain_service_configured", lambda: True)
+    monkeypatch.setattr(brain_prompt_check, "local_brain_setup_suggestions_enabled", lambda: False)
+
+    capture_dir = tmp_path / "capture" / "daily"
+    capture_dir.mkdir(parents=True, exist_ok=True)
+    (capture_dir / "today.md").write_text("capture")
+
+    hook_input = {
+        "hook_event_name": "UserPromptSubmit",
+        "cwd": str(vault),
+        "user_prompt": prompt,
+    }
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(hook_input)))
+
+    with pytest.raises(SystemExit):
+        brain_prompt_check.main()
+
+    return json.loads(capsys.readouterr().out)["hookSpecificOutput"]["additionalContext"]
+
+
+MANDATE_MARKERS = ("MANDATORY", "MUST spawn", "spawn a subagent", "not optional")
+
+
+@pytest.mark.parametrize("level", ["off", "light", "full"])
+def test_no_level_emits_unconditional_subagent_mandate(monkeypatch, capsys, tmp_path, level):
+    """#355 — no injected text may order a model to spawn a subagent, at any
+    context_injection level."""
+    vault = tmp_path / "vault"
+    context = _run_level_hook(
+        monkeypatch, capsys, tmp_path, vault, level,
+        "What is the frobnicator routing decision?",
+    )
+    for marker in MANDATE_MARKERS:
+        assert marker not in context, f"{marker!r} leaked into level={level} injection: {context!r}"
+
+
+def test_full_level_injects_strictly_more_context_than_light(monkeypatch, capsys, tmp_path):
+    """#355 — full must still retrieve more/richer context than light, even
+    though it no longer conscripts a subagent."""
+    prompt = "What is the frobnicator routing decision?"
+
+    light_vault = tmp_path / "light_vault"
+    light_context = _run_level_hook(
+        monkeypatch, capsys, tmp_path, light_vault, "light", prompt, article_count=15,
+    )
+
+    full_vault = tmp_path / "full_vault"
+    full_context = _run_level_hook(
+        monkeypatch, capsys, tmp_path, full_vault, "full", prompt, article_count=15,
+    )
+
+    assert len(full_context) > len(light_context)
+    full_articles = [line for line in full_context.splitlines() if "frobnicator-routing-" in line]
+    light_articles = [line for line in light_context.splitlines() if "frobnicator-routing-" in line]
+    assert len(full_articles) > len(light_articles), "full must surface more matched articles than light"
