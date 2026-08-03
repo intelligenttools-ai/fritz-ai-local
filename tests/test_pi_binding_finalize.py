@@ -159,7 +159,11 @@ def test_save_fact_json_contract(tmp_path):
     files = list(inbox.glob("*.md"))
     assert len(files) == 1, f"expected exactly one inbox file, got {files}"
     assert files[0] == saved_path
-    assert "type: capture" in saved_path.read_text(encoding="utf-8")
+    saved_content = saved_path.read_text(encoding="utf-8")
+    assert "type: capture" in saved_content
+    # Origin stamping (#343): pi delegates to brain_save_fact.py, so an
+    # explicit pi save must carry the same origin as any other explicit save.
+    assert "origin: explicit_save" in saved_content
 
 
 def test_autocapture_contract_and_dedup(tmp_path):
@@ -176,7 +180,11 @@ def test_autocapture_contract_and_dedup(tmp_path):
     assert "Auto-captured to Fritz-Brain:" in first.stdout, first.stdout
 
     inbox = brain_home / "capture" / "inbox"
-    assert len(list(inbox.glob("*.md"))) == 1, "expected exactly one capture"
+    files = list(inbox.glob("*.md"))
+    assert len(files) == 1, "expected exactly one capture"
+    # Origin stamping (#343): pi delegates to brain_autocapture.py, so a pi
+    # auto-capture must carry the same origin as any other auto-capture.
+    assert "origin: auto_capture" in files[0].read_text(encoding="utf-8")
 
     # Rerun on identical text must be deduped (no second capture).
     second = _run(AUTOCAPTURE_HOOK, ["--cwd", "/tmp/project"], transcript, brain_home)

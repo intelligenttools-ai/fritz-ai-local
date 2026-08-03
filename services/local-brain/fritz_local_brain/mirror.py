@@ -84,6 +84,7 @@ def mirror_target(
     - ``mirrored_at`` — ISO-8601 timestamp (override for deterministic tests).
     - ``mode`` — ``"full"`` or ``"summary"``.
     - ``pointer`` — stable adapter-specific identifier for the source item.
+    - ``origin`` — always ``"mirror"`` (#343).
 
     Parameters
     ----------
@@ -121,6 +122,7 @@ def mirror_target(
             "mirrored_at": mirrored_at,
             "mode": entry.mode,
             "pointer": entry.pointer,
+            "origin": "mirror",
         }
         # Derive a slug from the pointer so filenames are stable and readable.
         # pointer format for local-vault: "<name>:<relpath>" e.g. "vault:a/b.md"
@@ -291,6 +293,7 @@ async def run_mirror(
                     "mirrored_at": mirrored_at,
                     "mode": "full",
                     "pointer": entry.pointer,
+                    "origin": "mirror",
                 }
             else:
                 # index-only: minimal body, full content fetched live on hit.
@@ -300,6 +303,7 @@ async def run_mirror(
                     "mirrored_at": mirrored_at,
                     "mode": "index-only",
                     "pointer": entry.pointer,
+                    "origin": "mirror",
                 }
                 body = f"{entry.title}\n\n{_INDEX_ONLY_MARKER}"
 

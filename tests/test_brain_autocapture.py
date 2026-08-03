@@ -16,6 +16,7 @@ HOOKS = ROOT / "hooks"
 sys.path.insert(0, str(HOOKS))
 
 import brain_autocapture  # noqa: E402
+import brain_save_fact  # noqa: E402
 
 
 SIGNAL_AND_INTENT = (
@@ -111,6 +112,37 @@ def test_no_intent_writes_nothing(tmp_path):
 def test_empty_text_writes_nothing(tmp_path):
     assert brain_autocapture.maybe_auto_capture("", "/c", root=tmp_path) is None
     assert _inbox_files(tmp_path) == []
+
+
+# --- origin ------------------------------------------------------------------
+
+
+def test_auto_capture_stamps_origin_auto_capture(tmp_path):
+    result = brain_autocapture.maybe_auto_capture(
+        SIGNAL_AND_INTENT, "/work/proj", root=tmp_path
+    )
+    content = result.read_text(encoding="utf-8")
+    assert "origin: auto_capture\n" in content
+
+
+def test_auto_capture_origin_differs_from_explicit_save(tmp_path):
+    auto_result = brain_autocapture.maybe_auto_capture(
+        SIGNAL_AND_INTENT, "/work/proj", root=tmp_path
+    )
+    save_result = brain_save_fact.save_fact(
+        title="Explicit Save", body="b", root=tmp_path
+    )
+    auto_origin = "auto_capture" if "origin: auto_capture\n" in auto_result.read_text(
+        encoding="utf-8"
+    ) else None
+    save_origin = (
+        "explicit_save"
+        if "origin: explicit_save\n" in save_result.read_text(encoding="utf-8")
+        else None
+    )
+    assert auto_origin == "auto_capture"
+    assert save_origin == "explicit_save"
+    assert auto_origin != save_origin
 
 
 # --- dedup -----------------------------------------------------------------
