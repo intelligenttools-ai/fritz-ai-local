@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -12,12 +13,32 @@ from .config import Settings
 from .models import ArticleWriteProposal, ReconciliationOutcome, ReconciliationVerdict
 from .paths import is_relative_to
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Knowledge lifecycle vocabulary
 # ---------------------------------------------------------------------------
 
 STATUS_VALUES = ("active", "corroborated", "deprecated", "superseded", "historical")
 DEFAULT_STATUS = "active"
+
+# Whether an agent may treat a claim as fact vs. something it merely holds.
+TRUST_VALUES = (
+    "observed",
+    "inferred",
+    "user_confirmed",
+    "imported",
+    "generated",
+    "disputed",
+)
+
+# Whether/how an agent may act on a claim.
+USE_POLICY_VALUES = (
+    "instruction",
+    "evidence",
+    "requires_confirmation",
+    "no_auto_inject",
+)
 
 # Statuses visible in the default ("active") retrieval scope.
 DEFAULT_VISIBLE_STATUSES: frozenset[str] = frozenset({"active", "corroborated", "deprecated"})
@@ -34,6 +55,36 @@ ARCHIVE_STATUSES: frozenset[str] = frozenset({"superseded", "historical"})
 def normalize_status(value: str) -> str:
     """Lowercase and strip a status string."""
     return value.lower().strip()
+
+
+def normalize_trust(value: str | None) -> str | None:
+    """Lowercase/strip a ``trust`` value; unknown values are treated as absent.
+
+    Mirrors ``normalize_status``, but ``trust`` is optional: ``None``/empty
+    input returns ``None``, and a value outside ``TRUST_VALUES`` returns
+    ``None`` plus a logged warning. Never raises.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    normalized = value.lower().strip()
+    if normalized not in TRUST_VALUES:
+        logger.warning("Unknown trust value %r; treating as absent", value)
+        return None
+    return normalized
+
+
+def normalize_use_policy(value: str | None) -> str | None:
+    """Lowercase/strip a ``use_policy`` value; unknown values are treated as absent.
+
+    Mirrors ``normalize_trust``/``normalize_status``. Never raises.
+    """
+    if not isinstance(value, str) or not value.strip():
+        return None
+    normalized = value.lower().strip()
+    if normalized not in USE_POLICY_VALUES:
+        logger.warning("Unknown use_policy value %r; treating as absent", value)
+        return None
+    return normalized
 
 
 def is_archived_status(status: str | None) -> bool:
@@ -128,6 +179,18 @@ def render_article(proposal: ArticleWriteProposal) -> str:
     frontmatter = dict(proposal.frontmatter)
     frontmatter.setdefault("title", proposal.title)
     frontmatter.setdefault("updated", datetime.now().strftime("%Y-%m-%d"))
+    if "trust" in frontmatter:
+        normalized_trust = normalize_trust(frontmatter["trust"])
+        if normalized_trust is None:
+            frontmatter.pop("trust", None)
+        else:
+            frontmatter["trust"] = normalized_trust
+    if "use_policy" in frontmatter:
+        normalized_use_policy = normalize_use_policy(frontmatter["use_policy"])
+        if normalized_use_policy is None:
+            frontmatter.pop("use_policy", None)
+        else:
+            frontmatter["use_policy"] = normalized_use_policy
     yaml_text = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=False).strip()
     # Strip any leading front-matter block the compile agent may have included in
     # the body — the authoritative header is always proposal.frontmatter.
@@ -249,7 +312,20 @@ def apply_frontmatter_update(
 
     if set_fields:
         for key, value in set_fields.items():
-            frontmatter[key] = value
+            if key == "trust":
+                normalized_trust = normalize_trust(value)
+                if normalized_trust is None:
+                    frontmatter.pop("trust", None)
+                else:
+                    frontmatter[key] = normalized_trust
+            elif key == "use_policy":
+                normalized_use_policy = normalize_use_policy(value)
+                if normalized_use_policy is None:
+                    frontmatter.pop("use_policy", None)
+                else:
+                    frontmatter[key] = normalized_use_policy
+            else:
+                frontmatter[key] = value
 
     frontmatter["updated"] = datetime.now().strftime("%Y-%m-%d")
 
