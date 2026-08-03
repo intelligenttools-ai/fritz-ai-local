@@ -47,15 +47,15 @@ one and fires the corresponding hook.
 |---|-----------------|---------------|-----------------------|---------|
 | C1 | **session start** | a new agent session begins | `brain_session_start.py` | inject vault/project context into the first turn |
 | C2 | **before-turn / BRAIN CHECK** | a user prompt is submitted, before the model answers | `brain_prompt_check.py` | brain-first guardrail; inject relevant knowledge / "save, don't just answer" reminder |
-| C3 | **turn / agent end** | the model finishes a turn | (binding-side) auto-capture; optionally `brain_capture.py` | auto-capture durable knowledge (signal + intent, dedup) |
-| C4 | **session end / compact** | session shuts down, or transcript is about to be compacted/summarized | `brain_capture.py` | roll the session up into the daily capture store |
-| C5 | **explicit save** | the model calls the save tool during a turn | `brain_save_fact.py` (or in-binding `writeBrainInboxFact`) | write a durable fact to `capture/inbox/` |
+| C3 | **explicit save** | the model calls the save tool during a turn | `brain_save_fact.py` (or in-binding `writeBrainInboxFact`) | write a durable fact to `capture/inbox/` |
+| C4 | **turn / agent end** | the model finishes a turn | (binding-side) auto-capture; optionally `brain_capture.py` | auto-capture durable knowledge (signal + intent, dedup) |
+| C5 | **session end / compact** | session shuts down, or transcript is about to be compacted/summarized | `brain_capture.py` | roll the session up into the daily capture store |
 
-C1, C2, C4 are **hook-driven** (the binding shells out to a Python hook and
-injects its stdout). C3 (auto-capture) and C5 (explicit save) are **capability
+C1, C2, C5 are **hook-driven** (the binding shells out to a Python hook and
+injects its stdout). C3 (explicit save) and C4 (auto-capture) are **capability
 operations** the binding performs directly (role model implements them inline;
-Python ports exist as `brain_autocapture.py` and `brain_save_fact.py`). A binding
-may either re-implement C3/C5 natively (as pi does in TypeScript) or shell out to
+Python ports exist as `brain_save_fact.py` and `brain_autocapture.py`). A binding
+may either re-implement C3/C4 natively (as pi does in TypeScript) or shell out to
 the Python ports — both are conformant as long as the on-disk result is
 byte-identical (see [§4](#4-memory--capture-sources)).
 
@@ -67,32 +67,32 @@ Derived from the `hooks/*-hooks.*` files and `bindings/pi/index.ts`.
 |-----------------|-------------|-------|----|--------|--------|-----------------|
 | C1 session start | `SessionStart` | `SessionStart` | `session_start` | (see note) | `SessionStart` | session-begin lifecycle hook |
 | C2 before-turn / BRAIN CHECK | `UserPromptSubmit` | `UserPromptSubmit` | `before_agent_start` | `pre_llm_call` | `BeforeAgent` | pre-turn / user-prompt hook |
-| C3 turn / agent end | `Stop` | `Stop` | `agent_end` | `on_session_finalize` | `SessionEnd` | turn/agent-end hook |
-| C4 session end / compact | `Stop`, `PreCompact` | `Stop` | `session_shutdown`, `session_before_compact` | `on_session_finalize` | `SessionEnd` (compact case via `PreCompress` detection marker, not a registered hook) | session-end and/or about-to-compact hook |
-| C5 explicit save | `brain_save_fact` tool | `brain_save_fact` tool | `brain_save_fact` tool | (tool/CLI) | `brain_save_fact` tool | model-callable tool |
+| C3 explicit save | `brain_save_fact` tool | `brain_save_fact` tool | `brain_save_fact` tool | (tool/CLI) | `brain_save_fact` tool | model-callable tool |
+| C4 turn / agent end | `Stop` | `Stop` | `agent_end` | `on_session_finalize` | `SessionEnd` | turn/agent-end hook |
+| C5 session end / compact | `Stop`, `PreCompact` | `Stop` | `session_shutdown`, `session_before_compact` | `on_session_finalize` | `SessionEnd` (compact case via `PreCompress` detection marker, not a registered hook) | session-end and/or about-to-compact hook |
 
 **Notes & known divergences (verified against the registration files):**
 
-- **Claude Code / Codex / Gemini** wire C3 *and* C4 to the same capture hook
+- **Claude Code / Codex / Gemini** wire C4 *and* C5 to the same capture hook
   (`brain_capture.py`): Claude on both `Stop` and `PreCompact`, Codex on `Stop`,
   Gemini on `SessionEnd`. `gemini-hooks.json` registers only `SessionStart`,
   `BeforeAgent`, and `SessionEnd` — there is **no** registered `PreCompress`
   hook; `PreCompress` is Gemini's adapter-level *detection marker* (in
   `adapters/base.py`) for the compact case, not a hook wiring. They do **not**
   run a separate auto-capture step in the registration files — auto-capture
-  (C3) is the role model's inline behavior and is available to these runtimes via
+  (C4) is the role model's inline behavior and is available to these runtimes via
   `brain_autocapture.py` if their binding chooses to wire it.
-- **pi** is the role model and is the most granular: it distinguishes C3
-  (`agent_end` → inline `maybeAutoCapture`) from C4 (`session_before_compact` and
+- **pi** is the role model and is the most granular: it distinguishes C4
+  (`agent_end` → inline `maybeAutoCapture`) from C5 (`session_before_compact` and
   `session_shutdown` → `brain_capture.py`), giving distinct pi-specific event
   names on the wire (`PiSessionBeforeCompact`, `PiSessionShutdown`).
 - **Hermes** has only two shell hooks: `pre_llm_call` (mapped to C2) and
-  `on_session_finalize` (mapped to C4, and serving as the C3 catch-all). Hermes
+  `on_session_finalize` (mapped to C5, and serving as the C4 catch-all). Hermes
   has **no dedicated session-start hook** in `hermes-hooks.yaml`; context
   injection is folded into `pre_llm_call` via `hermes_brain_context.py`. A new
   binding for a runtime that likewise lacks a session-start event should follow
   this pattern (inject context on the first pre-turn call).
-- **Generic runtimes:** if a runtime fires only one of C3/C4, wire capture on
+- **Generic runtimes:** if a runtime fires only one of C4/C5, wire capture on
   whichever it has. If it fires both, wire both — the capture chain's dedup
   prevents duplication.
 
@@ -140,7 +140,7 @@ Example stdin for **before-turn / BRAIN CHECK** (C2):
 }
 ```
 
-Example stdin for **session end / compact** (C4):
+Example stdin for **session end / compact** (C5):
 
 ```json
 {
@@ -177,7 +177,7 @@ context/system message. The role model delivers it as
 A runtime without a "deliver next turn" primitive should prepend the context to
 the first user turn or inject it as a system message.
 
-`brain_capture.py` (C4) writes to disk and exits 0; it produces **no stdout
+`brain_capture.py` (C5) writes to disk and exits 0; it produces **no stdout
 JSON** for the binding to inject — the binding fires it and ignores stdout.
 
 ### Fail-soft requirement
@@ -192,7 +192,7 @@ the hooks (explicit save, auto-capture) must keep working in minimal mode.
 
 ## 3. Adapter interface (transcript source)
 
-The session-capture hook (`brain_capture.py`, C4) needs to read each runtime's
+The session-capture hook (`brain_capture.py`, C5) needs to read each runtime's
 transcript in its native format. That is the job of a **`TranscriptAdapter`** —
 see [`adapters/base.py`](../adapters/base.py).
 
@@ -253,19 +253,19 @@ capture layout a binding writes to:
 
 | Path | Written by | Format |
 |------|-----------|--------|
-| `~/.brain/capture/inbox/<YYYY-MM-DD>-<slug>.md` | C5 explicit save, C3 auto-capture | YAML-frontmatter capture file, mode `0o600` |
-| `~/.brain/capture/auto/<hash>.seen` | C3 auto-capture dedup | marker file (`sha256(text)[:16]`) |
-| `~/.brain/capture/daily/<YYYY-MM-DD>.md` | C4 session capture | daily rollup of `CaptureEntry`s |
+| `~/.brain/capture/inbox/<YYYY-MM-DD>-<slug>.md` | C3 explicit save, C4 auto-capture | YAML-frontmatter capture file, mode `0o600` |
+| `~/.brain/capture/auto/<hash>.seen` | C4 auto-capture dedup | marker file (`sha256(text)[:16]`) |
+| `~/.brain/capture/daily/<YYYY-MM-DD>.md` | C5 session capture | daily rollup of `CaptureEntry`s |
 | `~/.brain/log.md` | C3/C4/C5 | append-only operations log (`INGEST` / `CAPTURE` lines) |
 
-**Explicit save (C5)** — `brain_save_fact.py` `save_fact()` / the role model's
+**Explicit save (C3)** — `brain_save_fact.py` `save_fact()` / the role model's
 `writeBrainInboxFact`. Parameters: `title`, `body`, optional `source`,
 `sensitive`, `tags` (and `agent`). The two implementations are
 **byte-identical** by design (the Python port mirrors `JSON.stringify` quoting,
 the UTC `today_str`, the local-time `timestamp`, and the `slugify` rule). Dirs
 are created `0o700`, files `0o600`.
 
-**Auto-capture (C3)** — `brain_autocapture.py` `maybe_auto_capture(text, cwd)` /
+**Auto-capture (C4)** — `brain_autocapture.py` `maybe_auto_capture(text, cwd)` /
 the role model's `maybeAutoCapture`. A capture is written **only when both** a
 durable-signal regex (git URLs, forgejo/gitea/gitlab, PAT/api-token/access token,
 "server is", "token location", credential, recovery code) **and** a save-intent
@@ -341,9 +341,9 @@ checkable acceptance list:
 
 1. [ ] **Context injection** at session start (C1 → `brain_session_start.py`, inject `additionalContext`).
 2. [ ] **Guardrail** before each turn — the BRAIN CHECK (C2 → `brain_prompt_check.py`, hidden per-turn guardrail).
-3. [ ] **Save** — explicit `brain_save_fact` tool → `~/.brain/capture/inbox/` (C5).
-4. [ ] **Auto-capture** of durable knowledge — signal + intent, `.seen` dedup (C3).
-5. [ ] **Capture** on session end/compact → `~/.brain/capture/daily/` (C4 → `brain_capture.py`).
+3. [ ] **Save** — explicit `brain_save_fact` tool → `~/.brain/capture/inbox/` (C3).
+4. [ ] **Auto-capture** of durable knowledge — signal + intent, `.seen` dedup (C4).
+5. [ ] **Capture** on session end/compact → `~/.brain/capture/daily/` (C5 → `brain_capture.py`).
 6. [ ] **Mode detection** (full vs minimal) with graceful degradation — fail-soft hooks.
 7. [ ] **Bootstrap / health** — install / repair / status / smoke-test surface (see `scripts/install.py`).
 8. [ ] **Skills** installed with runtime-correct names (the generator + the [naming rule](#6-skill-naming-rule)).

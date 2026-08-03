@@ -43,9 +43,9 @@ left column is the Fritz canonical event from
 |-----------------|------------------------|-------------|
 | C1 session start | `SessionStart` (assumed; Claude-Code-style) | `brain_session_start.py` |
 | C2 before-turn / BRAIN CHECK | `UserPromptSubmit` (assumed) | `brain_prompt_check.py` |
-| C3 turn / agent end | `Stop` (assumed) | auto-capture (`brain_autocapture.py`) |
-| C4 session end / compact | `Stop` + `PreCompact` (assumed) | `brain_capture.py` |
-| C5 explicit save | native tool registration (assumed) | `brain_save_fact` |
+| C3 explicit save | native tool registration (assumed) | `brain_save_fact` |
+| C4 turn / agent end | `Stop` (assumed) | auto-capture (`brain_autocapture.py`) |
+| C5 session end / compact | `Stop` + `PreCompact` (assumed) | `brain_capture.py` |
 
 If OpenClaw mirrors Claude Code exactly, `hooks/claude-code-hooks.json` can be
 reused almost verbatim (re-pointed at OpenClaw's settings file). A transcript
@@ -64,7 +64,7 @@ recognize it.
 - **Context injection primitive (MEDIUM):** whether OpenClaw can inject a hidden
   (non-displayed) context message into the next turn. If not, fall back to
   prepending context to the first user turn.
-- **Transcript format (MEDIUM):** unknown; a new adapter may be required for C4.
+- **Transcript format (MEDIUM):** unknown; a new adapter may be required for C5.
 - **Skill naming (LOW):** unknown whether OpenClaw accepts colon (`fritz:`) or
   hyphen (`fritz-`) names. Add the correct entry to `PLATFORM_NAMING` once
   confirmed. **Assumption:** colon, if Claude-Code-lineage.
