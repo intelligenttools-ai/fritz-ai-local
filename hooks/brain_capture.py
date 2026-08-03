@@ -103,6 +103,7 @@ def main():
             f"type: capture\n"
             f"title: Daily log {today_str()}\n"
             f"created: {today_str()}\n"
+            f"origin: session\n"
             f"---\n\n"
             f"# Daily Log — {today_str()}\n\n"
             f"{summary}\n"

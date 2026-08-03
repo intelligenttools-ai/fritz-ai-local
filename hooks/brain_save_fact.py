@@ -95,11 +95,16 @@ def save_fact(
     tags: list[str] | None = None,
     agent: str = "pi",
     root: Path | None = None,
+    origin: str = "explicit_save",
 ) -> Path:
     """Write a fact to ``capture/inbox`` and append a ``log.md`` audit line.
 
     Returns the path to the written inbox file. Output is byte-identical to the
     Pi extension's ``writeBrainInboxFact``.
+
+    ``origin`` stamps who/what produced the capture (#343): defaults to
+    ``"explicit_save"`` for a human-confirmed save; callers such as
+    ``brain_autocapture.py`` pass a different value explicitly.
     """
     if root is None:
         root = brain_home()
@@ -120,6 +125,7 @@ def save_fact(
             f"created: {today_str()}",
             f"agent_last_edit: {agent or 'pi'}",
             f"sensitive: {'true' if sensitive else 'false'}",
+            f"origin: {origin}",
             "---",
             "",
         ]

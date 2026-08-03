@@ -94,6 +94,7 @@ def test_save_fact_writes_inbox_file_with_frontmatter(tmp_path):
         f"created: {brain_save_fact.today_str()}\n"
         "agent_last_edit: pi\n"
         "sensitive: false\n"
+        "origin: explicit_save\n"
         "---\n"
         "# Forgejo Server URL\n"
         "\n"
@@ -101,6 +102,23 @@ def test_save_fact_writes_inbox_file_with_frontmatter(tmp_path):
         "\n"
         "Tags: #FritzBrain #Infra\n"
     )
+
+
+# --- origin -----------------------------------------------------------------
+
+
+def test_save_fact_default_origin_is_explicit_save(tmp_path):
+    file = brain_save_fact.save_fact(title="Default Origin", body="b", root=tmp_path)
+    content = file.read_text(encoding="utf-8")
+    assert "origin: explicit_save\n" in content
+
+
+def test_save_fact_origin_can_be_overridden(tmp_path):
+    file = brain_save_fact.save_fact(
+        title="Overridden Origin", body="b", origin="auto_capture", root=tmp_path
+    )
+    content = file.read_text(encoding="utf-8")
+    assert "origin: auto_capture\n" in content
 
 
 def test_save_fact_default_source_is_pi_session(tmp_path):

@@ -104,6 +104,7 @@ def maybe_auto_capture(text: str, cwd: str, root: Path | None = None) -> Path | 
         sensitive=bool(SENSITIVE_RE.search(text)),
         tags=["FritzBrain", "AutoCapture", "PiAgent"],
         root=root,
+        origin="auto_capture",
     )
 
 
