@@ -41,14 +41,14 @@ left column is the Fritz canonical event from
 |-----------------|---------------------------|-------------|
 | C1 session start | session/workspace-open callback (assumed) | `brain_session_start.py` |
 | C2 before-turn / BRAIN CHECK | pre-prompt / pre-LLM callback (assumed; may be folded into C1 like Hermes) | `brain_prompt_check.py` |
-| C3 turn / agent end | turn-complete callback (assumed) | auto-capture (`brain_autocapture.py`) |
-| C4 session end / compact | session-close / finalize callback (assumed) | `brain_capture.py` |
-| C5 explicit save | native tool registration (assumed) | `brain_save_fact` |
+| C3 explicit save | native tool registration (assumed) | `brain_save_fact` |
+| C4 turn / agent end | turn-complete callback (assumed) | auto-capture (`brain_autocapture.py`) |
+| C5 session end / compact | session-close / finalize callback (assumed) | `brain_capture.py` |
 
 **Assumption:** if Antigravity, like Hermes, lacks a dedicated session-start
 event, fold C1 context injection into the first C2 pre-turn call (the
 `hermes_brain_context.py` pattern). A transcript adapter
-(`adapters/antigravity.py`) will be required for C4 if Antigravity stores
+(`adapters/antigravity.py`) will be required for C5 if Antigravity stores
 transcripts in a non-JSONL format.
 
 ## (c) Open unknowns / risks
@@ -65,7 +65,7 @@ transcripts in a non-JSONL format.
 - **Context injection primitive (MEDIUM):** whether a hidden (non-displayed)
   context message can be delivered to the model. If not, prepend to the first
   user turn.
-- **Transcript format (MEDIUM):** unknown; likely needs a new adapter for C4.
+- **Transcript format (MEDIUM):** unknown; likely needs a new adapter for C5.
 - **Skill naming (LOW):** unknown name shape; add the correct entry to
   `PLATFORM_NAMING` once confirmed. **Assumption:** hyphen (`fritz-`), matching
   pi, since many IDE extension hosts reject colons in identifiers.
